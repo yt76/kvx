@@ -33,5 +33,5 @@ func main() {
 }
 
 func isLSPModeArg(arg string) bool {
-	return arg == "--stdio" || arg == "-stdio" || arg == "lsp"
+	return arg == "-" || arg == "--stdio" || arg == "-stdio" || arg == "lsp"
 }

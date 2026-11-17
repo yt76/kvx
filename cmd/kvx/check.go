@@ -23,7 +23,7 @@ func runCheck(args []string, out io.Writer) int {
 
 	fs.Usage = func() {
 		fmt.Fprintf(out, "Usage:\n")
-		fmt.Fprintf(out, "  kvx                          Start LSP server over stdio\n")
+		fmt.Fprintf(out, "  kvx [-]                      Start LSP server over stdio\n")
 		fmt.Fprintf(out, "  kvx [check] [flags] <file.v> Check Verilog file(s) for syntax errors\n\n")
 		fmt.Fprintf(out, "Flags:\n")
 		fs.PrintDefaults()

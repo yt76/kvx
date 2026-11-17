@@ -116,3 +116,24 @@ func TestRunCheck(t *testing.T) {
 		})
 	}
 }
+
+func TestIsLSPModeArg(t *testing.T) {
+	tests := []struct {
+		arg  string
+		want bool
+	}{
+		{arg: "-", want: true},
+		{arg: "--stdio", want: true},
+		{arg: "-stdio", want: true},
+		{arg: "lsp", want: true},
+		{arg: "check", want: false},
+		{arg: "design.v", want: false},
+		{arg: "-ast", want: false},
+	}
+
+	for _, tc := range tests {
+		if got := isLSPModeArg(tc.arg); got != tc.want {
+			t.Errorf("isLSPModeArg(%q) = %v, want %v", tc.arg, got, tc.want)
+		}
+	}
+}
