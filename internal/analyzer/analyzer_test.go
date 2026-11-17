@@ -141,3 +141,41 @@ func TestAnalyzeFunctionScope(t *testing.T) {
 		t.Errorf("SymbolAt(invert) = %+v, want KindFunction at line 1", symFn)
 	}
 }
+
+func TestAnalyzeGenerateScope(t *testing.T) {
+	src := "module m #(parameter USE_FAST = 1) (\n" +
+		"  input wire [3:0] a,\n" +
+		"  output wire [3:0] y\n" +
+		");\n" +
+		"  genvar i;\n" +
+		"  generate\n" +
+		"    for (i = 0; i < 4; i = i + 1) begin : g_loop\n" +
+		"      if (USE_FAST) begin : g_fast\n" +
+		"        wire bit_w;\n" +
+		"        assign bit_w = a[i];\n" +
+		"        assign y[i] = bit_w;\n" +
+		"      end else begin : g_slow\n" +
+		"        wire bit_w;\n" +
+		"        assign bit_w = ~a[i];\n" +
+		"        assign y[i] = bit_w;\n" +
+		"      end\n" +
+		"    end\n" +
+		"  endgenerate\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for generate block, got %+v", an.Diagnostics)
+	}
+
+	// Verify genvar `i` in `assign bit_w = a[i];` (line 9, col 25) resolves to `genvar i` at line 4
+	symGenvar := an.SymbolAt(ast.Position{Line: 9, Column: 25})
+	if symGenvar == nil || symGenvar.Name != "i" || symGenvar.TypeDetail != "genvar" || symGenvar.SelectionRange.Start.Line != 4 {
+		t.Errorf("SymbolAt(i) = %+v, want genvar 'i' at line 4", symGenvar)
+	}
+}

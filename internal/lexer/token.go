@@ -49,6 +49,9 @@ const (
 	TokenFunction    TokenType = "function"
 	TokenEndfunction TokenType = "endfunction"
 	TokenAutomatic   TokenType = "automatic"
+	TokenGenerate    TokenType = "generate"
+	TokenEndgenerate TokenType = "endgenerate"
+	TokenGenvar      TokenType = "genvar"
 
 	// Delimiters and punctuation
 	TokenLParen    TokenType = "("
@@ -125,6 +128,9 @@ var keywords = map[string]TokenType{
 	"function":    TokenFunction,
 	"endfunction": TokenEndfunction,
 	"automatic":   TokenAutomatic,
+	"generate":    TokenGenerate,
+	"endgenerate": TokenEndgenerate,
+	"genvar":      TokenGenvar,
 }
 
 // LookupIdent returns the keyword TokenType for ident, or TokenIdent if not a keyword.

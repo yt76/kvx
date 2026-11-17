@@ -322,7 +322,7 @@ func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 		p.advance()
 	case lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout:
 		p.parsePortDeclItem(mod)
-	case lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger:
+	case lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger, lexer.TokenGenvar:
 		p.parseNetDeclItem(mod)
 	case lexer.TokenParameter, lexer.TokenLocalparam:
 		p.parseParamDeclItem(mod)
@@ -332,6 +332,10 @@ func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 		p.parseProceduralBlock(mod)
 	case lexer.TokenFunction:
 		p.parseFunctionDecl(mod)
+	case lexer.TokenGenerate:
+		p.parseGenerateRegion(mod)
+	case lexer.TokenFor, lexer.TokenIf, lexer.TokenCase, lexer.TokenCasex, lexer.TokenCasez, lexer.TokenBegin:
+		p.parseGenerateConstruct(mod)
 	case lexer.TokenIdent:
 		p.parseModuleInstOrUnknown(mod)
 	default:
@@ -656,6 +660,159 @@ func (p *Parser) parseFunctionDecl(mod *ast.ModuleDecl) {
 	}
 	fn.Refs = tempMod.Refs
 	mod.Items = append(mod.Items, fn)
+}
+
+func (p *Parser) parseGenerateRegion(mod *ast.ModuleDecl) {
+	startTok := p.advance() // consume 'generate'
+	gen := &ast.GenerateBlock{
+		Kind:  "generate",
+		Range: ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
+	}
+
+	subMod := &ast.ModuleDecl{}
+	for !p.isEOF() &&
+		p.cur().Type != lexer.TokenEndgenerate &&
+		p.cur().Type != lexer.TokenEndmodule &&
+		p.cur().Type != lexer.TokenModule {
+		p.parseModuleItem(subMod)
+	}
+
+	if p.cur().Type == lexer.TokenEndgenerate {
+		endTok := p.advance()
+		gen.Range.End = endTok.Range.End
+	} else {
+		p.addError(startTok.Range, "expected 'endgenerate' to close 'generate' block")
+		gen.Range.End = p.prev().Range.End
+	}
+
+	gen.Items = subMod.Items
+	gen.Refs = subMod.Refs
+	mod.Refs = append(mod.Refs, subMod.Refs...)
+	mod.Items = append(mod.Items, gen)
+}
+
+func (p *Parser) parseGenerateConstruct(mod *ast.ModuleDecl) {
+	if p.isEOF() {
+		return
+	}
+
+	startTok := p.cur()
+	gen := &ast.GenerateBlock{
+		Kind:  startTok.Literal,
+		Range: ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
+	}
+	subMod := &ast.ModuleDecl{}
+
+	switch startTok.Type {
+	case lexer.TokenBegin:
+		beginTok := p.advance() // 'begin'
+		if p.cur().Type == lexer.TokenColon {
+			p.advance() // ':'
+			if p.cur().Type == lexer.TokenIdent {
+				lbl := p.advance()
+				gen.Label = lbl.Literal
+			} else {
+				p.addError(p.cur().Range, "expected generate block label identifier after ':'")
+			}
+		}
+
+		for !p.isEOF() &&
+			p.cur().Type != lexer.TokenEnd &&
+			p.cur().Type != lexer.TokenEndgenerate &&
+			p.cur().Type != lexer.TokenEndmodule &&
+			p.cur().Type != lexer.TokenModule {
+			p.parseModuleItem(subMod)
+		}
+
+		if p.cur().Type == lexer.TokenEnd {
+			p.advance()
+		} else {
+			p.addError(beginTok.Range, "expected 'end' to close generate 'begin' block")
+		}
+
+	case lexer.TokenFor:
+		forTok := p.advance() // 'for'
+		if p.cur().Type == lexer.TokenLParen {
+			p.parseBalancedParensOpts(&gen.Refs, subMod, true)
+		} else {
+			p.addError(forTok.Range, "expected '(' after 'for' in generate block")
+		}
+		if !p.isEOF() &&
+			p.cur().Type != lexer.TokenEnd &&
+			p.cur().Type != lexer.TokenEndgenerate &&
+			p.cur().Type != lexer.TokenEndmodule {
+			p.parseModuleItem(subMod)
+		}
+
+	case lexer.TokenIf:
+		ifTok := p.advance() // 'if'
+		if p.cur().Type == lexer.TokenLParen {
+			p.parseBalancedParens(&gen.Refs, subMod)
+		} else {
+			p.addError(ifTok.Range, "expected '(' after 'if' in generate block")
+		}
+		if !p.isEOF() &&
+			p.cur().Type != lexer.TokenEnd &&
+			p.cur().Type != lexer.TokenEndgenerate &&
+			p.cur().Type != lexer.TokenEndmodule {
+			p.parseModuleItem(subMod)
+		}
+		if p.cur().Type == lexer.TokenElse {
+			p.advance() // 'else'
+			if !p.isEOF() &&
+				p.cur().Type != lexer.TokenEnd &&
+				p.cur().Type != lexer.TokenEndgenerate &&
+				p.cur().Type != lexer.TokenEndmodule {
+				p.parseModuleItem(subMod)
+			}
+		}
+
+	case lexer.TokenCase, lexer.TokenCasex, lexer.TokenCasez:
+		caseTok := p.advance()
+		if p.cur().Type == lexer.TokenLParen {
+			p.parseBalancedParens(&gen.Refs, subMod)
+		} else {
+			p.addError(caseTok.Range, fmt.Sprintf("expected '(' after %q in generate block", caseTok.Literal))
+		}
+
+		for !p.isEOF() &&
+			p.cur().Type != lexer.TokenEndcase &&
+			p.cur().Type != lexer.TokenEnd &&
+			p.cur().Type != lexer.TokenEndgenerate &&
+			p.cur().Type != lexer.TokenEndmodule &&
+			p.cur().Type != lexer.TokenModule {
+			if p.cur().Type == lexer.TokenDefault {
+				p.advance()
+				if p.cur().Type == lexer.TokenColon {
+					p.advance()
+				}
+				p.parseModuleItem(subMod)
+				continue
+			}
+			tokensBeforeColon := p.collectTokensUntil(&gen.Refs, subMod, lexer.TokenColon, lexer.TokenEndcase)
+			if p.cur().Type == lexer.TokenColon {
+				p.advance() // ':'
+				p.parseModuleItem(subMod)
+			} else if len(tokensBeforeColon) == 0 {
+				break
+			} else {
+				p.addError(p.cur().Range, "expected ':' after generate case item expression")
+				p.syncToStatementEnd()
+			}
+		}
+
+		if p.cur().Type == lexer.TokenEndcase {
+			p.advance()
+		} else {
+			p.addError(caseTok.Range, fmt.Sprintf("expected 'endcase' to close generate %q", caseTok.Literal))
+		}
+	}
+
+	gen.Range.End = p.prev().Range.End
+	gen.Items = subMod.Items
+	gen.Refs = append(gen.Refs, subMod.Refs...)
+	mod.Refs = append(mod.Refs, gen.Refs...)
+	mod.Items = append(mod.Items, gen)
 }
 
 func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl) {
@@ -1051,7 +1208,8 @@ func (p *Parser) parseBalancedParensOpts(refs *[]ast.IdentifierRef, mod *ast.Mod
 	for !p.isEOF() && depth > 0 {
 		if (!allowSemicolon && p.cur().Type == lexer.TokenSemicolon) ||
 			p.cur().Type == lexer.TokenEndmodule ||
-			p.cur().Type == lexer.TokenEndfunction {
+			p.cur().Type == lexer.TokenEndfunction ||
+			p.cur().Type == lexer.TokenEndgenerate {
 			break
 		}
 		tok := p.advance()
@@ -1060,6 +1218,16 @@ func (p *Parser) parseBalancedParensOpts(refs *[]ast.IdentifierRef, mod *ast.Mod
 			depth++
 		case lexer.TokenRParen:
 			depth--
+		case lexer.TokenGenvar, lexer.TokenInteger:
+			if allowSemicolon && mod != nil && p.cur().Type == lexer.TokenIdent {
+				nameTok := p.advance()
+				mod.Items = append(mod.Items, &ast.NetDecl{
+					Kind:      tok.Literal,
+					Name:      nameTok.Literal,
+					NameRange: nameTok.Range,
+					Range:     ast.Range{File: tok.Range.File, Start: tok.Range.Start, End: nameTok.Range.End},
+				})
+			}
 		case lexer.TokenIdent:
 			p.recordRef(refs, mod, tok)
 		case lexer.TokenIllegal:
@@ -1109,11 +1277,11 @@ func (p *Parser) syncToStatementEnd() {
 		case lexer.TokenSemicolon:
 			p.advance()
 			return
-		case lexer.TokenEnd, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndmodule, lexer.TokenModule,
+		case lexer.TokenEnd, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndgenerate, lexer.TokenEndmodule, lexer.TokenModule,
 			lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout,
-			lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger,
+			lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger, lexer.TokenGenvar,
 			lexer.TokenParameter, lexer.TokenLocalparam,
-			lexer.TokenAssign, lexer.TokenAlways, lexer.TokenInitial, lexer.TokenFunction:
+			lexer.TokenAssign, lexer.TokenAlways, lexer.TokenInitial, lexer.TokenFunction, lexer.TokenGenerate:
 			return
 		default:
 			p.advance()
@@ -1127,8 +1295,8 @@ func isPortDirection(t lexer.TokenType) bool {
 
 func isStatementBoundary(t lexer.TokenType) bool {
 	switch t {
-	case lexer.TokenSemicolon, lexer.TokenEnd, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndmodule, lexer.TokenModule,
-		lexer.TokenAlways, lexer.TokenInitial, lexer.TokenAssign, lexer.TokenFunction:
+	case lexer.TokenSemicolon, lexer.TokenEnd, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndgenerate, lexer.TokenEndmodule, lexer.TokenModule,
+		lexer.TokenAlways, lexer.TokenInitial, lexer.TokenAssign, lexer.TokenFunction, lexer.TokenGenerate:
 		return true
 	default:
 		return false

@@ -493,3 +493,75 @@ endmodule
 		t.Errorf("expected 1 partial module on recovery, got %d", len(badFile.Modules))
 	}
 }
+
+func TestParseGenerateConstructs(t *testing.T) {
+	src := `
+module gen_demo #(
+    parameter WIDTH = 4,
+    parameter MODE  = 1
+) (
+    input  wire [WIDTH-1:0] din,
+    output wire [WIDTH-1:0] dout
+);
+    genvar i;
+    generate
+        for (i = 0; i < WIDTH; i = i + 1) begin : g_bit
+            wire inv_b;
+            assign inv_b = ~din[i];
+            if (MODE == 1) begin : g_inv
+                assign dout[i] = inv_b;
+            end else begin : g_pass
+                assign dout[i] = din[i];
+            end
+        end
+
+        case (MODE)
+            0: begin : g_m0
+                wire m0_flag = 1'b0;
+            end
+            default: begin : g_mdef
+                wire m0_flag = 1'b1;
+            end
+        endcase
+    endgenerate
+
+    // Verilog-2005 generate-for without explicit generate/endgenerate and with inline genvar
+    for (genvar k = 0; k < WIDTH; k = k + 1) begin : g_extra
+        sub_buf u_buf (.a(din[k]), .y());
+    end
+endmodule
+`
+
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(file.Modules))
+	}
+
+	var genBlocks []*ast.GenerateBlock
+	for _, item := range file.Modules[0].Items {
+		if g, ok := item.(*ast.GenerateBlock); ok {
+			genBlocks = append(genBlocks, g)
+		}
+	}
+	if len(genBlocks) != 2 { // 1 `generate...endgenerate` block + 1 standalone `for` generate block
+		t.Fatalf("got %d top-level GenerateBlocks, want 2", len(genBlocks))
+	}
+
+	// Verify missing endgenerate reports syntax error and recovers
+	badSrc := `
+module m(input a, output b);
+    generate
+        assign b = a;
+endmodule
+`
+	badFile, badErrs := Parse(badSrc)
+	if len(badErrs) == 0 || !strings.Contains(badErrs[0].Message, "expected 'endgenerate'") {
+		t.Errorf("expected missing endgenerate error, got %v", badErrs)
+	}
+	if len(badFile.Modules) != 1 {
+		t.Errorf("expected 1 partial module on recovery, got %d", len(badFile.Modules))
+	}
+}

@@ -178,3 +178,15 @@ type FunctionDecl struct {
 
 func (f *FunctionDecl) ItemRange() Range { return f.Range }
 func (f *FunctionDecl) moduleItemNode()  {}
+
+// GenerateBlock represents a generate construct (generate...endgenerate, for-generate, if-generate, case-generate, or generate begin...end).
+type GenerateBlock struct {
+	Kind  string // "generate", "for", "if", "case", "begin"
+	Label string
+	Items []ModuleItem
+	Range Range
+	Refs  []IdentifierRef
+}
+
+func (g *GenerateBlock) ItemRange() Range { return g.Range }
+func (g *GenerateBlock) moduleItemNode()  {}

@@ -145,7 +145,7 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]Sem
 		Symbols: make(map[string]*Symbol),
 	}
 
-	addSymbol := func(sym *Symbol) {
+	addSymbol := func(sym *Symbol, inGenerate bool) {
 		if sym.Name == "" {
 			return
 		}
@@ -159,7 +159,8 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]Sem
 				existing.Signature = existing.TypeDetail + " " + existing.Name
 				return
 			}
-			if sym.SelectionRange.File == "" {
+			// Mutually exclusive generate branches (if/else/case) may declare the same local name.
+			if !inGenerate && sym.SelectionRange.File == "" {
 				*diags = append(*diags, SemanticDiagnostic{
 					Range:   sym.SelectionRange,
 					Message: fmt.Sprintf("duplicate declaration of %q", sym.Name),
@@ -175,63 +176,71 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]Sem
 		}
 	}
 
-	for _, item := range mod.Items {
-		switch d := item.(type) {
-		case *ast.ParamDecl:
-			detail := formatParamDetail(d)
-			sig := detail + " " + d.Name
-			if d.ValueText != "" {
-				sig += " = " + d.ValueText
+	var collectItems func(items []ast.ModuleItem, inGenerate bool)
+	collectItems = func(items []ast.ModuleItem, inGenerate bool) {
+		for _, item := range items {
+			switch d := item.(type) {
+			case *ast.ParamDecl:
+				detail := formatParamDetail(d)
+				sig := detail + " " + d.Name
+				if d.ValueText != "" {
+					sig += " = " + d.ValueText
+				}
+				addSymbol(&Symbol{
+					Name:           d.Name,
+					Kind:           KindParam,
+					TypeDetail:     detail,
+					Signature:      sig,
+					Range:          d.Range,
+					SelectionRange: d.NameRange,
+				}, inGenerate)
+
+			case *ast.PortDecl:
+				detail := formatPortDeclDetail(d)
+				addSymbol(&Symbol{
+					Name:           d.Name,
+					Kind:           KindPort,
+					TypeDetail:     detail,
+					Signature:      detail + " " + d.Name,
+					Range:          d.Range,
+					SelectionRange: d.NameRange,
+				}, inGenerate)
+
+			case *ast.NetDecl:
+				detail := formatNetDeclDetail(d)
+				addSymbol(&Symbol{
+					Name:           d.Name,
+					Kind:           KindNet,
+					TypeDetail:     detail,
+					Signature:      detail + " " + d.Name,
+					Range:          d.Range,
+					SelectionRange: d.NameRange,
+				}, inGenerate)
+
+			case *ast.ModuleInst:
+				detail := fmt.Sprintf("instance of %s", d.ModuleName)
+				addSymbol(&Symbol{
+					Name:           d.InstanceName,
+					Kind:           KindInstance,
+					TypeDetail:     detail,
+					Signature:      fmt.Sprintf("%s %s", d.ModuleName, d.InstanceName),
+					Range:          d.Range,
+					SelectionRange: d.InstanceNameRange,
+					TargetModule:   d.ModuleName,
+				}, inGenerate)
+
+			case *ast.FunctionDecl:
+				fnScope := buildFunctionScope(d, diags)
+				addSymbol(fnScope.Symbol, inGenerate)
+				scope.Functions = append(scope.Functions, fnScope)
+
+			case *ast.GenerateBlock:
+				collectItems(d.Items, true)
 			}
-			addSymbol(&Symbol{
-				Name:           d.Name,
-				Kind:           KindParam,
-				TypeDetail:     detail,
-				Signature:      sig,
-				Range:          d.Range,
-				SelectionRange: d.NameRange,
-			})
-
-		case *ast.PortDecl:
-			detail := formatPortDeclDetail(d)
-			addSymbol(&Symbol{
-				Name:           d.Name,
-				Kind:           KindPort,
-				TypeDetail:     detail,
-				Signature:      detail + " " + d.Name,
-				Range:          d.Range,
-				SelectionRange: d.NameRange,
-			})
-
-		case *ast.NetDecl:
-			detail := formatNetDeclDetail(d)
-			addSymbol(&Symbol{
-				Name:           d.Name,
-				Kind:           KindNet,
-				TypeDetail:     detail,
-				Signature:      detail + " " + d.Name,
-				Range:          d.Range,
-				SelectionRange: d.NameRange,
-			})
-
-		case *ast.ModuleInst:
-			detail := fmt.Sprintf("instance of %s", d.ModuleName)
-			addSymbol(&Symbol{
-				Name:           d.InstanceName,
-				Kind:           KindInstance,
-				TypeDetail:     detail,
-				Signature:      fmt.Sprintf("%s %s", d.ModuleName, d.InstanceName),
-				Range:          d.Range,
-				SelectionRange: d.InstanceNameRange,
-				TargetModule:   d.ModuleName,
-			})
-
-		case *ast.FunctionDecl:
-			fnScope := buildFunctionScope(d, diags)
-			addSymbol(fnScope.Symbol)
-			scope.Functions = append(scope.Functions, fnScope)
 		}
 	}
+
+	collectItems(mod.Items, false)
 
 	// Check identifier references inside functions against local, module, and global scopes.
 	for _, fnScope := range scope.Functions {
@@ -347,21 +356,17 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 		}
 
 		// 2. Check module instantiation type names (e.g. clicking on `sub_alu` in `sub_alu u_alu (...)`).
-		for _, item := range mod.Items {
-			if inst, ok := item.(*ast.ModuleInst); ok {
-				if inst.ModuleNameRange.Contains(pos) {
-					if targetScope, exists := a.Modules[inst.ModuleName]; exists {
-						return targetScope.Symbol
-					}
-					return &Symbol{
-						Name:           inst.ModuleName,
-						Kind:           KindModule,
-						TypeDetail:     "module",
-						Signature:      "module " + inst.ModuleName,
-						Range:          inst.ModuleNameRange,
-						SelectionRange: inst.ModuleNameRange,
-					}
-				}
+		if inst := findModuleInstAt(mod.Items, pos); inst != nil {
+			if targetScope, exists := a.Modules[inst.ModuleName]; exists {
+				return targetScope.Symbol
+			}
+			return &Symbol{
+				Name:           inst.ModuleName,
+				Kind:           KindModule,
+				TypeDetail:     "module",
+				Signature:      "module " + inst.ModuleName,
+				Range:          inst.ModuleNameRange,
+				SelectionRange: inst.ModuleNameRange,
 			}
 		}
 
@@ -618,4 +623,20 @@ func formatFunctionSignature(fn *ast.FunctionDecl) string {
 		b.WriteString(")")
 	}
 	return b.String()
+}
+
+func findModuleInstAt(items []ast.ModuleItem, pos ast.Position) *ast.ModuleInst {
+	for _, item := range items {
+		switch d := item.(type) {
+		case *ast.ModuleInst:
+			if d.ModuleNameRange.Contains(pos) {
+				return d
+			}
+		case *ast.GenerateBlock:
+			if found := findModuleInstAt(d.Items, pos); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
 }
