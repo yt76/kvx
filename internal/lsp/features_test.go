@@ -773,3 +773,84 @@ func TestLSPWorkspaceFilesIndex(t *testing.T) {
 		t.Errorf("definition = %+v, want URI=%s Line=0", loc, subURI)
 	}
 }
+
+func TestLSPConfigDefines(t *testing.T) {
+	root := t.TempDir()
+	cfgPath := filepath.Join(root, "kvx.json")
+	cfgJSON := `{
+  "defines": {
+    "USE_PORT_B": "",
+    "DATA_W": "16"
+  }
+}`
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	topPath := filepath.Join(root, "top.v")
+	topURI := filePathToURI(topPath)
+	topSrc := "module top(\n" +
+		"  input wire [`DATA_W-1:0] a,\n" +
+		"`ifdef USE_PORT_B\n" +
+		"  input wire [`DATA_W-1:0] b,\n" +
+		"`endif\n" +
+		"  output wire [`DATA_W-1:0] y\n" +
+		");\n" +
+		"  assign y = a & b;\n" +
+		"endmodule\n"
+
+	var in, out bytes.Buffer
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"rootUri": filePathToURI(root),
+		},
+	})
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/didOpen",
+		"params": DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        topURI,
+				LanguageID: "verilog",
+				Version:    1,
+				Text:       topSrc,
+			},
+		},
+	})
+	// Hover on port `b` in `assign y = a & b;` (line 7, col 17) -> should resolve `[16-1:0]`!
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "textDocument/hover",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 7, Character: 17},
+		},
+	})
+
+	srv := NewServer(&in, &out, nil)
+	if err := srv.Run(); err != nil {
+		t.Fatalf("Server.Run() error: %v", err)
+	}
+
+	outReader := bufio.NewReader(&out)
+	_ = readFramedResponse(t, outReader) // initialize
+
+	_, diagParams := readFramedNotification(t, outReader)
+	if len(diagParams.Diagnostics) != 0 {
+		t.Fatalf("expected 0 diagnostics when defines are set in kvx.json, got %+v", diagParams.Diagnostics)
+	}
+
+	respHover := readFramedResponse(t, outReader)
+	rawHover, _ := json.Marshal(respHover.Result)
+	var hover Hover
+	if err := json.Unmarshal(rawHover, &hover); err != nil {
+		t.Fatalf("unmarshaling Hover: %v", err)
+	}
+	if !strings.Contains(hover.Contents.Value, "input wire [16-1:0] b") {
+		t.Errorf("Hover value = %q, want expanded [16-1:0] for port b", hover.Contents.Value)
+	}
+}

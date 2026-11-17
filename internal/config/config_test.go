@@ -22,6 +22,8 @@ func TestLoadFileAndFilelist(t *testing.T) {
 		"-I rtl/inc\n" +
 		"-Iip/common // inline comment\n" +
 		"+incdir+headers+../rtl/inc\n" +
+		"-D SIM_FLAG\n" +
+		"+define+WIDTH=8+EXTRA=1\n" +
 		"../rtl/top.v\n"
 	if err := os.WriteFile(flPath, []byte(flContent), 0644); err != nil {
 		t.Fatal(err)
@@ -39,7 +41,11 @@ func TestLoadFileAndFilelist(t *testing.T) {
 	cfgContent := `{
   "files": ["rtl/sub.v", "rtl/*.v"],
   "includeDirs": ["rtl/inc", "custom/inc"],
-  "filelists": ["sim/files.f"]
+  "filelists": ["sim/files.f"],
+  "defines": {
+    "WIDTH": "16",
+    "CUSTOM": "8'hAA"
+  }
 }`
 	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0644); err != nil {
 		t.Fatal(err)
@@ -72,6 +78,21 @@ func TestLoadFileAndFilelist(t *testing.T) {
 	for i, w := range wantFiles {
 		if cfg.Files[i] != w {
 			t.Errorf("files[%d] = %q, want %q", i, cfg.Files[i], w)
+		}
+	}
+
+	wantDefines := map[string]string{
+		"SIM_FLAG": "",
+		"WIDTH":    "16", // kvx.json overrides filelist's WIDTH=8
+		"EXTRA":    "1",
+		"CUSTOM":   "8'hAA",
+	}
+	if len(cfg.Defines) != len(wantDefines) {
+		t.Fatalf("got defines %v, want %v", cfg.Defines, wantDefines)
+	}
+	for k, w := range wantDefines {
+		if got, ok := cfg.Defines[k]; !ok || got != w {
+			t.Errorf("defines[%q] = (%q, %v), want (%q, true)", k, got, ok, w)
 		}
 	}
 }

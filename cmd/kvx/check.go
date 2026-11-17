@@ -118,15 +118,18 @@ func checkFile(path string, includeDirs []string, showTokens, showAST, showSeman
 	}
 
 	allIncludeDirs := append([]string(nil), includeDirs...)
+	var defines map[string]string
 	if cfg, cfgPath, cfgErr := config.FindAndLoad(filepath.Dir(path)); cfgErr != nil {
 		fmt.Fprintf(out, "warning: failed to load %s: %v\n", cfgPath, cfgErr)
 	} else if cfg != nil {
 		allIncludeDirs = append(allIncludeDirs, cfg.IncludeDirs...)
+		defines = cfg.Defines
 	}
 
 	fileAST, parseErrs := parser.ParseWithOptions(src, parser.Options{
 		FilePath:    path,
 		IncludeDirs: allIncludeDirs,
+		Defines:     defines,
 	})
 
 	if showAST && fileAST != nil {

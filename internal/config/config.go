@@ -18,9 +18,10 @@ const EnvConfig = "KVX_CONFIG"
 
 // Config holds project-level settings loaded from kvx.json.
 type Config struct {
-	Files       []string `json:"files"`
-	IncludeDirs []string `json:"includeDirs"`
-	Filelists   []string `json:"filelists"`
+	Files       []string          `json:"files"`
+	IncludeDirs []string          `json:"includeDirs"`
+	Filelists   []string          `json:"filelists"`
+	Defines     map[string]string `json:"defines"`
 }
 
 // LoadFile reads and parses a kvx.json file at path, resolving relative paths
@@ -105,6 +106,8 @@ func resolveConfig(raw Config, baseDir string) (*Config, error) {
 		addFile(f)
 	}
 
+	resolvedDefines := make(map[string]string)
+
 	var resolvedFilelists []string
 	for _, fl := range raw.Filelists {
 		if fl == "" {
@@ -117,7 +120,7 @@ func resolveConfig(raw Config, baseDir string) (*Config, error) {
 		flPath = filepath.Clean(flPath)
 		resolvedFilelists = append(resolvedFilelists, flPath)
 
-		dirs, files, err := ParseFilelist(flPath, baseDir)
+		dirs, files, flDefs, err := parseFilelistFull(flPath, baseDir)
 		if err != nil {
 			return nil, err
 		}
@@ -133,12 +136,23 @@ func resolveConfig(raw Config, baseDir string) (*Config, error) {
 				resolvedFiles = append(resolvedFiles, f)
 			}
 		}
+		for k, v := range flDefs {
+			resolvedDefines[k] = v
+		}
+	}
+
+	// Explicit defines in kvx.json take precedence over filelist defines.
+	for k, v := range raw.Defines {
+		if k != "" {
+			resolvedDefines[k] = v
+		}
 	}
 
 	return &Config{
 		Files:       resolvedFiles,
 		IncludeDirs: resolvedIncludes,
 		Filelists:   resolvedFilelists,
+		Defines:     resolvedDefines,
 	}, nil
 }
 
@@ -207,15 +221,34 @@ func FindAndLoad(startDir string) (*Config, string, error) {
 // ParseFilelist reads a simulator filelist (.f) and extracts include directories
 // (-I, -incdir, +incdir+) as well as source file paths.
 func ParseFilelist(path string, baseDir string) ([]string, []string, error) {
+	dirs, files, _, err := parseFilelistFull(path, baseDir)
+	return dirs, files, err
+}
+
+func parseFilelistFull(path string, baseDir string) ([]string, []string, map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("reading filelist %s: %w", path, err)
+		return nil, nil, nil, fmt.Errorf("reading filelist %s: %w", path, err)
 	}
 	defer f.Close()
 
 	flDir := filepath.Dir(path)
 	var dirs []string
 	var files []string
+	defines := make(map[string]string)
+
+	addDefine := func(spec string) {
+		if spec == "" {
+			return
+		}
+		if k, v, ok := strings.Cut(spec, "="); ok {
+			if k != "" {
+				defines[k] = v
+			}
+		} else {
+			defines[spec] = ""
+		}
+	}
 
 	resolvePath := func(rawPath string, expectDir bool) string {
 		if rawPath == "" {
@@ -271,7 +304,19 @@ func ParseFilelist(path string, baseDir string) ([]string, []string, error) {
 						dirs = append(dirs, d)
 					}
 				}
-			case tok == "-D" || tok == "-y" || tok == "-v" || tok == "-f" || tok == "-F" || tok == "-o" || tok == "-s":
+			case tok == "-D":
+				if i+1 < len(fields) {
+					i++
+					addDefine(fields[i])
+				}
+			case strings.HasPrefix(tok, "-D") && len(tok) > 2:
+				addDefine(tok[2:])
+			case strings.HasPrefix(tok, "+define+"):
+				rest := strings.TrimPrefix(tok, "+define+")
+				for _, part := range strings.Split(rest, "+") {
+					addDefine(part)
+				}
+			case tok == "-y" || tok == "-v" || tok == "-f" || tok == "-F" || tok == "-o" || tok == "-s":
 				if i+1 < len(fields) {
 					i++
 				}
@@ -286,7 +331,7 @@ func ParseFilelist(path string, baseDir string) ([]string, []string, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, nil, fmt.Errorf("scanning filelist %s: %w", path, err)
+		return nil, nil, nil, fmt.Errorf("scanning filelist %s: %w", path, err)
 	}
-	return dirs, files, nil
+	return dirs, files, defines, nil
 }

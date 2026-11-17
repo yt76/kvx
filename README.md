@@ -170,13 +170,18 @@ const clientOptions: LanguageClientOptions = {
   ],
   "filelists": [
     "sim/filelist.f"
-  ]
+  ],
+  "defines": {
+    "SIM": "",
+    "DATA_WIDTH": "16"
+  }
 }
 ```
 
 - **`files`**: プロジェクト内の Verilog ソースファイル（glob パターン指定可）。LSP 起動時にインデックス化され、開いていない別ファイルのモジュールへの定義ジャンプや Hover・補完が有効になります（`kvx check` を引数なしで実行した際の一括チェック対象にもなります）。
 - **`includeDirs`**: `` `include `` で検索するディレクトリのリスト（`kvx.json` からの相対パス、または絶対パス）。
-- **`filelists`**: シミュレーション用 filelist（`.f`）のパスを指定すると、ファイル内の `-I <dir>`・`-I<dir>`・`+incdir+<dir1>+<dir2>` 指定および記載されている `.v` ファイルパスも自動で抽出します。
+- **`filelists`**: シミュレーション用 filelist（`.f`）のパスを指定すると、ファイル内の `-I <dir>`・`-I<dir>`・`+incdir+<dir1>+<dir2>`・`-D`・`+define+` 指定および記載されている `.v` ファイルパスも自動で抽出します。
+- **`defines`**: 事前定義マクロ（`` `define `` 相当）のマップ。値なしのフラグマクロは `""` を指定します（例: `"SIM": ""`）。`` `ifdef `` の条件判定や `` `DATA_WIDTH `` のマクロ展開に反映されます。
 
 ### 環境変数による設定ファイルの指定（`KVX_CONFIG`）
 

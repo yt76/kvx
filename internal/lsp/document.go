@@ -176,14 +176,17 @@ func (s *DocumentStore) parseOptionsLocked(uri string) parser.Options {
 	if cfg == nil && s.rootDir != "" {
 		cfg, _, _ = config.FindAndLoad(s.rootDir)
 	}
+	var defines map[string]string
 	if cfg != nil {
 		appendUnique(cfg.IncludeDirs)
+		defines = cfg.Defines
 	}
 	appendUnique(s.includeDirs)
 
 	return parser.Options{
 		FilePath:    filePath,
 		IncludeDirs: incDirs,
+		Defines:     defines,
 		ReadFile: func(path string) ([]byte, error) {
 			cleanTarget := filepath.Clean(path)
 			for docURI, doc := range s.docs {

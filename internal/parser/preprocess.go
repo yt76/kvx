@@ -10,12 +10,14 @@ import (
 	"kvx/internal/lexer"
 )
 
-// Options configures file path and `include resolution during parsing.
+// Options configures file path, `include resolution, and predefined macros during parsing.
 type Options struct {
 	// FilePath is the path of the source file being parsed (used to resolve relative `include paths).
 	FilePath string
 	// IncludeDirs is an optional list of directories searched for `include files.
 	IncludeDirs []string
+	// Defines holds predefined macro names and their optional replacement text (e.g. from kvx.json).
+	Defines map[string]string
 	// ReadFile reads a file by path. If nil, os.ReadFile is used.
 	ReadFile func(path string) ([]byte, error)
 }
@@ -45,9 +47,24 @@ func newPreprocessState(opts Options) *preprocessState {
 	if opts.ReadFile == nil {
 		opts.ReadFile = os.ReadFile
 	}
+	macros := make(map[string][]lexer.Token, len(opts.Defines))
+	for name, val := range opts.Defines {
+		if name == "" {
+			continue
+		}
+		if val == "" {
+			macros[name] = nil
+			continue
+		}
+		toks := lexer.Tokenize(val)
+		if len(toks) > 0 && toks[len(toks)-1].Type == lexer.TokenEOF {
+			toks = toks[:len(toks)-1]
+		}
+		macros[name] = toks
+	}
 	return &preprocessState{
 		opts:       opts,
-		macros:     make(map[string][]lexer.Token),
+		macros:     macros,
 		fileOrigin: make(map[string]ast.Range),
 	}
 }
