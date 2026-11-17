@@ -13,6 +13,17 @@ import (
 	"kvx/internal/parser"
 )
 
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string {
+	return strings.Join(*s, ",")
+}
+
+func (s *stringSliceFlag) Set(val string) error {
+	*s = append(*s, val)
+	return nil
+}
+
 func runCheck(args []string, out io.Writer) int {
 	fs := flag.NewFlagSet("kvx check", flag.ContinueOnError)
 	fs.SetOutput(out)
@@ -20,6 +31,8 @@ func runCheck(args []string, out io.Writer) int {
 	showTokens := fs.Bool("tokens", false, "print lexical tokens")
 	showAST := fs.Bool("ast", false, "print parsed AST summary")
 	showSemantic := fs.Bool("semantic", false, "run semantic analysis and report warnings")
+	var includeDirs stringSliceFlag
+	fs.Var(&includeDirs, "I", "add directory to `include search path (may be specified multiple times)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(out, "Usage:\n")
@@ -29,9 +42,19 @@ func runCheck(args []string, out io.Writer) int {
 		fs.PrintDefaults()
 	}
 
-	// Allow flags and file arguments in any order (e.g., `kvx a.v -ast` or `kvx -ast a.v`).
+	// Allow flags and file arguments in any order (e.g., `kvx a.v -ast` or `kvx -I inc a.v`).
 	var flagArgs, fileArgs []string
-	for _, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if (a == "-I" || a == "--I") && i+1 < len(args) {
+			flagArgs = append(flagArgs, a, args[i+1])
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "-I") && len(a) > 2 {
+			flagArgs = append(flagArgs, "-I", a[2:])
+			continue
+		}
 		if strings.HasPrefix(a, "-") && a != "-" {
 			flagArgs = append(flagArgs, a)
 		} else {
@@ -55,14 +78,14 @@ func runCheck(args []string, out io.Writer) int {
 
 	exitCode := 0
 	for _, path := range fileArgs {
-		if !checkFile(path, *showTokens, *showAST, *showSemantic, out) {
+		if !checkFile(path, includeDirs, *showTokens, *showAST, *showSemantic, out) {
 			exitCode = 1
 		}
 	}
 	return exitCode
 }
 
-func checkFile(path string, showTokens, showAST, showSemantic bool, out io.Writer) bool {
+func checkFile(path string, includeDirs []string, showTokens, showAST, showSemantic bool, out io.Writer) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Fprintf(out, "%s: error reading file: %v\n", path, err)
@@ -74,7 +97,7 @@ func checkFile(path string, showTokens, showAST, showSemantic bool, out io.Write
 
 	if showTokens {
 		fmt.Fprintf(out, "=== Tokens: %s ===\n", path)
-		for _, tok := range lexer.Tokenize(src) {
+		for _, tok := range lexer.TokenizeWithDirectives(src) {
 			fmt.Fprintf(out, "  %d:%d\t%-12s\t%q\n",
 				tok.Range.Start.Line+1,
 				tok.Range.Start.Column+1,
@@ -84,7 +107,10 @@ func checkFile(path string, showTokens, showAST, showSemantic bool, out io.Write
 		}
 	}
 
-	fileAST, parseErrs := parser.Parse(src)
+	fileAST, parseErrs := parser.ParseWithOptions(src, parser.Options{
+		FilePath:    path,
+		IncludeDirs: includeDirs,
+	})
 
 	if showAST && fileAST != nil {
 		printASTSummary(path, fileAST, out)

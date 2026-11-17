@@ -8,13 +8,19 @@ type Position struct {
 }
 
 // Range represents a contiguous span of source text between Start and End.
+// File is empty for the root file being parsed, or holds the file path when
+// the node originated from an `include file.
 type Range struct {
+	File  string
 	Start Position
 	End   Position
 }
 
-// Contains returns true if pos falls within r (inclusive of Start and End).
+// Contains returns true if pos (in the root file) falls within r (inclusive of Start and End).
 func (r Range) Contains(pos Position) bool {
+	if r.File != "" {
+		return false
+	}
 	if pos.Line < r.Start.Line || pos.Line > r.End.Line {
 		return false
 	}
@@ -29,7 +35,26 @@ func (r Range) Contains(pos Position) bool {
 
 // SourceFile represents a parsed Verilog source file.
 type SourceFile struct {
-	Modules []*ModuleDecl
+	Modules  []*ModuleDecl
+	Includes []*IncludeDecl
+	Macros   []*MacroDecl
+	Params   []*ParamDecl
+	Refs     []IdentifierRef
+}
+
+// IncludeDecl represents an `include "..." directive.
+type IncludeDecl struct {
+	Path         string
+	ResolvedPath string
+	Range        Range
+}
+
+// MacroDecl represents a `define macro declaration.
+type MacroDecl struct {
+	Name      string
+	NameRange Range
+	ValueText string
+	Range     Range
 }
 
 // ModuleItem represents any declaration, statement, or block inside a module.

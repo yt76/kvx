@@ -47,24 +47,69 @@ type ModuleScope struct {
 
 // Analysis holds the symbol tables and semantic diagnostics for a SourceFile.
 type Analysis struct {
-	File        *ast.SourceFile
-	Modules     map[string]*ModuleScope
-	ModuleOrder []*ModuleScope
-	Diagnostics []SemanticDiagnostic
+	File          *ast.SourceFile
+	Modules       map[string]*ModuleScope
+	ModuleOrder   []*ModuleScope
+	GlobalSymbols map[string]*Symbol
+	GlobalOrder   []*Symbol
+	Diagnostics   []SemanticDiagnostic
 }
 
 // Analyze builds symbol tables and performs semantic checks on file.
 func Analyze(file *ast.SourceFile) *Analysis {
 	res := &Analysis{
-		File:    file,
-		Modules: make(map[string]*ModuleScope),
+		File:          file,
+		Modules:       make(map[string]*ModuleScope),
+		GlobalSymbols: make(map[string]*Symbol),
 	}
 	if file == nil {
 		return res
 	}
 
+	for _, m := range file.Macros {
+		if m.Name == "" {
+			continue
+		}
+		sig := "`define " + m.Name
+		if m.ValueText != "" {
+			sig += " " + m.ValueText
+		}
+		sym := &Symbol{
+			Name:           "`" + m.Name,
+			Kind:           KindParam,
+			TypeDetail:     "`define",
+			Signature:      sig,
+			Range:          m.Range,
+			SelectionRange: m.NameRange,
+		}
+		res.GlobalSymbols["`"+m.Name] = sym
+		res.GlobalSymbols[m.Name] = sym
+		res.GlobalOrder = append(res.GlobalOrder, sym)
+	}
+
+	for _, d := range file.Params {
+		if d.Name == "" {
+			continue
+		}
+		detail := formatParamDetail(d)
+		sig := detail + " " + d.Name
+		if d.ValueText != "" {
+			sig += " = " + d.ValueText
+		}
+		sym := &Symbol{
+			Name:           d.Name,
+			Kind:           KindParam,
+			TypeDetail:     detail,
+			Signature:      sig,
+			Range:          d.Range,
+			SelectionRange: d.NameRange,
+		}
+		res.GlobalSymbols[d.Name] = sym
+		res.GlobalOrder = append(res.GlobalOrder, sym)
+	}
+
 	for _, mod := range file.Modules {
-		scope := analyzeModule(mod, &res.Diagnostics)
+		scope := analyzeModule(mod, res.GlobalSymbols, &res.Diagnostics)
 		res.ModuleOrder = append(res.ModuleOrder, scope)
 		if mod.Name != "" {
 			res.Modules[mod.Name] = scope
@@ -74,7 +119,7 @@ func Analyze(file *ast.SourceFile) *Analysis {
 	return res
 }
 
-func analyzeModule(mod *ast.ModuleDecl, diags *[]SemanticDiagnostic) *ModuleScope {
+func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]SemanticDiagnostic) *ModuleScope {
 	modSym := &Symbol{
 		Name:           mod.Name,
 		Kind:           KindModule,
@@ -104,16 +149,20 @@ func analyzeModule(mod *ast.ModuleDecl, diags *[]SemanticDiagnostic) *ModuleScop
 				existing.Signature = existing.TypeDetail + " " + existing.Name
 				return
 			}
-			*diags = append(*diags, SemanticDiagnostic{
-				Range:   sym.SelectionRange,
-				Message: fmt.Sprintf("duplicate declaration of %q", sym.Name),
-				IsError: false,
-			})
+			if sym.SelectionRange.File == "" {
+				*diags = append(*diags, SemanticDiagnostic{
+					Range:   sym.SelectionRange,
+					Message: fmt.Sprintf("duplicate declaration of %q", sym.Name),
+					IsError: false,
+				})
+			}
 			return
 		}
 		scope.Symbols[sym.Name] = sym
 		scope.Order = append(scope.Order, sym)
-		modSym.Children = append(modSym.Children, sym)
+		if sym.Range.File == "" {
+			modSym.Children = append(modSym.Children, sym)
+		}
 	}
 
 	for _, item := range mod.Items {
@@ -169,13 +218,19 @@ func analyzeModule(mod *ast.ModuleDecl, diags *[]SemanticDiagnostic) *ModuleScop
 		}
 	}
 
-	// Check identifier references against the module's symbol table.
+	// Check identifier references against the module's symbol table and global symbols.
 	for _, ref := range mod.Refs {
 		if strings.HasPrefix(ref.Name, "`") {
 			// Macro usage (e.g. `DATA_WIDTH) may come from an external `define.
 			continue
 		}
-		if _, ok := scope.Symbols[ref.Name]; !ok {
+		if _, ok := scope.Symbols[ref.Name]; ok {
+			continue
+		}
+		if _, ok := globals[ref.Name]; ok {
+			continue
+		}
+		if ref.Range.File == "" {
 			*diags = append(*diags, SemanticDiagnostic{
 				Range:   ref.Range,
 				Message: fmt.Sprintf("undeclared identifier %q", ref.Name),
@@ -199,6 +254,42 @@ func (a *Analysis) ModuleAt(pos ast.Position) *ModuleScope {
 
 // SymbolAt resolves the Symbol under the cursor at pos (either a declaration or a reference).
 func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
+	if a.File != nil {
+		// Check `include "..." directives.
+		for _, inc := range a.File.Includes {
+			if inc.Range.Contains(pos) && inc.ResolvedPath != "" {
+				return &Symbol{
+					Name:       inc.Path,
+					Kind:       KindModule,
+					TypeDetail: "`include",
+					Signature:  fmt.Sprintf("`include %q", inc.Path),
+					Range:      inc.Range,
+					SelectionRange: ast.Range{
+						File:  inc.ResolvedPath,
+						Start: ast.Position{Line: 0, Column: 0},
+						End:   ast.Position{Line: 0, Column: 0},
+					},
+				}
+			}
+		}
+
+		// Check top-level macro and parameter declarations.
+		for _, sym := range a.GlobalOrder {
+			if sym.SelectionRange.Contains(pos) {
+				return sym
+			}
+		}
+
+		// Check macro references (`MACRO_NAME).
+		for _, ref := range a.File.Refs {
+			if ref.Range.Contains(pos) {
+				if sym, ok := a.GlobalSymbols[ref.Name]; ok {
+					return sym
+				}
+			}
+		}
+	}
+
 	for _, scope := range a.ModuleOrder {
 		mod := scope.Module
 		if mod.NameRange.Contains(pos) {
@@ -240,6 +331,9 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 				if sym, ok := scope.Symbols[ref.Name]; ok {
 					return sym
 				}
+				if sym, ok := a.GlobalSymbols[ref.Name]; ok {
+					return sym
+				}
 			}
 		}
 	}
@@ -252,6 +346,7 @@ func (a *Analysis) CompletionsAt(pos ast.Position) []*Symbol {
 	if scope := a.ModuleAt(pos); scope != nil {
 		out = append(out, scope.Order...)
 	}
+	out = append(out, a.GlobalOrder...)
 	for _, modScope := range a.ModuleOrder {
 		if modScope.Symbol.Name != "" {
 			out = append(out, modScope.Symbol)

@@ -2,6 +2,10 @@ package lsp
 
 import (
 	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"kvx/internal/analyzer"
@@ -22,8 +26,9 @@ type Document struct {
 
 // DocumentStore manages open documents in memory.
 type DocumentStore struct {
-	mu   sync.RWMutex
-	docs map[string]*Document
+	mu          sync.RWMutex
+	docs        map[string]*Document
+	includeDirs []string
 }
 
 // NewDocumentStore creates an empty DocumentStore.
@@ -33,12 +38,28 @@ func NewDocumentStore() *DocumentStore {
 	}
 }
 
+// SetRootURI configures the workspace root directory as an `include search path.
+func (s *DocumentStore) SetRootURI(rootURI string) {
+	dir := uriToFilePath(rootURI)
+	if dir == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.includeDirs {
+		if existing == dir {
+			return
+		}
+	}
+	s.includeDirs = append(s.includeDirs, dir)
+}
+
 // Open registers a newly opened document in the store and parses it.
 func (s *DocumentStore) Open(item TextDocumentItem) *Document {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	fileAST, parseErrs := parser.Parse(item.Text)
+	fileAST, parseErrs := parser.ParseWithOptions(item.Text, s.parseOptionsLocked(item.URI))
 	doc := &Document{
 		URI:        item.URI,
 		LanguageID: item.LanguageID,
@@ -75,13 +96,30 @@ func (s *DocumentStore) Change(id VersionedTextDocumentIdentifier, changes []Tex
 		}
 	}
 
-	fileAST, parseErrs := parser.Parse(text)
+	fileAST, parseErrs := parser.ParseWithOptions(text, s.parseOptionsLocked(id.URI))
 	doc.Version = id.Version
 	doc.Text = text
 	doc.AST = fileAST
 	doc.ParseErrs = parseErrs
 	doc.Analysis = analyzer.Analyze(fileAST)
 	return doc, nil
+}
+
+func (s *DocumentStore) parseOptionsLocked(uri string) parser.Options {
+	incDirs := append([]string(nil), s.includeDirs...)
+	return parser.Options{
+		FilePath:    uriToFilePath(uri),
+		IncludeDirs: incDirs,
+		ReadFile: func(path string) ([]byte, error) {
+			cleanTarget := filepath.Clean(path)
+			for docURI, doc := range s.docs {
+				if docPath := uriToFilePath(docURI); docPath != "" && filepath.Clean(docPath) == cleanTarget {
+					return []byte(doc.Text), nil
+				}
+			}
+			return os.ReadFile(path)
+		},
+	}
 }
 
 // FindModule searches all open documents for a module declaration by name.
@@ -189,4 +227,36 @@ func toLSPRange(r ast.Range) Range {
 		},
 	}
 }
+
+func uriToFilePath(uri string) string {
+	if uri == "" {
+		return ""
+	}
+	if strings.HasPrefix(uri, "file://") {
+		if u, err := url.Parse(uri); err == nil && u.Path != "" {
+			return filepath.FromSlash(u.Path)
+		}
+		return filepath.FromSlash(strings.TrimPrefix(uri, "file://"))
+	}
+	return uri
+}
+
+func filePathToURI(path string) string {
+	if path == "" {
+		return ""
+	}
+	if strings.HasPrefix(path, "file://") {
+		return path
+	}
+	abs := path
+	if a, err := filepath.Abs(path); err == nil {
+		abs = a
+	}
+	u := url.URL{
+		Scheme: "file",
+		Path:   filepath.ToSlash(abs),
+	}
+	return u.String()
+}
+
 

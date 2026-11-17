@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -393,5 +395,128 @@ func TestSemanticTokensDirectives(t *testing.T) {
 		if decoded[i] != w {
 			t.Errorf("decoded[%d] = %+v, want %+v", i, decoded[i], w)
 		}
+	}
+}
+
+func TestLSPIncludeHoverAndDefinition(t *testing.T) {
+	tmpDir := t.TempDir()
+	defsPath := filepath.Join(tmpDir, "defs.vh")
+	defsContent := "`define BUS_W 32\n" +
+		"localparam INIT_SEED = 32'h1234;\n"
+	if err := os.WriteFile(defsPath, []byte(defsContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	topPath := filepath.Join(tmpDir, "top.v")
+	topURI := filePathToURI(topPath)
+	defsURI := filePathToURI(defsPath)
+	topSrc := "`include \"defs.vh\"\n" +
+		"module top(\n" +
+		"  input wire [`BUS_W-1:0] a,\n" +
+		"  output wire [`BUS_W-1:0] y\n" +
+		");\n" +
+		"  assign y = a ^ INIT_SEED;\n" +
+		"endmodule\n"
+
+	var in, out bytes.Buffer
+
+	// 1. initialize
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"rootUri": filePathToURI(tmpDir),
+		},
+	})
+	// 2. didOpen top.v
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/didOpen",
+		"params": DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        topURI,
+				LanguageID: "verilog",
+				Version:    1,
+				Text:       topSrc,
+			},
+		},
+	})
+	// 3. definition on `include "defs.vh" at line 0, col 10 -> should jump to defs.vh line 0
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 0, Character: 10},
+		},
+	})
+	// 4. definition on `BUS_W at line 2, col 16 -> should jump to defs.vh line 0
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 2, Character: 16},
+		},
+	})
+	// 5. definition on INIT_SEED at line 5, col 18 -> should jump to defs.vh line 1
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      4,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 5, Character: 18},
+		},
+	})
+
+	srv := NewServer(&in, &out, nil)
+	if err := srv.Run(); err != nil {
+		t.Fatalf("Server.Run() error: %v", err)
+	}
+
+	outReader := bufio.NewReader(&out)
+	_ = readFramedResponse(t, outReader) // initialize
+
+	// Check publishDiagnostics has 0 diagnostics (INIT_SEED and `BUS_W resolved via defs.vh).
+	_, diagParams := readFramedNotification(t, outReader)
+	if len(diagParams.Diagnostics) != 0 {
+		t.Fatalf("expected 0 diagnostics on top.v with valid include, got %+v", diagParams.Diagnostics)
+	}
+
+	// Definition on `include "defs.vh" (id=2)
+	respInc := readFramedResponse(t, outReader)
+	rawInc, _ := json.Marshal(respInc.Result)
+	var locInc Location
+	if err := json.Unmarshal(rawInc, &locInc); err != nil {
+		t.Fatalf("unmarshaling Location for include: %v", err)
+	}
+	if locInc.URI != defsURI || locInc.Range.Start.Line != 0 {
+		t.Errorf("include definition = %+v, want URI=%s Line=0", locInc, defsURI)
+	}
+
+	// Definition on `BUS_W (id=3)
+	respMacro := readFramedResponse(t, outReader)
+	rawMacro, _ := json.Marshal(respMacro.Result)
+	var locMacro Location
+	if err := json.Unmarshal(rawMacro, &locMacro); err != nil {
+		t.Fatalf("unmarshaling Location for `BUS_W: %v", err)
+	}
+	if locMacro.URI != defsURI || locMacro.Range.Start.Line != 0 {
+		t.Errorf("`BUS_W definition = %+v, want URI=%s Line=0", locMacro, defsURI)
+	}
+
+	// Definition on INIT_SEED (id=4)
+	respParam := readFramedResponse(t, outReader)
+	rawParam, _ := json.Marshal(respParam.Result)
+	var locParam Location
+	if err := json.Unmarshal(rawParam, &locParam); err != nil {
+		t.Fatalf("unmarshaling Location for INIT_SEED: %v", err)
+	}
+	if locParam.URI != defsURI || locParam.Range.Start.Line != 1 {
+		t.Errorf("INIT_SEED definition = %+v, want URI=%s Line=1", locParam, defsURI)
 	}
 }

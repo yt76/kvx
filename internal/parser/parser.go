@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"kvx/internal/ast"
@@ -20,17 +21,31 @@ func (e ParseError) Error() string {
 
 // Parser is a hand-written recursive descent parser for core Verilog.
 type Parser struct {
-	tokens []lexer.Token
-	pos    int
-	errors []ParseError
+	tokens     []lexer.Token
+	pos        int
+	errors     []ParseError
+	fileOrigin map[string]ast.Range
 }
 
 // Parse tokenizes and parses input into an AST SourceFile and a list of syntax errors.
 func Parse(input string) (*ast.SourceFile, []ParseError) {
+	return ParseWithOptions(input, Options{})
+}
+
+// ParseWithOptions preprocesses (`include and `define) and parses input into an AST SourceFile.
+func ParseWithOptions(input string, opts Options) (*ast.SourceFile, []ParseError) {
+	pp := newPreprocessState(opts)
+	tokens := pp.preprocessRoot(input)
+
 	p := &Parser{
-		tokens: lexer.Tokenize(input),
+		tokens:     tokens,
+		errors:     append([]ParseError(nil), pp.errors...),
+		fileOrigin: pp.fileOrigin,
 	}
 	file := p.parseSourceFile()
+	file.Includes = pp.includes
+	file.Macros = pp.macroDecls
+	file.Refs = append(file.Refs, pp.macroRefs...)
 	return file, p.errors
 }
 
@@ -44,16 +59,27 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 			p.advance()
 			continue
 		}
+		if tok.Type == lexer.TokenSemicolon {
+			p.advance()
+			continue
+		}
 		if tok.Type == lexer.TokenModule {
 			if mod := p.parseModuleDecl(); mod != nil {
 				file.Modules = append(file.Modules, mod)
 			}
 			continue
 		}
+		if tok.Type == lexer.TokenParameter || tok.Type == lexer.TokenLocalparam {
+			p.parseTopLevelParamDecl(file)
+			continue
+		}
 
 		p.addError(tok.Range, fmt.Sprintf("unexpected token %q outside module declaration", tok.Literal))
 		p.advance()
-		for !p.isEOF() && p.cur().Type != lexer.TokenModule {
+		for !p.isEOF() &&
+			p.cur().Type != lexer.TokenModule &&
+			p.cur().Type != lexer.TokenParameter &&
+			p.cur().Type != lexer.TokenLocalparam {
 			if p.cur().Type == lexer.TokenIllegal {
 				p.addError(p.cur().Range, p.cur().Literal)
 			}
@@ -64,10 +90,17 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 	return file
 }
 
+func (p *Parser) parseTopLevelParamDecl(file *ast.SourceFile) {
+	dummyMod := &ast.ModuleDecl{}
+	p.parseParamDeclItem(dummyMod)
+	file.Params = append(file.Params, dummyMod.Params...)
+	file.Refs = append(file.Refs, dummyMod.Refs...)
+}
+
 func (p *Parser) parseModuleDecl() *ast.ModuleDecl {
 	startTok := p.advance() // consume 'module'
 	mod := &ast.ModuleDecl{
-		Range: ast.Range{Start: startTok.Range.Start, End: startTok.Range.End},
+		Range: ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
 	}
 
 	if p.cur().Type == lexer.TokenIdent {
@@ -162,7 +195,7 @@ func (p *Parser) parseModuleParamPortList(mod *ast.ModuleDecl) {
 			Name:      nameTok.Literal,
 			NameRange: nameTok.Range,
 			ValueText: valText,
-			Range:     ast.Range{Start: startPos, End: endPos},
+			Range:     ast.Range{File: nameTok.Range.File, Start: startPos, End: endPos},
 		}
 		mod.Params = append(mod.Params, param)
 		mod.Items = append(mod.Items, param)
@@ -253,7 +286,7 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 				Width:     curWidth,
 				Name:      nameTok.Literal,
 				NameRange: nameTok.Range,
-				Range:     ast.Range{Start: startPos, End: endPos},
+				Range:     ast.Range{File: nameTok.Range.File, Start: startPos, End: endPos},
 			}
 			mod.Ports = append(mod.Ports, port)
 			mod.Items = append(mod.Items, port)
@@ -343,7 +376,7 @@ func (p *Parser) parsePortDeclItem(mod *ast.ModuleDecl) {
 			Width:     width,
 			Name:      nameTok.Literal,
 			NameRange: nameTok.Range,
-			Range:     ast.Range{Start: startTok.Range.Start, End: endPos},
+			Range:     ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: endPos},
 		}
 		mod.Ports = append(mod.Ports, port)
 		mod.Items = append(mod.Items, port)
@@ -400,7 +433,7 @@ func (p *Parser) parseNetDeclItem(mod *ast.ModuleDecl) {
 			Width:     width,
 			Name:      nameTok.Literal,
 			NameRange: nameTok.Range,
-			Range:     ast.Range{Start: startTok.Range.Start, End: endPos},
+			Range:     ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: endPos},
 		}
 		mod.Items = append(mod.Items, decl)
 
@@ -456,7 +489,7 @@ func (p *Parser) parseParamDeclItem(mod *ast.ModuleDecl) {
 			Name:      nameTok.Literal,
 			NameRange: nameTok.Range,
 			ValueText: valText,
-			Range:     ast.Range{Start: startTok.Range.Start, End: endPos},
+			Range:     ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: endPos},
 		}
 		mod.Params = append(mod.Params, param)
 		mod.Items = append(mod.Items, param)
@@ -1027,6 +1060,13 @@ func (p *Parser) isEOF() bool {
 }
 
 func (p *Parser) addError(rng ast.Range, msg string) {
+	if rng.File != "" {
+		msg = fmt.Sprintf("in included file %q (%d:%d): %s",
+			filepath.Base(rng.File), rng.Start.Line+1, rng.Start.Column+1, msg)
+		if origin, ok := p.fileOrigin[rng.File]; ok {
+			rng = origin
+		}
+	}
 	p.errors = append(p.errors, ParseError{
 		Range:   rng,
 		Message: msg,

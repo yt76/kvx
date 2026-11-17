@@ -285,7 +285,9 @@ func (s *Server) handleDefinition(msg IncomingMessage) error {
 	targetURI := doc.URI
 	targetRange := sym.SelectionRange
 
-	if sym.Kind == analyzer.KindModule {
+	if targetRange.File != "" {
+		targetURI = filePathToURI(targetRange.File)
+	} else if sym.Kind == analyzer.KindModule {
 		if _, existsInSameDoc := doc.Analysis.Modules[sym.Name]; !existsInSameDoc {
 			if extURI, extSym, found := s.docs.FindModule(sym.Name); found {
 				targetURI = extURI
@@ -419,6 +421,9 @@ func (s *Server) handleInitialize(msg IncomingMessage) error {
 		}
 	}
 
+	if params.RootURI != "" {
+		s.docs.SetRootURI(params.RootURI)
+	}
 	if params.ClientInfo != nil {
 		s.logger.Printf("initializing for client: %s %s (rootUri=%s)",
 			params.ClientInfo.Name, params.ClientInfo.Version, params.RootURI)
