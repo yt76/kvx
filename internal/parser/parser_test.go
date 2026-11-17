@@ -296,3 +296,112 @@ func TestParseIncludeErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestConditionalCompilation(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Header with include guard `ifndef / `define / `endif
+	guardedHeader := filepath.Join(tmpDir, "guarded.vh")
+	guardedContent := "`ifndef GUARDED_VH\n" +
+		"`define GUARDED_VH\n" +
+		"localparam SHARED_P = 42;\n" +
+		"`endif\n"
+	if err := os.WriteFile(guardedHeader, []byte(guardedContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	topPath := filepath.Join(tmpDir, "top.v")
+	src := "`include \"guarded.vh\"\n" +
+		"`include \"guarded.vh\"\n" +
+		"`define MODE_B\n" +
+		"`define TEMP_FLAG\n" +
+		"`undef TEMP_FLAG\n" +
+		"module top(\n" +
+		"`ifdef MODE_A\n" +
+		"  input wire [3:0] a,\n" +
+		"  `include \"nonexistent_in_inactive_branch.vh\"\n" +
+		"`elsif MODE_B\n" +
+		"  `ifdef TEMP_FLAG\n" +
+		"    input wire [1:0] a,\n" +
+		"  `else\n" +
+		"    input wire [7:0] a,\n" +
+		"  `endif\n" +
+		"`else\n" +
+		"  input wire [15:0] a,\n" +
+		"`endif\n" +
+		"  output wire [7:0] y\n" +
+		");\n" +
+		"  assign y = a + SHARED_P;\n" +
+		"endmodule\n"
+
+	file, errs := ParseWithOptions(src, Options{FilePath: topPath})
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Params) != 1 || file.Params[0].Name != "SHARED_P" {
+		t.Errorf("expected exactly 1 SHARED_P param (include guard prevented second copy), got %+v", file.Params)
+	}
+	if len(file.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(file.Modules))
+	}
+	mod := file.Modules[0]
+	if len(mod.Ports) != 2 {
+		t.Fatalf("expected 2 ports (a and y), got %d: %+v", len(mod.Ports), mod.Ports)
+	}
+	if mod.Ports[0].Width == nil || mod.Ports[0].Width.Raw != "[7:0]" {
+		t.Errorf("port a width = %+v, want [7:0] from active `elsif MODE_B -> `else branch", mod.Ports[0].Width)
+	}
+}
+
+func TestConditionalCompilationErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		src        string
+		wantErrSub string
+	}{
+		{
+			name:       "unterminated ifdef reports error",
+			src:        "`ifdef FOO\nmodule m; endmodule\n",
+			wantErrSub: "unterminated `ifdef or `ifndef",
+		},
+		{
+			name:       "stray endif without ifdef",
+			src:        "module m; endmodule\n`endif\n",
+			wantErrSub: "unexpected `endif without matching `ifdef or `ifndef",
+		},
+		{
+			name:       "stray else without ifdef",
+			src:        "`else\nmodule m; endmodule\n",
+			wantErrSub: "unexpected `else without matching `ifdef or `ifndef",
+		},
+		{
+			name:       "duplicate else in same conditional block",
+			src:        "`ifdef FOO\n`else\n`else\n`endif\nmodule m; endmodule\n",
+			wantErrSub: "duplicate `else in conditional block",
+		},
+		{
+			name:       "elsif after else is rejected",
+			src:        "`ifdef FOO\n`else\n`elsif BAR\n`endif\nmodule m; endmodule\n",
+			wantErrSub: "`elsif after `else is not allowed",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, errs := Parse(tc.src)
+			if len(errs) == 0 {
+				t.Fatalf("expected error containing %q, got none", tc.wantErrSub)
+			}
+			matched := false
+			for _, e := range errs {
+				if strings.Contains(e.Message, tc.wantErrSub) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				t.Errorf("errors %v did not contain %q", errs, tc.wantErrSub)
+			}
+		})
+	}
+}

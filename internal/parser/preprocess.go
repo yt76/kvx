@@ -20,9 +20,19 @@ type Options struct {
 	ReadFile func(path string) ([]byte, error)
 }
 
+type condFrame struct {
+	parentActive bool
+	branchActive bool
+	matched      bool
+	seenElse     bool
+	startRange   ast.Range
+	rootRange    ast.Range
+}
+
 type preprocessState struct {
 	opts       Options
 	macros     map[string][]lexer.Token
+	condStack  []condFrame
 	includes   []*ast.IncludeDecl
 	macroDecls []*ast.MacroDecl
 	macroRefs  []ast.IdentifierRef
@@ -42,6 +52,14 @@ func newPreprocessState(opts Options) *preprocessState {
 	}
 }
 
+func (s *preprocessState) isActive() bool {
+	if len(s.condStack) == 0 {
+		return true
+	}
+	top := s.condStack[len(s.condStack)-1]
+	return top.parentActive && top.branchActive
+}
+
 func (s *preprocessState) preprocessRoot(input string) []lexer.Token {
 	var stack []string
 	if s.opts.FilePath != "" {
@@ -52,6 +70,9 @@ func (s *preprocessState) preprocessRoot(input string) []lexer.Token {
 		}
 	}
 	tokens := s.preprocessText(input, s.opts.FilePath, "", ast.Range{}, stack)
+	for _, frame := range s.condStack {
+		s.addPreprocessError(frame.startRange, frame.rootRange, "unterminated `ifdef or `ifndef")
+	}
 	pos := ast.Position{}
 	if len(tokens) > 0 {
 		pos = tokens[len(tokens)-1].Range.End
@@ -83,6 +104,118 @@ func (s *preprocessState) preprocessText(
 
 		if tok.Type == lexer.TokenDirective {
 			dirLine := tok.Range.Start.Line
+			switch tok.Literal {
+			case "`ifdef", "`ifndef":
+				parentActive := s.isActive()
+				if i+1 >= len(raw) || raw[i+1].Range.Start.Line != dirLine || raw[i+1].Type == lexer.TokenEOF {
+					if parentActive {
+						s.addPreprocessError(tok.Range, rootIncRange, fmt.Sprintf("expected macro name after %s", tok.Literal))
+					}
+					s.condStack = append(s.condStack, condFrame{
+						parentActive: parentActive,
+						branchActive: false,
+						matched:      true,
+						startRange:   tok.Range,
+						rootRange:    rootIncRange,
+					})
+					continue
+				}
+				i++
+				argTok := raw[i]
+				argTok.Range.File = fileTag
+				if parentActive {
+					s.macroRefs = append(s.macroRefs, ast.IdentifierRef{
+						Name:  "`" + argTok.Literal,
+						Range: argTok.Range,
+					})
+				}
+				_, isDefined := s.macros[argTok.Literal]
+				cond := isDefined
+				if tok.Literal == "`ifndef" {
+					cond = !isDefined
+				}
+				branchActive := parentActive && cond
+				s.condStack = append(s.condStack, condFrame{
+					parentActive: parentActive,
+					branchActive: branchActive,
+					matched:      !parentActive || branchActive,
+					startRange:   tok.Range,
+					rootRange:    rootIncRange,
+				})
+				continue
+
+			case "`elsif":
+				if len(s.condStack) == 0 {
+					s.addPreprocessError(tok.Range, rootIncRange, "unexpected `elsif without matching `ifdef or `ifndef")
+					i = skipDirectiveLine(raw, i, dirLine)
+					continue
+				}
+				top := &s.condStack[len(s.condStack)-1]
+				if top.seenElse {
+					s.addPreprocessError(tok.Range, rootIncRange, "`elsif after `else is not allowed")
+				}
+				if i+1 >= len(raw) || raw[i+1].Range.Start.Line != dirLine || raw[i+1].Type == lexer.TokenEOF {
+					if top.parentActive {
+						s.addPreprocessError(tok.Range, rootIncRange, "expected macro name after `elsif")
+					}
+					top.branchActive = false
+					continue
+				}
+				i++
+				argTok := raw[i]
+				argTok.Range.File = fileTag
+				if top.parentActive {
+					s.macroRefs = append(s.macroRefs, ast.IdentifierRef{
+						Name:  "`" + argTok.Literal,
+						Range: argTok.Range,
+					})
+				}
+				if !top.parentActive || top.matched || top.seenElse {
+					top.branchActive = false
+				} else {
+					_, isDefined := s.macros[argTok.Literal]
+					top.branchActive = isDefined
+					if isDefined {
+						top.matched = true
+					}
+				}
+				continue
+
+			case "`else":
+				if len(s.condStack) == 0 {
+					s.addPreprocessError(tok.Range, rootIncRange, "unexpected `else without matching `ifdef or `ifndef")
+					continue
+				}
+				top := &s.condStack[len(s.condStack)-1]
+				if top.seenElse {
+					s.addPreprocessError(tok.Range, rootIncRange, "duplicate `else in conditional block")
+					top.branchActive = false
+					continue
+				}
+				top.seenElse = true
+				if top.parentActive && !top.matched {
+					top.branchActive = true
+					top.matched = true
+				} else {
+					top.branchActive = false
+				}
+				continue
+
+			case "`endif":
+				if len(s.condStack) == 0 {
+					s.addPreprocessError(tok.Range, rootIncRange, "unexpected `endif without matching `ifdef or `ifndef")
+					continue
+				}
+				s.condStack = s.condStack[:len(s.condStack)-1]
+				continue
+			}
+
+			// Skip all other directives when inside an inactive conditional branch.
+			if !s.isActive() {
+				i = skipDirectiveLine(raw, i, dirLine)
+				continue
+			}
+
 			switch tok.Literal {
 			case "`include":
 				if i+1 >= len(raw) || raw[i+1].Range.Start.Line != dirLine || raw[i+1].Type != lexer.TokenString {
@@ -192,24 +325,31 @@ func (s *preprocessState) preprocessText(
 				s.macroDecls = append(s.macroDecls, macroDecl)
 				s.macros[nameTok.Literal] = bodyTokens
 
-			case "`ifdef", "`ifndef", "`elsif", "`undef":
-				if i+1 < len(raw) && raw[i+1].Range.Start.Line == dirLine && raw[i+1].Type == lexer.TokenIdent {
-					i++
-					argTok := raw[i]
-					argTok.Range.File = fileTag
-					s.macroRefs = append(s.macroRefs, ast.IdentifierRef{
-						Name:  "`" + argTok.Literal,
-						Range: argTok.Range,
-					})
+			case "`undef":
+				if i+1 >= len(raw) || raw[i+1].Range.Start.Line != dirLine || raw[i+1].Type == lexer.TokenEOF {
+					s.addPreprocessError(tok.Range, rootIncRange, "expected macro name after `undef")
+					continue
 				}
+				i++
+				argTok := raw[i]
+				argTok.Range.File = fileTag
+				s.macroRefs = append(s.macroRefs, ast.IdentifierRef{
+					Name:  "`" + argTok.Literal,
+					Range: argTok.Range,
+				})
+				delete(s.macros, argTok.Literal)
 
-			case "`else", "`endif", "`resetall", "`celldefine", "`endcelldefine":
+			case "`resetall", "`celldefine", "`endcelldefine":
 				// Standalone directive with no arguments on the line.
 
 			default:
 				// Directives such as `timescale, `default_nettype, `pragma, `line: skip the line.
 				i = skipDirectiveLine(raw, i, dirLine)
 			}
+			continue
+		}
+
+		if !s.isActive() {
 			continue
 		}
 

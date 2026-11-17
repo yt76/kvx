@@ -520,3 +520,87 @@ func TestLSPIncludeHoverAndDefinition(t *testing.T) {
 		t.Errorf("INIT_SEED definition = %+v, want URI=%s Line=1", locParam, defsURI)
 	}
 }
+
+func TestLSPConfigIncludeDirs(t *testing.T) {
+	root := t.TempDir()
+	incDir := filepath.Join(root, "inc")
+	rtlDir := filepath.Join(root, "rtl")
+	if err := os.MkdirAll(incDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rtlDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	headerPath := filepath.Join(incDir, "params.vh")
+	if err := os.WriteFile(headerPath, []byte("`define WIDTH 16\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := filepath.Join(root, "kvx.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"includeDirs": ["inc"]}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	topPath := filepath.Join(rtlDir, "top.v")
+	topURI := filePathToURI(topPath)
+	headerURI := filePathToURI(headerPath)
+	topSrc := "`include \"params.vh\"\n" +
+		"module top(input wire [`WIDTH-1:0] din, output wire [`WIDTH-1:0] dout);\n" +
+		"  assign dout = din;\n" +
+		"endmodule\n"
+
+	var in, out bytes.Buffer
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"rootUri": filePathToURI(root),
+		},
+	})
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/didOpen",
+		"params": DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        topURI,
+				LanguageID: "verilog",
+				Version:    1,
+				Text:       topSrc,
+			},
+		},
+	})
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 0, Character: 10},
+		},
+	})
+
+	srv := NewServer(&in, &out, nil)
+	if err := srv.Run(); err != nil {
+		t.Fatalf("Server.Run() error: %v", err)
+	}
+
+	outReader := bufio.NewReader(&out)
+	_ = readFramedResponse(t, outReader) // initialize
+
+	_, diagParams := readFramedNotification(t, outReader)
+	if len(diagParams.Diagnostics) != 0 {
+		t.Fatalf("expected 0 diagnostics when inc is configured in kvx.json, got %+v", diagParams.Diagnostics)
+	}
+
+	respDef := readFramedResponse(t, outReader)
+	rawDef, _ := json.Marshal(respDef.Result)
+	var loc Location
+	if err := json.Unmarshal(rawDef, &loc); err != nil {
+		t.Fatalf("unmarshaling Location: %v", err)
+	}
+	if loc.URI != headerURI {
+		t.Errorf("include definition URI = %q, want %q", loc.URI, headerURI)
+	}
+}

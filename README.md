@@ -154,6 +154,27 @@ const clientOptions: LanguageClientOptions = {
 
 ---
 
+## プロジェクト設定 (`kvx.json`)
+
+プロジェクトのルートディレクトリ（または対象ファイルの親ディレクトリ）に `kvx.json` を配置すると、LSP モード・CLI チェックモードの両方で `` `include `` の検索パスが自動的に読み込まれます。
+
+```json
+{
+  "includeDirs": [
+    "rtl/include",
+    "ip/common/inc"
+  ],
+  "filelists": [
+    "sim/filelist.f"
+  ]
+}
+```
+
+- **`includeDirs`**: `` `include `` で検索するディレクトリのリスト（`kvx.json` からの相対パス、または絶対パス）。
+- **`filelists`**: シミュレーション用 filelist（`.f`）のパスを指定すると、ファイル内の `-I <dir>`・`-I<dir>`・`+incdir+<dir1>+<dir2>` 指定も自動で抽出してインクルードパスに追加します。
+
+---
+
 ## ログ出力（デバッグ用）
 
 LSP モード時のログは標準エラー出力（`stderr`）に出力されます。環境変数 `KVX_LOG` にファイルパスを指定すると、`stderr` に加えてそのファイルにもログを追記します。

@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"kvx/internal/analyzer"
 	"kvx/internal/ast"
+	"kvx/internal/config"
 	"kvx/internal/lexer"
 	"kvx/internal/parser"
 )
@@ -107,9 +109,16 @@ func checkFile(path string, includeDirs []string, showTokens, showAST, showSeman
 		}
 	}
 
+	allIncludeDirs := append([]string(nil), includeDirs...)
+	if cfg, cfgPath, cfgErr := config.FindAndLoad(filepath.Dir(path)); cfgErr != nil {
+		fmt.Fprintf(out, "warning: failed to load %s: %v\n", cfgPath, cfgErr)
+	} else if cfg != nil {
+		allIncludeDirs = append(allIncludeDirs, cfg.IncludeDirs...)
+	}
+
 	fileAST, parseErrs := parser.ParseWithOptions(src, parser.Options{
 		FilePath:    path,
-		IncludeDirs: includeDirs,
+		IncludeDirs: allIncludeDirs,
 	})
 
 	if showAST && fileAST != nil {

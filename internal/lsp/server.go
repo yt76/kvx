@@ -422,7 +422,12 @@ func (s *Server) handleInitialize(msg IncomingMessage) error {
 	}
 
 	if params.RootURI != "" {
-		s.docs.SetRootURI(params.RootURI)
+		cfgPath, cfgErr := s.docs.SetRootURI(params.RootURI)
+		if cfgErr != nil {
+			s.logger.Printf("warning: failed to load %s: %v", cfgPath, cfgErr)
+		} else if cfgPath != "" {
+			s.logger.Printf("loaded project config: %s", cfgPath)
+		}
 	}
 	if params.ClientInfo != nil {
 		s.logger.Printf("initializing for client: %s %s (rootUri=%s)",

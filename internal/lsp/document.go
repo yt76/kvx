@@ -10,6 +10,7 @@ import (
 
 	"kvx/internal/analyzer"
 	"kvx/internal/ast"
+	"kvx/internal/config"
 	"kvx/internal/parser"
 )
 
@@ -28,6 +29,7 @@ type Document struct {
 type DocumentStore struct {
 	mu          sync.RWMutex
 	docs        map[string]*Document
+	rootDir     string
 	includeDirs []string
 }
 
@@ -38,14 +40,32 @@ func NewDocumentStore() *DocumentStore {
 	}
 }
 
-// SetRootURI configures the workspace root directory as an `include search path.
-func (s *DocumentStore) SetRootURI(rootURI string) {
+// SetRootURI configures the workspace root directory and loads kvx.json if present.
+func (s *DocumentStore) SetRootURI(rootURI string) (string, error) {
 	dir := uriToFilePath(rootURI)
 	if dir == "" {
-		return
+		return "", nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.rootDir = dir
+	s.addIncludeDirLocked(dir)
+
+	cfg, cfgPath, err := config.FindAndLoad(dir)
+	if err != nil {
+		return cfgPath, err
+	}
+	if cfg != nil {
+		return cfgPath, nil
+	}
+	return "", nil
+}
+
+func (s *DocumentStore) addIncludeDirLocked(dir string) {
+	if dir == "" {
+		return
+	}
+	dir = filepath.Clean(dir)
 	for _, existing := range s.includeDirs {
 		if existing == dir {
 			return
@@ -106,9 +126,38 @@ func (s *DocumentStore) Change(id VersionedTextDocumentIdentifier, changes []Tex
 }
 
 func (s *DocumentStore) parseOptionsLocked(uri string) parser.Options {
-	incDirs := append([]string(nil), s.includeDirs...)
+	filePath := uriToFilePath(uri)
+
+	var incDirs []string
+	seen := make(map[string]bool)
+	appendUnique := func(dirs []string) {
+		for _, d := range dirs {
+			if d == "" {
+				continue
+			}
+			d = filepath.Clean(d)
+			if !seen[d] {
+				seen[d] = true
+				incDirs = append(incDirs, d)
+			}
+		}
+	}
+
+	// Load project config (kvx.json) from the file's directory or workspace root.
+	var cfg *config.Config
+	if filePath != "" {
+		cfg, _, _ = config.FindAndLoad(filepath.Dir(filePath))
+	}
+	if cfg == nil && s.rootDir != "" {
+		cfg, _, _ = config.FindAndLoad(s.rootDir)
+	}
+	if cfg != nil {
+		appendUnique(cfg.IncludeDirs)
+	}
+	appendUnique(s.includeDirs)
+
 	return parser.Options{
-		FilePath:    uriToFilePath(uri),
+		FilePath:    filePath,
 		IncludeDirs: incDirs,
 		ReadFile: func(path string) ([]byte, error) {
 			cleanTarget := filepath.Clean(path)
