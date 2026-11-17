@@ -854,3 +854,82 @@ func TestLSPConfigDefines(t *testing.T) {
 		t.Errorf("Hover value = %q, want expanded [16-1:0] for port b", hover.Contents.Value)
 	}
 }
+
+func TestLSPZeroConfigAutoDiscovery(t *testing.T) {
+	root := t.TempDir()
+	rtlDir := filepath.Join(root, "rtl")
+	incDir := filepath.Join(root, "inc")
+	for _, d := range []string{rtlDir, incDir} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// No kvx.json is created!
+	_ = os.WriteFile(filepath.Join(incDir, "defs.vh"), []byte("`define WIDTH 8\n"), 0644)
+	subPath := filepath.Join(rtlDir, "sub_unit.v")
+	_ = os.WriteFile(subPath, []byte("module sub_unit(input wire a, output wire y); assign y = a; endmodule\n"), 0644)
+
+	topPath := filepath.Join(rtlDir, "top.v")
+	topURI := filePathToURI(topPath)
+	subURI := filePathToURI(subPath)
+	topSrc := "`include \"defs.vh\"\n" +
+		"module top(input wire [`WIDTH-1:0] din, output wire dout);\n" +
+		"  sub_unit u_sub (.a(din[0]), .y(dout));\n" +
+		"endmodule\n"
+
+	var in, out bytes.Buffer
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"rootUri": filePathToURI(root),
+		},
+	})
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/didOpen",
+		"params": DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        topURI,
+				LanguageID: "verilog",
+				Version:    1,
+				Text:       topSrc,
+			},
+		},
+	})
+	// Definition on `sub_unit` at line 2, col 3 -> should resolve via zero-config auto-discovery.
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 2, Character: 3},
+		},
+	})
+
+	srv := NewServer(&in, &out, nil)
+	if err := srv.Run(); err != nil {
+		t.Fatalf("Server.Run() error: %v", err)
+	}
+
+	outReader := bufio.NewReader(&out)
+	_ = readFramedResponse(t, outReader) // initialize
+
+	_, diagParams := readFramedNotification(t, outReader)
+	if len(diagParams.Diagnostics) != 0 {
+		t.Fatalf("expected 0 diagnostics in zero-config mode, got %+v", diagParams.Diagnostics)
+	}
+
+	respDef := readFramedResponse(t, outReader)
+	rawDef, _ := json.Marshal(respDef.Result)
+	var loc Location
+	if err := json.Unmarshal(rawDef, &loc); err != nil {
+		t.Fatalf("unmarshaling Location: %v", err)
+	}
+	if loc.URI != subURI || loc.Range.Start.Line != 0 {
+		t.Errorf("definition = %+v, want URI=%s Line=0", loc, subURI)
+	}
+}

@@ -156,7 +156,19 @@ const clientOptions: LanguageClientOptions = {
 
 ## プロジェクト設定 (`kvx.json`)
 
-プロジェクトのルートディレクトリ（または対象ファイルの親ディレクトリ）に `kvx.json` を配置すると、LSP モード・CLI チェックモードの両方で `` `include `` の検索パスが自動的に読み込まれます。
+`kvx.json` がない場合でも、LSP 起動時にワークスペース配下の `.v` / `.vh` ディレクトリおよびルート直下の `.f` ファイルを**自動検出（ゼロコンフィグ）**してインデックス化します。
+
+細かい設定やマクロ定義を固定したい場合は、`kvx init` コマンドで `kvx.json` を自動生成できます：
+
+```bash
+# プロジェクトを自動スキャンして kvx.json を生成
+kvx init
+
+# シミュレータ（iverilog / verilator 等）の引数から kvx.json を生成
+kvx init -- -I rtl/include -D SIM -f sim/filelist.f rtl/top.v
+```
+
+生成される `kvx.json` の例：
 
 ```json
 {

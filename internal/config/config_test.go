@@ -154,3 +154,66 @@ func TestEnvOverrides(t *testing.T) {
 		}
 	})
 }
+
+func TestDiscoverAndFromArgs(t *testing.T) {
+	t.Run("DiscoverRaw finds .v, .vh dirs, top-level .f, and skips hidden/build dirs", func(t *testing.T) {
+		root := t.TempDir()
+		for _, d := range []string{"rtl", "inc", ".git", "obj_dir"} {
+			if err := os.MkdirAll(filepath.Join(root, d), 0755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_ = os.WriteFile(filepath.Join(root, "rtl", "top.v"), []byte("module top; endmodule\n"), 0644)
+		_ = os.WriteFile(filepath.Join(root, "inc", "defs.vh"), []byte("`define W 8\n"), 0644)
+		_ = os.WriteFile(filepath.Join(root, "sim.f"), []byte("-D SIM_MODE\n"), 0644)
+		// Files inside .git and obj_dir must be ignored
+		_ = os.WriteFile(filepath.Join(root, ".git", "ignored.v"), []byte("module bad; endmodule\n"), 0644)
+		_ = os.WriteFile(filepath.Join(root, "obj_dir", "Vtop.v"), []byte("module Vtop; endmodule\n"), 0644)
+
+		raw := DiscoverRaw(root)
+		if len(raw.Files) != 1 || raw.Files[0] != "rtl/top.v" {
+			t.Errorf("Files = %v, want [rtl/top.v]", raw.Files)
+		}
+		if len(raw.IncludeDirs) != 1 || raw.IncludeDirs[0] != "inc" {
+			t.Errorf("IncludeDirs = %v, want [inc]", raw.IncludeDirs)
+		}
+		if len(raw.Filelists) != 1 || raw.Filelists[0] != "sim.f" {
+			t.Errorf("Filelists = %v, want [sim.f]", raw.Filelists)
+		}
+
+		cfg := Discover(root)
+		if cfg == nil || cfg.Defines["SIM_MODE"] != "" {
+			t.Errorf("Discover failed to load sim.f defines: %+v", cfg)
+		}
+	})
+
+	t.Run("FromArgsRaw and SaveFile round-trip", func(t *testing.T) {
+		root := t.TempDir()
+		_ = os.MkdirAll(filepath.Join(root, "rtl"), 0755)
+		_ = os.MkdirAll(filepath.Join(root, "inc"), 0755)
+		_ = os.WriteFile(filepath.Join(root, "rtl", "top.v"), []byte("module top; endmodule\n"), 0644)
+
+		raw := FromArgsRaw([]string{"-I", "inc", "+incdir+rtl", "-D", "SIM", "+define+W=16", "-f", "sim.f", "rtl/top.v"}, root)
+		outPath := filepath.Join(root, ConfigFileName)
+		if err := SaveFile(outPath, raw); err != nil {
+			t.Fatalf("SaveFile error: %v", err)
+		}
+
+		// Write sim.f so LoadFile succeeds
+		_ = os.WriteFile(filepath.Join(root, "sim.f"), []byte(""), 0644)
+
+		loaded, err := LoadFile(outPath)
+		if err != nil {
+			t.Fatalf("LoadFile error: %v", err)
+		}
+		if len(loaded.IncludeDirs) != 2 {
+			t.Errorf("IncludeDirs = %v, want 2 dirs", loaded.IncludeDirs)
+		}
+		if loaded.Defines["W"] != "16" {
+			t.Errorf("Defines = %v, want W=16", loaded.Defines)
+		}
+		if _, ok := loaded.Defines["SIM"]; !ok {
+			t.Errorf("Defines missing SIM: %v", loaded.Defines)
+		}
+	})
+}

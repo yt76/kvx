@@ -32,6 +32,7 @@ type DocumentStore struct {
 	workspaceDocs map[string]*Document
 	rootDir       string
 	includeDirs   []string
+	autoConfig    *config.Config
 }
 
 // NewDocumentStore creates an empty DocumentStore.
@@ -43,7 +44,7 @@ func NewDocumentStore() *DocumentStore {
 }
 
 // SetRootURI configures the workspace root directory, loads kvx.json if present,
-// and indexes any Verilog files listed in kvx.json.
+// or falls back to zero-config workspace auto-discovery.
 func (s *DocumentStore) SetRootURI(rootURI string) (string, error) {
 	dir := uriToFilePath(rootURI)
 	if dir == "" {
@@ -59,8 +60,15 @@ func (s *DocumentStore) SetRootURI(rootURI string) (string, error) {
 		return cfgPath, err
 	}
 	if cfg != nil {
+		s.autoConfig = nil
 		s.indexWorkspaceFilesLocked(cfg)
 		return cfgPath, nil
+	}
+
+	discovered := config.Discover(dir)
+	s.autoConfig = discovered
+	if discovered != nil {
+		s.indexWorkspaceFilesLocked(discovered)
 	}
 	return "", nil
 }
@@ -175,6 +183,9 @@ func (s *DocumentStore) parseOptionsLocked(uri string) parser.Options {
 	}
 	if cfg == nil && s.rootDir != "" {
 		cfg, _, _ = config.FindAndLoad(s.rootDir)
+	}
+	if cfg == nil {
+		cfg = s.autoConfig
 	}
 	var defines map[string]string
 	if cfg != nil {

@@ -17,6 +17,9 @@ func main() {
 
 func run(args []string) int {
 	if len(args) > 0 && !isLSPModeArg(args[0]) {
+		if args[0] == "init" {
+			return runInit(args[1:], os.Stderr)
+		}
 		if args[0] == "check" {
 			args = args[1:]
 		} else if args[0] == "help" {

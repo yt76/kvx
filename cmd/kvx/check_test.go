@@ -188,3 +188,42 @@ func TestSetupLogger(t *testing.T) {
 		}
 	})
 }
+
+func TestRunInit(t *testing.T) {
+	t.Run("auto-discovers workspace files and writes kvx.json", func(t *testing.T) {
+		root := t.TempDir()
+		_ = os.MkdirAll(filepath.Join(root, "rtl"), 0755)
+		_ = os.MkdirAll(filepath.Join(root, "inc"), 0755)
+		_ = os.WriteFile(filepath.Join(root, "rtl", "top.v"), []byte("module top; endmodule\n"), 0644)
+		_ = os.WriteFile(filepath.Join(root, "inc", "defs.vh"), []byte("`define W 8\n"), 0644)
+
+		outFile := filepath.Join(root, "kvx.json")
+		var out bytes.Buffer
+		if code := runInit([]string{"-o", outFile}, &out); code != 0 {
+			t.Fatalf("runInit failed with code %d:\n%s", code, out.String())
+		}
+		data, err := os.ReadFile(outFile)
+		if err != nil {
+			t.Fatalf("reading generated kvx.json: %v", err)
+		}
+		if !strings.Contains(string(data), `"rtl/top.v"`) || !strings.Contains(string(data), `"inc"`) {
+			t.Errorf("generated kvx.json missing expected entries:\n%s", string(data))
+		}
+
+		// Second run without -force must refuse to overwrite
+		out.Reset()
+		if code := runInit([]string{"-o", outFile}, &out); code != 1 {
+			t.Errorf("expected code 1 when file exists without -force, got %d", code)
+		}
+
+		// With -force and simulator args, it overwrites using simulator args
+		out.Reset()
+		if code := runInit([]string{"-o", outFile, "-force", "--", "-I", "custom_inc", "-D", "SIM=1", "rtl/top.v"}, &out); code != 0 {
+			t.Fatalf("runInit -force failed with code %d:\n%s", code, out.String())
+		}
+		data2, _ := os.ReadFile(outFile)
+		if !strings.Contains(string(data2), `"custom_inc"`) || !strings.Contains(string(data2), `"SIM": "1"`) {
+			t.Errorf("overwritten kvx.json missing expected entries:\n%s", string(data2))
+		}
+	})
+}

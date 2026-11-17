@@ -18,10 +18,10 @@ const EnvConfig = "KVX_CONFIG"
 
 // Config holds project-level settings loaded from kvx.json.
 type Config struct {
-	Files       []string          `json:"files"`
-	IncludeDirs []string          `json:"includeDirs"`
-	Filelists   []string          `json:"filelists"`
-	Defines     map[string]string `json:"defines"`
+	Files       []string          `json:"files,omitempty"`
+	IncludeDirs []string          `json:"includeDirs,omitempty"`
+	Filelists   []string          `json:"filelists,omitempty"`
+	Defines     map[string]string `json:"defines,omitempty"`
 }
 
 // LoadFile reads and parses a kvx.json file at path, resolving relative paths
@@ -237,19 +237,6 @@ func parseFilelistFull(path string, baseDir string) ([]string, []string, map[str
 	var files []string
 	defines := make(map[string]string)
 
-	addDefine := func(spec string) {
-		if spec == "" {
-			return
-		}
-		if k, v, ok := strings.Cut(spec, "="); ok {
-			if k != "" {
-				defines[k] = v
-			}
-		} else {
-			defines[spec] = ""
-		}
-	}
-
 	resolvePath := func(rawPath string, expectDir bool) string {
 		if rawPath == "" {
 			return ""
@@ -283,55 +270,88 @@ func parseFilelistFull(path string, baseDir string) ([]string, []string, map[str
 		}
 
 		fields := strings.Fields(line)
-		for i := 0; i < len(fields); i++ {
-			tok := fields[i]
-			switch {
-			case tok == "-I" || tok == "-incdir":
-				if i+1 < len(fields) {
-					i++
-					if d := resolvePath(fields[i], true); d != "" {
-						dirs = append(dirs, d)
-					}
-				}
-			case strings.HasPrefix(tok, "-I") && len(tok) > 2:
-				if d := resolvePath(tok[2:], true); d != "" {
-					dirs = append(dirs, d)
-				}
-			case strings.HasPrefix(tok, "+incdir+"):
-				rest := strings.TrimPrefix(tok, "+incdir+")
-				for _, part := range strings.Split(rest, "+") {
-					if d := resolvePath(part, true); d != "" {
-						dirs = append(dirs, d)
-					}
-				}
-			case tok == "-D":
-				if i+1 < len(fields) {
-					i++
-					addDefine(fields[i])
-				}
-			case strings.HasPrefix(tok, "-D") && len(tok) > 2:
-				addDefine(tok[2:])
-			case strings.HasPrefix(tok, "+define+"):
-				rest := strings.TrimPrefix(tok, "+define+")
-				for _, part := range strings.Split(rest, "+") {
-					addDefine(part)
-				}
-			case tok == "-y" || tok == "-v" || tok == "-f" || tok == "-F" || tok == "-o" || tok == "-s":
-				if i+1 < len(fields) {
-					i++
-				}
-			case strings.HasPrefix(tok, "-") || strings.HasPrefix(tok, "+"):
-				// Ignore other simulator flags.
-			default:
-				if p := resolvePath(tok, false); p != "" {
-					files = append(files, p)
-				}
-			}
-		}
+		parseOptionTokens(fields, resolvePath, &dirs, &files, nil, defines)
 	}
 
 	if err := scanner.Err(); err != nil {
 		return nil, nil, nil, fmt.Errorf("scanning filelist %s: %w", path, err)
 	}
 	return dirs, files, defines, nil
+}
+
+func parseOptionTokens(
+	fields []string,
+	resolvePath func(raw string, expectDir bool) string,
+	dirs *[]string,
+	files *[]string,
+	filelists *[]string,
+	defines map[string]string,
+) {
+	addDefine := func(spec string) {
+		if spec == "" || defines == nil {
+			return
+		}
+		if k, v, ok := strings.Cut(spec, "="); ok {
+			if k != "" {
+				defines[k] = v
+			}
+		} else {
+			defines[spec] = ""
+		}
+	}
+
+	for i := 0; i < len(fields); i++ {
+		tok := fields[i]
+		switch {
+		case tok == "-I" || tok == "-incdir":
+			if i+1 < len(fields) {
+				i++
+				if d := resolvePath(fields[i], true); d != "" {
+					*dirs = append(*dirs, d)
+				}
+			}
+		case strings.HasPrefix(tok, "-I") && len(tok) > 2:
+			if d := resolvePath(tok[2:], true); d != "" {
+				*dirs = append(*dirs, d)
+			}
+		case strings.HasPrefix(tok, "+incdir+"):
+			rest := strings.TrimPrefix(tok, "+incdir+")
+			for _, part := range strings.Split(rest, "+") {
+				if d := resolvePath(part, true); d != "" {
+					*dirs = append(*dirs, d)
+				}
+			}
+		case tok == "-D":
+			if i+1 < len(fields) {
+				i++
+				addDefine(fields[i])
+			}
+		case strings.HasPrefix(tok, "-D") && len(tok) > 2:
+			addDefine(tok[2:])
+		case strings.HasPrefix(tok, "+define+"):
+			rest := strings.TrimPrefix(tok, "+define+")
+			for _, part := range strings.Split(rest, "+") {
+				addDefine(part)
+			}
+		case tok == "-f" || tok == "-F":
+			if i+1 < len(fields) {
+				i++
+				if filelists != nil {
+					if fl := resolvePath(fields[i], false); fl != "" {
+						*filelists = append(*filelists, fl)
+					}
+				}
+			}
+		case tok == "-y" || tok == "-v" || tok == "-o" || tok == "-s":
+			if i+1 < len(fields) {
+				i++
+			}
+		case strings.HasPrefix(tok, "-") || strings.HasPrefix(tok, "+"):
+			// Ignore other simulator flags.
+		default:
+			if p := resolvePath(tok, false); p != "" {
+				*files = append(*files, p)
+			}
+		}
+	}
 }
