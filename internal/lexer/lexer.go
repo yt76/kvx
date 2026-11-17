@@ -11,6 +11,7 @@ type Lexer struct {
 	line           int
 	col            int
 	emitDirectives bool
+	emitComments   bool
 }
 
 // New creates a new Lexer for input.
@@ -20,7 +21,7 @@ func New(input string) *Lexer {
 	}
 }
 
-// Tokenize returns all tokens from input up to and including TokenEOF, skipping compiler directives.
+// Tokenize returns all tokens from input up to and including TokenEOF, skipping compiler directives and comments.
 func Tokenize(input string) []Token {
 	return tokenizeWith(New(input))
 }
@@ -29,6 +30,14 @@ func Tokenize(input string) []Token {
 func TokenizeWithDirectives(input string) []Token {
 	l := New(input)
 	l.emitDirectives = true
+	return tokenizeWith(l)
+}
+
+// TokenizeWithTrivia returns all tokens from input including compiler directives and comments.
+func TokenizeWithTrivia(input string) []Token {
+	l := New(input)
+	l.emitDirectives = true
+	l.emitComments = true
 	return tokenizeWith(l)
 }
 
@@ -58,13 +67,15 @@ func (l *Lexer) NextToken() Token {
 
 		// Single-line comment: //
 		if ch == '/' && l.peekNext() == '/' {
-			l.skipLineComment()
+			if tok, emitted := l.scanLineComment(); emitted {
+				return tok
+			}
 			continue
 		}
 
 		// Block comment: /* ... */
 		if ch == '/' && l.peekNext() == '*' {
-			if tok, ok := l.skipBlockComment(); !ok {
+			if tok, emitted := l.scanBlockComment(); emitted {
 				return tok
 			}
 			continue
@@ -294,21 +305,39 @@ func (l *Lexer) skipWhitespace() {
 	}
 }
 
-func (l *Lexer) skipLineComment() {
-	for l.offset < len(l.input) && l.peek() != '\n' {
+func (l *Lexer) scanLineComment() (Token, bool) {
+	start := l.pos()
+	startOffset := l.offset
+	for l.offset < len(l.input) && l.peek() != '\n' && l.peek() != '\r' {
 		l.advance()
 	}
+	if l.emitComments {
+		return Token{
+			Type:    TokenComment,
+			Literal: l.input[startOffset:l.offset],
+			Range:   ast.Range{Start: start, End: l.pos()},
+		}, true
+	}
+	return Token{}, false
 }
 
-func (l *Lexer) skipBlockComment() (Token, bool) {
+func (l *Lexer) scanBlockComment() (Token, bool) {
 	start := l.pos()
+	startOffset := l.offset
 	l.advance() // '/'
 	l.advance() // '*'
 	for l.offset < len(l.input) {
 		if l.peek() == '*' && l.peekNext() == '/' {
 			l.advance()
 			l.advance()
-			return Token{}, true
+			if l.emitComments {
+				return Token{
+					Type:    TokenComment,
+					Literal: l.input[startOffset:l.offset],
+					Range:   ast.Range{Start: start, End: l.pos()},
+				}, true
+			}
+			return Token{}, false
 		}
 		l.advance()
 	}
@@ -316,7 +345,7 @@ func (l *Lexer) skipBlockComment() (Token, bool) {
 		Type:    TokenIllegal,
 		Literal: "unterminated block comment",
 		Range:   ast.Range{Start: start, End: l.pos()},
-	}, false
+	}, true
 }
 
 func (l *Lexer) scanDirectiveOrMacro() (Token, bool) {

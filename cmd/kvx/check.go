@@ -218,6 +218,9 @@ func printASTSummary(path string, file *ast.SourceFile, out io.Writer) {
 			case *ast.ModuleInst:
 				fmt.Fprintf(out, "    Inst:  %s %s (line %d..%d)\n",
 					v.ModuleName, v.InstanceName, v.Range.Start.Line+1, v.Range.End.Line+1)
+			case *ast.FunctionDecl:
+				fmt.Fprintf(out, "    Func:  %s (line %d..%d, %d params)\n",
+					v.Name, v.Range.Start.Line+1, v.Range.End.Line+1, len(v.Params))
 			}
 		}
 	}

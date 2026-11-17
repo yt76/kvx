@@ -19,6 +19,7 @@ const (
 	semTokenFunction
 	semTokenMacro
 	semTokenOperator
+	semTokenComment
 )
 
 // Bitmask flags corresponding to defaultSemanticTokensLegend.TokenModifiers.
@@ -39,6 +40,7 @@ var defaultSemanticTokensLegend = SemanticTokensLegend{
 		"function",
 		"macro",
 		"operator",
+		"comment",
 	},
 	TokenModifiers: []string{
 		"declaration",
@@ -51,17 +53,54 @@ func computeSemanticTokens(doc *Document) SemanticTokens {
 		return SemanticTokens{Data: []uint32{}}
 	}
 
-	tokens := lexer.TokenizeWithDirectives(doc.Text)
+	tokens := lexer.TokenizeWithTrivia(doc.Text)
 	data := make([]uint32, 0, len(tokens)*5)
 
 	prevLine := 0
 	prevCol := 0
 	var prevTok lexer.Token
 
+	emitToken := func(line, col, length int, tokType, tokMods uint32) {
+		if length <= 0 {
+			return
+		}
+		deltaLine := line - prevLine
+		deltaStart := col
+		if deltaLine == 0 {
+			deltaStart = col - prevCol
+		}
+		data = append(data,
+			uint32(deltaLine),
+			uint32(deltaStart),
+			uint32(length),
+			tokType,
+			tokMods,
+		)
+		prevLine = line
+		prevCol = col
+	}
+
 	for _, tok := range tokens {
 		if tok.Type == lexer.TokenEOF || tok.Type == lexer.TokenIllegal {
 			continue
 		}
+
+		if tok.Type == lexer.TokenComment {
+			commentLines := strings.Split(tok.Literal, "\n")
+			for idx, rawLine := range commentLines {
+				lineText := strings.TrimRight(rawLine, "\r")
+				if len(lineText) == 0 {
+					continue
+				}
+				col := 0
+				if idx == 0 {
+					col = tok.Range.Start.Column
+				}
+				emitToken(tok.Range.Start.Line+idx, col, len(lineText), semTokenComment, 0)
+			}
+			continue
+		}
+
 		if tok.Range.Start.Line != tok.Range.End.Line {
 			prevTok = tok
 			continue
@@ -79,25 +118,7 @@ func computeSemanticTokens(doc *Document) SemanticTokens {
 			continue
 		}
 
-		line := tok.Range.Start.Line
-		col := tok.Range.Start.Column
-
-		deltaLine := line - prevLine
-		deltaStart := col
-		if deltaLine == 0 {
-			deltaStart = col - prevCol
-		}
-
-		data = append(data,
-			uint32(deltaLine),
-			uint32(deltaStart),
-			uint32(length),
-			tokType,
-			tokMods,
-		)
-
-		prevLine = line
-		prevCol = col
+		emitToken(tok.Range.Start.Line, tok.Range.Start.Column, length, tokType, tokMods)
 	}
 
 	return SemanticTokens{Data: data}
@@ -151,6 +172,8 @@ func classifySemanticToken(tok, prevTok lexer.Token, an *analyzer.Analysis) (uin
 					return semTokenProperty, mods, true
 				case analyzer.KindNet, analyzer.KindInstance:
 					return semTokenVariable, mods, true
+				case analyzer.KindFunction:
+					return semTokenFunction, mods, true
 				}
 			}
 		}
@@ -174,7 +197,8 @@ func isKeywordToken(t lexer.TokenType) bool {
 		lexer.TokenBegin, lexer.TokenEnd,
 		lexer.TokenIf, lexer.TokenElse,
 		lexer.TokenCase, lexer.TokenCasex, lexer.TokenCasez, lexer.TokenEndcase, lexer.TokenDefault,
-		lexer.TokenFor, lexer.TokenWhile:
+		lexer.TokenFor, lexer.TokenWhile,
+		lexer.TokenFunction, lexer.TokenEndfunction, lexer.TokenAutomatic:
 		return true
 	default:
 		return false

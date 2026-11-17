@@ -330,6 +330,8 @@ func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 		p.parseAssignStmt(mod)
 	case lexer.TokenAlways, lexer.TokenInitial:
 		p.parseProceduralBlock(mod)
+	case lexer.TokenFunction:
+		p.parseFunctionDecl(mod)
 	case lexer.TokenIdent:
 		p.parseModuleInstOrUnknown(mod)
 	default:
@@ -564,6 +566,98 @@ func (p *Parser) parseProceduralBlock(mod *ast.ModuleDecl) {
 	mod.Items = append(mod.Items, block)
 }
 
+func (p *Parser) parseFunctionDecl(mod *ast.ModuleDecl) {
+	startTok := p.advance() // consume 'function'
+	fn := &ast.FunctionDecl{
+		Range: ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
+	}
+
+	if p.cur().Type == lexer.TokenAutomatic {
+		fn.Automatic = true
+		p.advance()
+	}
+
+	if p.cur().Type == lexer.TokenSigned {
+		fn.Signed = true
+		p.advance()
+	}
+
+	if p.cur().Type == lexer.TokenInteger || p.cur().Type == lexer.TokenReg {
+		if p.cur().Type == lexer.TokenInteger {
+			fn.ReturnType = p.cur().Literal
+		}
+		p.advance()
+		if p.cur().Type == lexer.TokenSigned {
+			fn.Signed = true
+			p.advance()
+		}
+	}
+
+	if p.cur().Type == lexer.TokenLBracket {
+		fn.Width = p.parseBitRange(mod)
+	}
+
+	if p.cur().Type == lexer.TokenIdent {
+		nameTok := p.advance()
+		fn.Name = nameTok.Literal
+		fn.NameRange = nameTok.Range
+	} else {
+		p.addError(p.cur().Range, "expected function name")
+	}
+
+	tempMod := &ast.ModuleDecl{}
+
+	// Optional ANSI formal argument list: (input ...)
+	if p.cur().Type == lexer.TokenLParen {
+		p.parseModulePortList(tempMod)
+	}
+
+	p.expectSemicolon("function header")
+
+	// Parse function item declarations (input, reg, integer, parameter, localparam) and statements.
+	for !p.isEOF() &&
+		p.cur().Type != lexer.TokenEndfunction &&
+		p.cur().Type != lexer.TokenEndmodule &&
+		p.cur().Type != lexer.TokenModule {
+		switch p.cur().Type {
+		case lexer.TokenIllegal:
+			p.addError(p.cur().Range, p.cur().Literal)
+			p.advance()
+		case lexer.TokenSemicolon:
+			p.advance()
+		case lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout:
+			p.parsePortDeclItem(tempMod)
+		case lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger:
+			p.parseNetDeclItem(tempMod)
+		case lexer.TokenParameter, lexer.TokenLocalparam:
+			p.parseParamDeclItem(tempMod)
+		default:
+			block := &ast.ProceduralBlock{
+				Kind:  "function",
+				Range: ast.Range{File: p.cur().Range.File, Start: p.cur().Range.Start, End: p.cur().Range.End},
+			}
+			p.parseStatement(block, tempMod)
+		}
+	}
+
+	if p.cur().Type == lexer.TokenEndfunction {
+		endTok := p.advance()
+		fn.Range.End = endTok.Range.End
+	} else {
+		p.addError(p.prev().Range, fmt.Sprintf("expected 'endfunction' to close function %q", fn.Name))
+		fn.Range.End = p.prev().Range.End
+	}
+
+	fn.Params = tempMod.Ports
+	for _, item := range tempMod.Items {
+		if _, isPort := item.(*ast.PortDecl); !isPort {
+			fn.Locals = append(fn.Locals, item)
+		}
+	}
+	fn.Refs = tempMod.Refs
+	mod.Items = append(mod.Items, fn)
+}
+
 func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl) {
 	if p.isEOF() {
 		return
@@ -589,6 +683,7 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 
 		for !p.isEOF() &&
 			p.cur().Type != lexer.TokenEnd &&
+			p.cur().Type != lexer.TokenEndfunction &&
 			p.cur().Type != lexer.TokenEndmodule &&
 			p.cur().Type != lexer.TokenModule {
 			p.parseStatement(block, mod)
@@ -624,6 +719,7 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 		for !p.isEOF() &&
 			p.cur().Type != lexer.TokenEndcase &&
 			p.cur().Type != lexer.TokenEnd &&
+			p.cur().Type != lexer.TokenEndfunction &&
 			p.cur().Type != lexer.TokenEndmodule &&
 			p.cur().Type != lexer.TokenModule {
 			if p.cur().Type == lexer.TokenDefault {
@@ -656,7 +752,7 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 	case lexer.TokenFor, lexer.TokenWhile:
 		loopTok := p.advance()
 		if p.cur().Type == lexer.TokenLParen {
-			p.parseBalancedParens(&block.Refs, mod)
+			p.parseBalancedParensOpts(&block.Refs, mod, loopTok.Type == lexer.TokenFor)
 		} else {
 			p.addError(loopTok.Range, fmt.Sprintf("expected '(' after %q", loopTok.Literal))
 		}
@@ -946,10 +1042,16 @@ func (p *Parser) collectTokensUntil(refs *[]ast.IdentifierRef, mod *ast.ModuleDe
 }
 
 func (p *Parser) parseBalancedParens(refs *[]ast.IdentifierRef, mod *ast.ModuleDecl) {
+	p.parseBalancedParensOpts(refs, mod, false)
+}
+
+func (p *Parser) parseBalancedParensOpts(refs *[]ast.IdentifierRef, mod *ast.ModuleDecl, allowSemicolon bool) {
 	openTok := p.advance() // '('
 	depth := 1
 	for !p.isEOF() && depth > 0 {
-		if p.cur().Type == lexer.TokenSemicolon || p.cur().Type == lexer.TokenEndmodule {
+		if (!allowSemicolon && p.cur().Type == lexer.TokenSemicolon) ||
+			p.cur().Type == lexer.TokenEndmodule ||
+			p.cur().Type == lexer.TokenEndfunction {
 			break
 		}
 		tok := p.advance()
@@ -1007,11 +1109,11 @@ func (p *Parser) syncToStatementEnd() {
 		case lexer.TokenSemicolon:
 			p.advance()
 			return
-		case lexer.TokenEnd, lexer.TokenEndcase, lexer.TokenEndmodule, lexer.TokenModule,
+		case lexer.TokenEnd, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndmodule, lexer.TokenModule,
 			lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout,
 			lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger,
 			lexer.TokenParameter, lexer.TokenLocalparam,
-			lexer.TokenAssign, lexer.TokenAlways, lexer.TokenInitial:
+			lexer.TokenAssign, lexer.TokenAlways, lexer.TokenInitial, lexer.TokenFunction:
 			return
 		default:
 			p.advance()
@@ -1025,8 +1127,8 @@ func isPortDirection(t lexer.TokenType) bool {
 
 func isStatementBoundary(t lexer.TokenType) bool {
 	switch t {
-	case lexer.TokenSemicolon, lexer.TokenEnd, lexer.TokenEndcase, lexer.TokenEndmodule, lexer.TokenModule,
-		lexer.TokenAlways, lexer.TokenInitial, lexer.TokenAssign:
+	case lexer.TokenSemicolon, lexer.TokenEnd, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndmodule, lexer.TokenModule,
+		lexer.TokenAlways, lexer.TokenInitial, lexer.TokenAssign, lexer.TokenFunction:
 		return true
 	default:
 		return false

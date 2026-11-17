@@ -604,3 +604,72 @@ func TestLSPConfigIncludeDirs(t *testing.T) {
 		t.Errorf("include definition URI = %q, want %q", loc.URI, headerURI)
 	}
 }
+
+func TestSemanticTokensComments(t *testing.T) {
+	store := NewDocumentStore()
+	doc := store.Open(TextDocumentItem{
+		URI:        "file:///workspace/comments.v",
+		LanguageID: "verilog",
+		Version:    1,
+		Text: "// header comment\n" +
+			"`define /* inline */ W 8\n" +
+			"/* multi\n" +
+			"   line */\n",
+	})
+
+	tokens := computeSemanticTokens(doc)
+	if len(tokens.Data) == 0 || len(tokens.Data)%5 != 0 {
+		t.Fatalf("invalid semantic token data length: %d", len(tokens.Data))
+	}
+
+	type decodedToken struct {
+		line    int
+		col     int
+		length  int
+		tokType uint32
+		tokMods uint32
+	}
+
+	var decoded []decodedToken
+	line, col := 0, 0
+	for i := 0; i < len(tokens.Data); i += 5 {
+		dLine := int(tokens.Data[i])
+		dStart := int(tokens.Data[i+1])
+		if dLine > 0 {
+			line += dLine
+			col = dStart
+		} else {
+			col += dStart
+		}
+		decoded = append(decoded, decodedToken{
+			line:    line,
+			col:     col,
+			length:  int(tokens.Data[i+2]),
+			tokType: tokens.Data[i+3],
+			tokMods: tokens.Data[i+4],
+		})
+	}
+
+	want := []decodedToken{
+		// // header comment
+		{line: 0, col: 0, length: 17, tokType: semTokenComment, tokMods: 0},
+		// `define /* inline */ W 8
+		{line: 1, col: 0, length: 7, tokType: semTokenMacro, tokMods: 0},
+		{line: 1, col: 8, length: 12, tokType: semTokenComment, tokMods: 0},
+		{line: 1, col: 21, length: 1, tokType: semTokenMacro, tokMods: semModDeclaration},
+		{line: 1, col: 23, length: 1, tokType: semTokenNumber, tokMods: 0},
+		// /* multi
+		{line: 2, col: 0, length: 8, tokType: semTokenComment, tokMods: 0},
+		//    line */
+		{line: 3, col: 0, length: 10, tokType: semTokenComment, tokMods: 0},
+	}
+
+	if len(decoded) != len(want) {
+		t.Fatalf("got %d tokens, want %d: %+v", len(decoded), len(want), decoded)
+	}
+	for i, w := range want {
+		if decoded[i] != w {
+			t.Errorf("decoded[%d] = %+v, want %+v", i, decoded[i], w)
+		}
+	}
+}

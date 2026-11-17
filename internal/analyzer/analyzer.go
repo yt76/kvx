@@ -16,6 +16,7 @@ const (
 	KindNet      SymbolKind = "net"
 	KindParam    SymbolKind = "parameter"
 	KindInstance SymbolKind = "instance"
+	KindFunction SymbolKind = "function"
 )
 
 // Symbol represents a named declaration in a Verilog source file.
@@ -37,12 +38,21 @@ type SemanticDiagnostic struct {
 	IsError bool
 }
 
-// ModuleScope holds the symbol table for a single module declaration.
-type ModuleScope struct {
-	Module  *ast.ModuleDecl
+// FunctionScope holds the local symbol table for a function declaration.
+type FunctionScope struct {
+	Decl    *ast.FunctionDecl
 	Symbol  *Symbol
 	Symbols map[string]*Symbol
 	Order   []*Symbol
+}
+
+// ModuleScope holds the symbol table for a single module declaration.
+type ModuleScope struct {
+	Module    *ast.ModuleDecl
+	Symbol    *Symbol
+	Symbols   map[string]*Symbol
+	Order     []*Symbol
+	Functions []*FunctionScope
 }
 
 // Analysis holds the symbol tables and semantic diagnostics for a SourceFile.
@@ -215,6 +225,36 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]Sem
 				SelectionRange: d.InstanceNameRange,
 				TargetModule:   d.ModuleName,
 			})
+
+		case *ast.FunctionDecl:
+			fnScope := buildFunctionScope(d, diags)
+			addSymbol(fnScope.Symbol)
+			scope.Functions = append(scope.Functions, fnScope)
+		}
+	}
+
+	// Check identifier references inside functions against local, module, and global scopes.
+	for _, fnScope := range scope.Functions {
+		for _, ref := range fnScope.Decl.Refs {
+			if strings.HasPrefix(ref.Name, "`") {
+				continue
+			}
+			if _, ok := fnScope.Symbols[ref.Name]; ok {
+				continue
+			}
+			if _, ok := scope.Symbols[ref.Name]; ok {
+				continue
+			}
+			if _, ok := globals[ref.Name]; ok {
+				continue
+			}
+			if ref.Range.File == "" {
+				*diags = append(*diags, SemanticDiagnostic{
+					Range:   ref.Range,
+					Message: fmt.Sprintf("undeclared identifier %q", ref.Name),
+					IsError: false,
+				})
+			}
 		}
 	}
 
@@ -325,7 +365,32 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			}
 		}
 
-		// 3. Check identifier references in expressions, assignments, and procedural blocks.
+		// 3. Check declarations and references inside functions.
+		for _, fnScope := range scope.Functions {
+			if !fnScope.Decl.Range.Contains(pos) {
+				continue
+			}
+			for _, sym := range fnScope.Order {
+				if sym.SelectionRange.Contains(pos) {
+					return sym
+				}
+			}
+			for _, ref := range fnScope.Decl.Refs {
+				if ref.Range.Contains(pos) {
+					if sym, ok := fnScope.Symbols[ref.Name]; ok {
+						return sym
+					}
+					if sym, ok := scope.Symbols[ref.Name]; ok {
+						return sym
+					}
+					if sym, ok := a.GlobalSymbols[ref.Name]; ok {
+						return sym
+					}
+				}
+			}
+		}
+
+		// 4. Check identifier references in expressions, assignments, and procedural blocks.
 		for _, ref := range mod.Refs {
 			if ref.Range.Contains(pos) {
 				if sym, ok := scope.Symbols[ref.Name]; ok {
@@ -344,6 +409,12 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 func (a *Analysis) CompletionsAt(pos ast.Position) []*Symbol {
 	var out []*Symbol
 	if scope := a.ModuleAt(pos); scope != nil {
+		for _, fnScope := range scope.Functions {
+			if fnScope.Decl.Range.Contains(pos) {
+				out = append(out, fnScope.Order...)
+				break
+			}
+		}
 		out = append(out, scope.Order...)
 	}
 	out = append(out, a.GlobalOrder...)
@@ -424,4 +495,127 @@ func formatParamDetail(d *ast.ParamDecl) string {
 		parts = append(parts, d.Width.Raw)
 	}
 	return strings.Join(parts, " ")
+}
+
+func buildFunctionScope(fn *ast.FunctionDecl, diags *[]SemanticDiagnostic) *FunctionScope {
+	sig := formatFunctionSignature(fn)
+	fnSym := &Symbol{
+		Name:           fn.Name,
+		Kind:           KindFunction,
+		TypeDetail:     formatFunctionReturnType(fn),
+		Signature:      sig,
+		Range:          fn.Range,
+		SelectionRange: fn.NameRange,
+	}
+
+	fs := &FunctionScope{
+		Decl:    fn,
+		Symbol:  fnSym,
+		Symbols: make(map[string]*Symbol),
+	}
+	if fn.Name != "" {
+		// Inside a function, assigning to the function name sets the return value.
+		fs.Symbols[fn.Name] = fnSym
+	}
+
+	addLocal := func(sym *Symbol) {
+		if sym.Name == "" {
+			return
+		}
+		if _, exists := fs.Symbols[sym.Name]; exists {
+			if sym.SelectionRange.File == "" {
+				*diags = append(*diags, SemanticDiagnostic{
+					Range:   sym.SelectionRange,
+					Message: fmt.Sprintf("duplicate declaration of %q", sym.Name),
+					IsError: false,
+				})
+			}
+			return
+		}
+		fs.Symbols[sym.Name] = sym
+		fs.Order = append(fs.Order, sym)
+		if sym.Range.File == "" {
+			fnSym.Children = append(fnSym.Children, sym)
+		}
+	}
+
+	for _, p := range fn.Params {
+		detail := formatPortDeclDetail(p)
+		addLocal(&Symbol{
+			Name:           p.Name,
+			Kind:           KindPort,
+			TypeDetail:     detail,
+			Signature:      detail + " " + p.Name,
+			Range:          p.Range,
+			SelectionRange: p.NameRange,
+		})
+	}
+
+	for _, item := range fn.Locals {
+		switch d := item.(type) {
+		case *ast.ParamDecl:
+			detail := formatParamDetail(d)
+			s := detail + " " + d.Name
+			if d.ValueText != "" {
+				s += " = " + d.ValueText
+			}
+			addLocal(&Symbol{
+				Name:           d.Name,
+				Kind:           KindParam,
+				TypeDetail:     detail,
+				Signature:      s,
+				Range:          d.Range,
+				SelectionRange: d.NameRange,
+			})
+		case *ast.NetDecl:
+			detail := formatNetDeclDetail(d)
+			addLocal(&Symbol{
+				Name:           d.Name,
+				Kind:           KindNet,
+				TypeDetail:     detail,
+				Signature:      detail + " " + d.Name,
+				Range:          d.Range,
+				SelectionRange: d.NameRange,
+			})
+		}
+	}
+
+	return fs
+}
+
+func formatFunctionReturnType(fn *ast.FunctionDecl) string {
+	parts := []string{"function"}
+	if fn.Automatic {
+		parts = append(parts, "automatic")
+	}
+	if fn.Signed {
+		parts = append(parts, "signed")
+	}
+	if fn.ReturnType != "" {
+		parts = append(parts, fn.ReturnType)
+	}
+	if fn.Width != nil {
+		parts = append(parts, fn.Width.Raw)
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatFunctionSignature(fn *ast.FunctionDecl) string {
+	var b strings.Builder
+	b.WriteString(formatFunctionReturnType(fn))
+	b.WriteString(" ")
+	b.WriteString(fn.Name)
+	if len(fn.Params) > 0 {
+		b.WriteString(" (")
+		for i, p := range fn.Params {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(formatPortDeclDetail(p))
+			b.WriteString(" ")
+			b.WriteString(p.Name)
+		}
+		b.WriteString(")")
+	}
+	return b.String()
 }

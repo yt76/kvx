@@ -405,3 +405,91 @@ func TestConditionalCompilationErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestParseFunctions(t *testing.T) {
+	src := `
+module math_unit(
+    input wire [7:0] x,
+    input wire [7:0] y,
+    output wire [7:0] z
+);
+    // ANSI-style automatic function with bit-width return type
+    function automatic signed [7:0] add_sat(
+        input [7:0] a,
+        input [7:0] b
+    );
+        reg [8:0] sum;
+        begin
+            sum = a + b;
+            if (sum > 9'd255)
+                add_sat = 8'hFF;
+            else
+                add_sat = sum[7:0];
+        end
+    endfunction
+
+    // Non-ANSI style integer function
+    function integer clog2;
+        input [31:0] value;
+        integer i;
+        begin
+            value = value - 1;
+            for (i = 0; value > 0; i = i + 1)
+                value = value >> 1;
+            clog2 = i;
+        end
+    endfunction
+
+    assign z = add_sat(x, y);
+endmodule
+`
+
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(file.Modules))
+	}
+
+	var funcs []*ast.FunctionDecl
+	for _, item := range file.Modules[0].Items {
+		if fn, ok := item.(*ast.FunctionDecl); ok {
+			funcs = append(funcs, fn)
+		}
+	}
+	if len(funcs) != 2 {
+		t.Fatalf("got %d functions, want 2", len(funcs))
+	}
+
+	f0 := funcs[0]
+	if f0.Name != "add_sat" || !f0.Automatic || !f0.Signed || f0.Width == nil || f0.Width.Raw != "[7:0]" {
+		t.Errorf("unexpected f0 header: %+v", f0)
+	}
+	if len(f0.Params) != 2 || len(f0.Locals) != 1 {
+		t.Errorf("f0 params=%d locals=%d, want 2 and 1", len(f0.Params), len(f0.Locals))
+	}
+
+	f1 := funcs[1]
+	if f1.Name != "clog2" || f1.ReturnType != "integer" {
+		t.Errorf("unexpected f1 header: %+v", f1)
+	}
+	if len(f1.Params) != 1 || len(f1.Locals) != 1 {
+		t.Errorf("f1 params=%d locals=%d, want 1 and 1", len(f1.Params), len(f1.Locals))
+	}
+
+	// Verify error recovery when endfunction is missing
+	badSrc := `
+module m;
+    function [3:0] f(input [3:0] a);
+        f = a;
+endmodule
+`
+	badFile, badErrs := Parse(badSrc)
+	if len(badErrs) == 0 || !strings.Contains(badErrs[0].Message, "expected 'endfunction'") {
+		t.Errorf("expected missing endfunction error, got %v", badErrs)
+	}
+	if len(badFile.Modules) != 1 {
+		t.Errorf("expected 1 partial module on recovery, got %d", len(badFile.Modules))
+	}
+}

@@ -209,3 +209,32 @@ func TestTokenizeWithDirectives(t *testing.T) {
 		}
 	}
 }
+
+func TestTokenizeWithTrivia(t *testing.T) {
+	input := "// line comment\n" +
+		"/* block\n" +
+		"   comment */\n" +
+		"wire a;\n"
+
+	got := TokenizeWithTrivia(input)
+	want := []struct {
+		typ TokenType
+		lit string
+	}{
+		{TokenComment, "// line comment"},
+		{TokenComment, "/* block\n   comment */"},
+		{TokenWire, "wire"},
+		{TokenIdent, "a"},
+		{TokenSemicolon, ";"},
+		{TokenEOF, ""},
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("got %d tokens, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].Type != w.typ || got[i].Literal != w.lit {
+			t.Errorf("token[%d] = (%s, %q), want (%s, %q)", i, got[i].Type, got[i].Literal, w.typ, w.lit)
+		}
+	}
+}

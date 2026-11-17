@@ -386,6 +386,8 @@ func toLSPSymbolKind(k analyzer.SymbolKind) LSPSymbolKind {
 		return LSPSymbolKindConstant
 	case analyzer.KindInstance:
 		return LSPSymbolKindObject
+	case analyzer.KindFunction:
+		return LSPSymbolKindFunction
 	default:
 		return LSPSymbolKindVariable
 	}
@@ -399,6 +401,8 @@ func toCompletionKind(k analyzer.SymbolKind) CompletionItemKind {
 		return CompletionKindField
 	case analyzer.KindParam:
 		return CompletionKindConstant
+	case analyzer.KindFunction:
+		return CompletionKindFunction
 	default:
 		return CompletionKindVariable
 	}

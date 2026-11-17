@@ -174,6 +174,7 @@ type LSPSymbolKind int
 const (
 	LSPSymbolKindModule   LSPSymbolKind = 2
 	LSPSymbolKindField    LSPSymbolKind = 8
+	LSPSymbolKindFunction LSPSymbolKind = 12
 	LSPSymbolKindVariable LSPSymbolKind = 13
 	LSPSymbolKindConstant LSPSymbolKind = 14
 	LSPSymbolKindObject   LSPSymbolKind = 19
@@ -199,6 +200,7 @@ type CompletionParams struct {
 type CompletionItemKind int
 
 const (
+	CompletionKindFunction CompletionItemKind = 3
 	CompletionKindField    CompletionItemKind = 5
 	CompletionKindVariable CompletionItemKind = 6
 	CompletionKindModule   CompletionItemKind = 9

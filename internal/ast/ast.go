@@ -161,3 +161,20 @@ type ModuleInst struct {
 
 func (m *ModuleInst) ItemRange() Range { return m.Range }
 func (m *ModuleInst) moduleItemNode()  {}
+
+// FunctionDecl represents a Verilog function declaration (function ... endfunction).
+type FunctionDecl struct {
+	Automatic  bool
+	Signed     bool
+	ReturnType string // "integer" or ""
+	Width      *BitRange
+	Name       string
+	NameRange  Range
+	Params     []*PortDecl
+	Locals     []ModuleItem
+	Range      Range
+	Refs       []IdentifierRef
+}
+
+func (f *FunctionDecl) ItemRange() Range { return f.Range }
+func (f *FunctionDecl) moduleItemNode()  {}

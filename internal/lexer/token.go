@@ -9,10 +9,11 @@ const (
 	TokenEOF     TokenType = "EOF"
 	TokenIllegal TokenType = "ILLEGAL"
 
-	// Identifiers and literals
+	// Identifiers, literals, and trivia
 	TokenIdent       TokenType = "IDENT"
 	TokenSystemIdent TokenType = "SYSTEM_IDENT" // e.g. $display, $clog2
 	TokenDirective   TokenType = "DIRECTIVE"    // e.g. `include, `define, `ifdef
+	TokenComment     TokenType = "COMMENT"      // e.g. // ... or /* ... */
 	TokenNumber      TokenType = "NUMBER"       // e.g. 42, 8'hFF, 1'b0
 	TokenString      TokenType = "STRING"       // e.g. "hello"
 
@@ -43,8 +44,11 @@ const (
 	TokenCasez      TokenType = "casez"
 	TokenEndcase    TokenType = "endcase"
 	TokenDefault    TokenType = "default"
-	TokenFor        TokenType = "for"
-	TokenWhile      TokenType = "while"
+	TokenFor         TokenType = "for"
+	TokenWhile       TokenType = "while"
+	TokenFunction    TokenType = "function"
+	TokenEndfunction TokenType = "endfunction"
+	TokenAutomatic   TokenType = "automatic"
 
 	// Delimiters and punctuation
 	TokenLParen    TokenType = "("
@@ -116,8 +120,11 @@ var keywords = map[string]TokenType{
 	"casez":      TokenCasez,
 	"endcase":    TokenEndcase,
 	"default":    TokenDefault,
-	"for":        TokenFor,
-	"while":      TokenWhile,
+	"for":         TokenFor,
+	"while":       TokenWhile,
+	"function":    TokenFunction,
+	"endfunction": TokenEndfunction,
+	"automatic":   TokenAutomatic,
 }
 
 // LookupIdent returns the keyword TokenType for ident, or TokenIdent if not a keyword.

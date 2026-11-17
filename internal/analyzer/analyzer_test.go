@@ -106,3 +106,38 @@ func TestAnalyzeSemanticDiagnostics(t *testing.T) {
 			len(an.Diagnostics), an.Diagnostics)
 	}
 }
+
+func TestAnalyzeFunctionScope(t *testing.T) {
+	src := "module m(input wire [7:0] din, output wire [7:0] dout);\n" +
+		"  function [7:0] invert(input [7:0] v);\n" +
+		"    reg [7:0] tmp;\n" +
+		"    begin\n" +
+		"      tmp = ~v;\n" +
+		"      invert = tmp;\n" +
+		"    end\n" +
+		"  endfunction\n" +
+		"  assign dout = invert(din);\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics, got %+v", an.Diagnostics)
+	}
+
+	// Hover/definition on `v` in `tmp = ~v;` (line 4, col 13) -> resolves to param at line 1
+	symArg := an.SymbolAt(ast.Position{Line: 4, Column: 13})
+	if symArg == nil || symArg.Name != "v" || symArg.SelectionRange.Start.Line != 1 {
+		t.Errorf("SymbolAt(v) = %+v, want 'v' declared at line 1", symArg)
+	}
+
+	// Hover/definition on `invert` in `assign dout = invert(din);` (line 8, col 16) -> resolves to function at line 1
+	symFn := an.SymbolAt(ast.Position{Line: 8, Column: 16})
+	if symFn == nil || symFn.Name != "invert" || symFn.Kind != KindFunction || symFn.SelectionRange.Start.Line != 1 {
+		t.Errorf("SymbolAt(invert) = %+v, want KindFunction at line 1", symFn)
+	}
+}
