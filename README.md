@@ -42,6 +42,38 @@ go test -v ./...
 
 ---
 
+## CLI での構文チェック・デバッグ実行
+
+引数なしで `kvx` を起動すると LSP サーバーモード（`stdio`）になりますが、ファイルパスを指定するとコマンドラインから Verilog ファイルの構文チェックや AST・トークンの確認ができます。
+
+```bash
+# 単一または複数ファイルの構文エラーチェック
+./kvx path/to/design.v
+./kvx check rtl/*.v
+
+# オプション付き実行（デバッグ・機能追加の検討用）
+./kvx -tokens path/to/design.v    # トークン列を表示
+./kvx -ast path/to/design.v       # パースされた AST 構造のサマリを表示
+./kvx -semantic path/to/design.v  # 未宣言信号・重複宣言などのセマンティック警告も表示
+```
+
+出力例（構文エラーがある場合、該当行とカラム位置に `^` が表示され、終了コード `1` を返します）：
+
+```text
+broken.v:2:8: syntax error: expected ';' after wire declaration
+  wire x
+       ^
+broken.v: FAILED (1 syntax error(s))
+```
+
+構文エラーがない場合（終了コード `0`）：
+
+```text
+valid.v: OK (0 syntax errors, 1 module(s))
+```
+
+---
+
 ## エディタの設定例
 
 `kvx` は標準入出力（`stdio`）経由で LSP 通信を行います。

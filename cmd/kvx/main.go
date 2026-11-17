@@ -9,6 +9,17 @@ import (
 )
 
 func main() {
+	args := os.Args[1:]
+
+	if len(args) > 0 && !isLSPModeArg(args[0]) {
+		if args[0] == "check" {
+			args = args[1:]
+		} else if args[0] == "help" {
+			args = []string{"-h"}
+		}
+		os.Exit(runCheck(args, os.Stderr))
+	}
+
 	logger := log.New(os.Stderr, "[kvx] ", log.LstdFlags|log.Lshortfile)
 	server := lsp.NewServer(os.Stdin, os.Stdout, logger)
 
@@ -19,4 +30,8 @@ func main() {
 		}
 		logger.Fatalf("server error: %v", err)
 	}
+}
+
+func isLSPModeArg(arg string) bool {
+	return arg == "--stdio" || arg == "-stdio" || arg == "lsp"
 }

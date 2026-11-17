@@ -1,0 +1,3 @@
+# Built binary (anchored to root so cmd/kvx/ is not ignored)
+/kvx
+/kvx.exe
