@@ -170,3 +170,42 @@ func TestLexerEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+func TestTokenizeWithDirectives(t *testing.T) {
+	input := "`include \"defs.vh\"\n" +
+		"`define WIDTH 8\n" +
+		"`ifdef SYNTH\n" +
+		"`endif\n"
+
+	// Standard Tokenize should skip all directives and return only EOF.
+	plain := Tokenize(input)
+	if len(plain) != 1 || plain[0].Type != TokenEOF {
+		t.Fatalf("Tokenize() = %+v, want single TokenEOF", plain)
+	}
+
+	// TokenizeWithDirectives should emit directive tokens and their arguments.
+	got := TokenizeWithDirectives(input)
+	want := []struct {
+		typ TokenType
+		lit string
+	}{
+		{TokenDirective, "`include"},
+		{TokenString, "defs.vh"},
+		{TokenDirective, "`define"},
+		{TokenIdent, "WIDTH"},
+		{TokenNumber, "8"},
+		{TokenDirective, "`ifdef"},
+		{TokenIdent, "SYNTH"},
+		{TokenDirective, "`endif"},
+		{TokenEOF, ""},
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("got %d tokens, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].Type != w.typ || got[i].Literal != w.lit {
+			t.Errorf("token[%d] = (%s, %q), want (%s, %q)", i, got[i].Type, got[i].Literal, w.typ, w.lit)
+		}
+	}
+}

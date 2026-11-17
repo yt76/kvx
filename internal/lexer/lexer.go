@@ -6,10 +6,11 @@ import (
 
 // Lexer tokenizes Verilog source text.
 type Lexer struct {
-	input  string
-	offset int
-	line   int
-	col    int
+	input          string
+	offset         int
+	line           int
+	col            int
+	emitDirectives bool
 }
 
 // New creates a new Lexer for input.
@@ -19,9 +20,19 @@ func New(input string) *Lexer {
 	}
 }
 
-// Tokenize returns all tokens from input up to and including TokenEOF.
+// Tokenize returns all tokens from input up to and including TokenEOF, skipping compiler directives.
 func Tokenize(input string) []Token {
+	return tokenizeWith(New(input))
+}
+
+// TokenizeWithDirectives returns all tokens from input including compiler directives as TokenDirective.
+func TokenizeWithDirectives(input string) []Token {
 	l := New(input)
+	l.emitDirectives = true
+	return tokenizeWith(l)
+}
+
+func tokenizeWith(l *Lexer) []Token {
 	var tokens []Token
 	for {
 		tok := l.NextToken()
@@ -314,7 +325,18 @@ func (l *Lexer) scanDirectiveOrMacro() (Token, bool) {
 	name := l.readIdent()
 
 	switch name {
-	case "timescale", "define", "include", "ifdef", "ifndef", "elsif", "undef", "default_nettype", "pragma", "line":
+	case "timescale", "define", "include", "ifdef", "ifndef", "elsif", "undef", "default_nettype", "pragma", "line",
+		"else", "endif", "resetall", "celldefine", "endcelldefine":
+		if l.emitDirectives {
+			return Token{
+				Type:    TokenDirective,
+				Literal: "`" + name,
+				Range:   ast.Range{Start: start, End: l.pos()},
+			}, true
+		}
+		if name == "else" || name == "endif" || name == "resetall" || name == "celldefine" || name == "endcelldefine" {
+			return Token{}, false
+		}
 		// Skip remainder of the directive line (respecting backslash continuation).
 		for l.offset < len(l.input) {
 			if l.peek() == '\\' && (l.peekNext() == '\n' || l.peekNext() == '\r') {
@@ -332,8 +354,6 @@ func (l *Lexer) scanDirectiveOrMacro() (Token, bool) {
 			}
 			l.advance()
 		}
-		return Token{}, false
-	case "else", "endif", "resetall", "celldefine", "endcelldefine":
 		return Token{}, false
 	default:
 		// Treat macro constant/identifier usage (e.g. `WIDTH) as an identifier token.

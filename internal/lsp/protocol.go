@@ -30,16 +30,29 @@ type InitializeResult struct {
 
 // ServerCapabilities declares the features supported by this language server.
 type ServerCapabilities struct {
-	TextDocumentSync       TextDocumentSyncKind `json:"textDocumentSync,omitempty"`
-	HoverProvider          bool                 `json:"hoverProvider,omitempty"`
-	DefinitionProvider     bool                 `json:"definitionProvider,omitempty"`
-	DocumentSymbolProvider bool                 `json:"documentSymbolProvider,omitempty"`
-	CompletionProvider     *CompletionOptions   `json:"completionProvider,omitempty"`
+	TextDocumentSync       TextDocumentSyncKind   `json:"textDocumentSync,omitempty"`
+	HoverProvider          bool                   `json:"hoverProvider,omitempty"`
+	DefinitionProvider     bool                   `json:"definitionProvider,omitempty"`
+	DocumentSymbolProvider bool                   `json:"documentSymbolProvider,omitempty"`
+	CompletionProvider     *CompletionOptions     `json:"completionProvider,omitempty"`
+	SemanticTokensProvider *SemanticTokensOptions `json:"semanticTokensProvider,omitempty"`
 }
 
 // CompletionOptions configures completion behavior.
 type CompletionOptions struct {
 	TriggerCharacters []string `json:"triggerCharacters,omitempty"`
+}
+
+// SemanticTokensOptions configures semantic token support advertised by the server.
+type SemanticTokensOptions struct {
+	Legend SemanticTokensLegend `json:"legend"`
+	Full   bool                 `json:"full"`
+}
+
+// SemanticTokensLegend maps token type and modifier indices to standard LSP names.
+type SemanticTokensLegend struct {
+	TokenTypes     []string `json:"tokenTypes"`
+	TokenModifiers []string `json:"tokenModifiers"`
 }
 
 // ServerInfo holds metadata about this language server.
@@ -199,6 +212,17 @@ type CompletionItem struct {
 	Kind   CompletionItemKind `json:"kind,omitempty"`
 	Detail string             `json:"detail,omitempty"`
 }
+
+// SemanticTokensParams is sent with "textDocument/semanticTokens/full".
+type SemanticTokensParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+}
+
+// SemanticTokens holds the relative delta-encoded semantic token array.
+type SemanticTokens struct {
+	Data []uint32 `json:"data"`
+}
+
 
 
 

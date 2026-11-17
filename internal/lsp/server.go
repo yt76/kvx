@@ -130,6 +130,8 @@ func (s *Server) handlePayload(payload []byte) (bool, error) {
 		return false, s.handleDefinition(msg)
 	case "textDocument/completion":
 		return false, s.handleCompletion(msg)
+	case "textDocument/semanticTokens/full":
+		return false, s.handleSemanticTokensFull(msg)
 	default:
 		if msg.IsRequest() {
 			return false, s.sendError(msg.ID, CodeMethodNotFound, fmt.Sprintf("method not found: %s", msg.Method))
@@ -342,6 +344,20 @@ func (s *Server) handleCompletion(msg IncomingMessage) error {
 	return s.sendResult(msg.ID, items)
 }
 
+func (s *Server) handleSemanticTokensFull(msg IncomingMessage) error {
+	var params SemanticTokensParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return s.sendError(msg.ID, CodeInvalidParams, fmt.Sprintf("invalid semanticTokens params: %v", err))
+	}
+
+	doc, ok := s.docs.Get(params.TextDocument.URI)
+	if !ok {
+		return s.sendResult(msg.ID, SemanticTokens{Data: []uint32{}})
+	}
+
+	return s.sendResult(msg.ID, computeSemanticTokens(&doc))
+}
+
 func toDocumentSymbol(sym *analyzer.Symbol) DocumentSymbol {
 	ds := DocumentSymbol{
 		Name:           sym.Name,
@@ -417,6 +433,10 @@ func (s *Server) handleInitialize(msg IncomingMessage) error {
 			DefinitionProvider:     true,
 			DocumentSymbolProvider: true,
 			CompletionProvider:     &CompletionOptions{},
+			SemanticTokensProvider: &SemanticTokensOptions{
+				Legend: defaultSemanticTokensLegend,
+				Full:   true,
+			},
 		},
 		ServerInfo: &ServerInfo{
 			Name:    ServerName,

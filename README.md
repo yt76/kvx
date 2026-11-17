@@ -15,6 +15,8 @@
   - 信号・パラメータの宣言箇所へのジャンプ、およびインスタンス化されたモジュール定義へのジャンプ
 - **Completion (`textDocument/completion`)**
   - スコープ内の信号名・ポート名・パラメータ名・モジュール名、および Verilog キーワードの入力補完
+- **Semantic Tokens (`textDocument/semanticTokens/full`)**
+  - Verilog キーワード、モジュール名、パラメータ、入出力ポート、信号変数、数値・文字列リテラル、システムタスク、マクロ、演算子のセマンティックハイライト
 
 ---
 
@@ -148,4 +150,14 @@ const serverOptions: ServerOptions = {
 const clientOptions: LanguageClientOptions = {
   documentSelector: [{ scheme: "file", language: "verilog" }],
 };
+```
+
+---
+
+## ログ出力（デバッグ用）
+
+LSP モード時のログは標準エラー出力（`stderr`）に出力されます。環境変数 `KVX_LOG` にファイルパスを指定すると、`stderr` に加えてそのファイルにもログを追記します。
+
+```bash
+KVX_LOG=/tmp/kvx.log kvx
 ```

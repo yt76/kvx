@@ -137,3 +137,54 @@ func TestIsLSPModeArg(t *testing.T) {
 		}
 	}
 }
+
+func TestSetupLogger(t *testing.T) {
+	t.Run("empty log path writes only to fallback", func(t *testing.T) {
+		var fb bytes.Buffer
+		logger, cleanup, err := setupLogger("", &fb)
+		defer cleanup()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		logger.Println("hello fallback")
+		if !strings.Contains(fb.String(), "hello fallback") {
+			t.Errorf("fallback output = %q, want substring %q", fb.String(), "hello fallback")
+		}
+	})
+
+	t.Run("valid log path writes to both fallback and file", func(t *testing.T) {
+		var fb bytes.Buffer
+		logPath := filepath.Join(t.TempDir(), "kvx.log")
+		logger, cleanup, err := setupLogger(logPath, &fb)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		logger.Println("hello file")
+		cleanup()
+
+		if !strings.Contains(fb.String(), "hello file") {
+			t.Errorf("fallback output = %q, want substring %q", fb.String(), "hello file")
+		}
+		data, readErr := os.ReadFile(logPath)
+		if readErr != nil {
+			t.Fatalf("failed to read log file: %v", readErr)
+		}
+		if !strings.Contains(string(data), "hello file") {
+			t.Errorf("log file content = %q, want substring %q", string(data), "hello file")
+		}
+	})
+
+	t.Run("unwritable log path returns error and falls back safely", func(t *testing.T) {
+		var fb bytes.Buffer
+		badPath := filepath.Join(t.TempDir(), "missing_dir", "kvx.log")
+		logger, cleanup, err := setupLogger(badPath, &fb)
+		defer cleanup()
+		if err == nil {
+			t.Fatalf("expected error for missing parent directory, got nil")
+		}
+		logger.Println("still works")
+		if !strings.Contains(fb.String(), "still works") {
+			t.Errorf("fallback output = %q, want substring %q", fb.String(), "still works")
+		}
+	})
+}

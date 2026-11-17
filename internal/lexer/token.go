@@ -12,6 +12,7 @@ const (
 	// Identifiers and literals
 	TokenIdent       TokenType = "IDENT"
 	TokenSystemIdent TokenType = "SYSTEM_IDENT" // e.g. $display, $clog2
+	TokenDirective   TokenType = "DIRECTIVE"    // e.g. `include, `define, `ifdef
 	TokenNumber      TokenType = "NUMBER"       // e.g. 42, 8'hFF, 1'b0
 	TokenString      TokenType = "STRING"       // e.g. "hello"
 
