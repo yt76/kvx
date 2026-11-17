@@ -160,6 +160,10 @@ const clientOptions: LanguageClientOptions = {
 
 ```json
 {
+  "files": [
+    "rtl/*.v",
+    "ip/common/fifo.v"
+  ],
   "includeDirs": [
     "rtl/include",
     "ip/common/inc"
@@ -170,8 +174,17 @@ const clientOptions: LanguageClientOptions = {
 }
 ```
 
+- **`files`**: プロジェクト内の Verilog ソースファイル（glob パターン指定可）。LSP 起動時にインデックス化され、開いていない別ファイルのモジュールへの定義ジャンプや Hover・補完が有効になります（`kvx check` を引数なしで実行した際の一括チェック対象にもなります）。
 - **`includeDirs`**: `` `include `` で検索するディレクトリのリスト（`kvx.json` からの相対パス、または絶対パス）。
-- **`filelists`**: シミュレーション用 filelist（`.f`）のパスを指定すると、ファイル内の `-I <dir>`・`-I<dir>`・`+incdir+<dir1>+<dir2>` 指定も自動で抽出してインクルードパスに追加します。
+- **`filelists`**: シミュレーション用 filelist（`.f`）のパスを指定すると、ファイル内の `-I <dir>`・`-I<dir>`・`+incdir+<dir1>+<dir2>` 指定および記載されている `.v` ファイルパスも自動で抽出します。
+
+### 環境変数による設定ファイルの指定（`KVX_CONFIG`）
+
+環境変数 `KVX_CONFIG` に設定ファイルのパスを指定すると、`kvx.json` の自動探索よりも優先してそのファイルを読み込みます。
+
+```bash
+KVX_CONFIG=/path/to/custom_kvx.json kvx check
+```
 
 ---
 

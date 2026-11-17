@@ -73,6 +73,14 @@ func runCheck(args []string, out io.Writer) int {
 	fileArgs = append(fileArgs, fs.Args()...)
 
 	if len(fileArgs) == 0 {
+		if cwd, err := os.Getwd(); err == nil {
+			if cfg, _, cfgErr := config.FindAndLoad(cwd); cfgErr == nil && cfg != nil && len(cfg.Files) > 0 {
+				fileArgs = append(fileArgs, cfg.Files...)
+			}
+		}
+	}
+
+	if len(fileArgs) == 0 {
 		fmt.Fprintln(out, "error: no Verilog files specified")
 		fs.Usage()
 		return 2

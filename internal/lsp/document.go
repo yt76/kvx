@@ -25,22 +25,25 @@ type Document struct {
 	Analysis   *analyzer.Analysis
 }
 
-// DocumentStore manages open documents in memory.
+// DocumentStore manages open documents in memory and indexed workspace files.
 type DocumentStore struct {
-	mu          sync.RWMutex
-	docs        map[string]*Document
-	rootDir     string
-	includeDirs []string
+	mu            sync.RWMutex
+	docs          map[string]*Document
+	workspaceDocs map[string]*Document
+	rootDir       string
+	includeDirs   []string
 }
 
 // NewDocumentStore creates an empty DocumentStore.
 func NewDocumentStore() *DocumentStore {
 	return &DocumentStore{
-		docs: make(map[string]*Document),
+		docs:          make(map[string]*Document),
+		workspaceDocs: make(map[string]*Document),
 	}
 }
 
-// SetRootURI configures the workspace root directory and loads kvx.json if present.
+// SetRootURI configures the workspace root directory, loads kvx.json if present,
+// and indexes any Verilog files listed in kvx.json.
 func (s *DocumentStore) SetRootURI(rootURI string) (string, error) {
 	dir := uriToFilePath(rootURI)
 	if dir == "" {
@@ -56,9 +59,31 @@ func (s *DocumentStore) SetRootURI(rootURI string) (string, error) {
 		return cfgPath, err
 	}
 	if cfg != nil {
+		s.indexWorkspaceFilesLocked(cfg)
 		return cfgPath, nil
 	}
 	return "", nil
+}
+
+func (s *DocumentStore) indexWorkspaceFilesLocked(cfg *config.Config) {
+	s.workspaceDocs = make(map[string]*Document, len(cfg.Files))
+	for _, path := range cfg.Files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		uri := filePathToURI(path)
+		text := string(data)
+		fileAST, parseErrs := parser.ParseWithOptions(text, s.parseOptionsLocked(uri))
+		s.workspaceDocs[uri] = &Document{
+			URI:        uri,
+			LanguageID: "verilog",
+			Text:       text,
+			AST:        fileAST,
+			ParseErrs:  parseErrs,
+			Analysis:   analyzer.Analyze(fileAST),
+		}
+	}
 }
 
 func (s *DocumentStore) addIncludeDirLocked(dir string) {
@@ -171,7 +196,7 @@ func (s *DocumentStore) parseOptionsLocked(uri string) parser.Options {
 	}
 }
 
-// FindModule searches all open documents for a module declaration by name.
+// FindModule searches open documents and indexed workspace files for a module declaration by name.
 func (s *DocumentStore) FindModule(moduleName string) (string, *analyzer.Symbol, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -184,7 +209,43 @@ func (s *DocumentStore) FindModule(moduleName string) (string, *analyzer.Symbol,
 			return uri, scope.Symbol, true
 		}
 	}
+	for uri, doc := range s.workspaceDocs {
+		if _, isOpen := s.docs[uri]; isOpen {
+			continue
+		}
+		if doc.Analysis == nil {
+			continue
+		}
+		if scope, ok := doc.Analysis.Modules[moduleName]; ok {
+			return uri, scope.Symbol, true
+		}
+	}
 	return "", nil, false
+}
+
+// WorkspaceModules returns all module symbols from indexed workspace files and open documents.
+func (s *DocumentStore) WorkspaceModules() []*analyzer.Symbol {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []*analyzer.Symbol
+	seen := make(map[string]bool)
+	collect := func(m map[string]*Document) {
+		for _, doc := range m {
+			if doc.Analysis == nil {
+				continue
+			}
+			for _, modScope := range doc.Analysis.ModuleOrder {
+				if modScope.Symbol.Name != "" && !seen[modScope.Symbol.Name] {
+					seen[modScope.Symbol.Name] = true
+					out = append(out, modScope.Symbol)
+				}
+			}
+		}
+	}
+	collect(s.docs)
+	collect(s.workspaceDocs)
+	return out
 }
 
 // Close removes a document from the store.

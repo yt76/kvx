@@ -27,8 +27,17 @@ func TestLoadFileAndFilelist(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	subV := filepath.Join(root, "rtl", "sub.v")
+	topV := filepath.Join(root, "rtl", "top.v")
+	for _, f := range []string{subV, topV} {
+		if err := os.WriteFile(f, []byte("module m; endmodule\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	cfgPath := filepath.Join(root, ConfigFileName)
 	cfgContent := `{
+  "files": ["rtl/sub.v", "rtl/*.v"],
   "includeDirs": ["rtl/inc", "custom/inc"],
   "filelists": ["sim/files.f"]
 }`
@@ -41,18 +50,28 @@ func TestLoadFileAndFilelist(t *testing.T) {
 		t.Fatalf("LoadFile error: %v", err)
 	}
 
-	want := []string{
+	wantDirs := []string{
 		incA,
 		filepath.Join(root, "custom", "inc"),
 		incB,
 		incC,
 	}
-	if len(cfg.IncludeDirs) != len(want) {
-		t.Fatalf("got %d includeDirs %v, want %d %v", len(cfg.IncludeDirs), cfg.IncludeDirs, len(want), want)
+	if len(cfg.IncludeDirs) != len(wantDirs) {
+		t.Fatalf("got %d includeDirs %v, want %d %v", len(cfg.IncludeDirs), cfg.IncludeDirs, len(wantDirs), wantDirs)
 	}
-	for i, w := range want {
+	for i, w := range wantDirs {
 		if cfg.IncludeDirs[i] != w {
 			t.Errorf("includeDirs[%d] = %q, want %q", i, cfg.IncludeDirs[i], w)
+		}
+	}
+
+	wantFiles := []string{subV, topV}
+	if len(cfg.Files) != len(wantFiles) {
+		t.Fatalf("got %d files %v, want %d %v", len(cfg.Files), cfg.Files, len(wantFiles), wantFiles)
+	}
+	for i, w := range wantFiles {
+		if cfg.Files[i] != w {
+			t.Errorf("files[%d] = %q, want %q", i, cfg.Files[i], w)
 		}
 	}
 }
@@ -86,4 +105,31 @@ func TestFindAndLoad(t *testing.T) {
 	if err2 != nil || cfg2 != nil || found2 != "" {
 		t.Errorf("expected (nil, \"\", nil) for missing config, got (%+v, %q, %v)", cfg2, found2, err2)
 	}
+}
+
+func TestEnvOverrides(t *testing.T) {
+	t.Run("KVX_CONFIG overrides kvx.json discovery", func(t *testing.T) {
+		root := t.TempDir()
+		_ = os.WriteFile(filepath.Join(root, ConfigFileName), []byte(`{"includeDirs": ["default_inc"]}`), 0644)
+
+		altDir := t.TempDir()
+		altCfg := filepath.Join(altDir, "custom.json")
+		if err := os.WriteFile(altCfg, []byte(`{"includeDirs": ["alt_inc"]}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		t.Setenv(EnvConfig, altCfg)
+
+		cfg, found, err := FindAndLoad(root)
+		if err != nil {
+			t.Fatalf("FindAndLoad error: %v", err)
+		}
+		if found != altCfg {
+			t.Errorf("found = %q, want %q", found, altCfg)
+		}
+		wantInc := filepath.Join(altDir, "alt_inc")
+		if len(cfg.IncludeDirs) != 1 || cfg.IncludeDirs[0] != wantInc {
+			t.Errorf("IncludeDirs = %v, want [%q]", cfg.IncludeDirs, wantInc)
+		}
+	})
 }

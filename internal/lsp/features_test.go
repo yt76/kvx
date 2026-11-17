@@ -673,3 +673,103 @@ func TestSemanticTokensComments(t *testing.T) {
 		}
 	}
 }
+
+func TestLSPWorkspaceFilesIndex(t *testing.T) {
+	root := t.TempDir()
+	rtlDir := filepath.Join(root, "rtl")
+	if err := os.MkdirAll(rtlDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	subPath := filepath.Join(rtlDir, "sub_mod.v")
+	subSrc := "module sub_mod(input wire a, output wire y);\n" +
+		"  assign y = ~a;\n" +
+		"endmodule\n"
+	if err := os.WriteFile(subPath, []byte(subSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// kvx.json lists rtl/sub_mod.v; note that we will NOT call didOpen on sub_mod.v.
+	cfgPath := filepath.Join(root, "kvx.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"files": ["rtl/*.v"]}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	topPath := filepath.Join(rtlDir, "top.v")
+	topURI := filePathToURI(topPath)
+	subURI := filePathToURI(subPath)
+	topSrc := "module top(input wire din, output wire dout);\n" +
+		"  sub_mod u_sub (.a(din), .y(dout));\n" +
+		"endmodule\n"
+
+	var in, out bytes.Buffer
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"rootUri": filePathToURI(root),
+		},
+	})
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/didOpen",
+		"params": DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        topURI,
+				LanguageID: "verilog",
+				Version:    1,
+				Text:       topSrc,
+			},
+		},
+	})
+	// Hover on `sub_mod` at line 1, col 3 -> should show sub_mod signature from indexed file.
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "textDocument/hover",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 1, Character: 3},
+		},
+	})
+	// Definition on `sub_mod` at line 1, col 3 -> should jump to sub_mod.v line 0.
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 1, Character: 3},
+		},
+	})
+
+	srv := NewServer(&in, &out, nil)
+	if err := srv.Run(); err != nil {
+		t.Fatalf("Server.Run() error: %v", err)
+	}
+
+	outReader := bufio.NewReader(&out)
+	_ = readFramedResponse(t, outReader)     // initialize
+	_, _ = readFramedNotification(t, outReader) // publishDiagnostics
+
+	respHover := readFramedResponse(t, outReader)
+	rawHover, _ := json.Marshal(respHover.Result)
+	var hover Hover
+	if err := json.Unmarshal(rawHover, &hover); err != nil {
+		t.Fatalf("unmarshaling Hover: %v", err)
+	}
+	if !strings.Contains(hover.Contents.Value, "module sub_mod (input wire a, output wire y)") {
+		t.Errorf("Hover value = %q, want sub_mod signature", hover.Contents.Value)
+	}
+
+	respDef := readFramedResponse(t, outReader)
+	rawDef, _ := json.Marshal(respDef.Result)
+	var loc Location
+	if err := json.Unmarshal(rawDef, &loc); err != nil {
+		t.Fatalf("unmarshaling Location: %v", err)
+	}
+	if loc.URI != subURI || loc.Range.Start.Line != 0 {
+		t.Errorf("definition = %+v, want URI=%s Line=0", loc, subURI)
+	}
+}

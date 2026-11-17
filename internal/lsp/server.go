@@ -329,6 +329,18 @@ func (s *Server) handleCompletion(msg IncomingMessage) error {
 		}
 	}
 
+	for _, sym := range s.docs.WorkspaceModules() {
+		if sym.Name == "" || seen[sym.Name] {
+			continue
+		}
+		seen[sym.Name] = true
+		items = append(items, CompletionItem{
+			Label:  sym.Name,
+			Kind:   toCompletionKind(sym.Kind),
+			Detail: sym.TypeDetail,
+		})
+	}
+
 	kwList := lexer.Keywords()
 	sort.Strings(kwList)
 	for _, kw := range kwList {
