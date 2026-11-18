@@ -44,7 +44,7 @@ func NewDocumentStore() *DocumentStore {
 }
 
 // SetRootURI configures the workspace root directory, loads kvx.json if present,
-// or falls back to zero-config workspace auto-discovery.
+// and scans all Verilog files in the workspace to index module definitions.
 func (s *DocumentStore) SetRootURI(rootURI string) (string, error) {
 	dir := uriToFilePath(rootURI)
 	if dir == "" {
@@ -52,25 +52,39 @@ func (s *DocumentStore) SetRootURI(rootURI string) (string, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.scanWorkspaceLocked(dir)
+}
+
+func (s *DocumentStore) scanWorkspaceLocked(dir string) (string, error) {
 	s.rootDir = dir
 	s.addIncludeDirLocked(dir)
 
 	cfg, cfgPath, err := config.FindAndLoad(dir)
-	if err != nil {
-		return cfgPath, err
-	}
-	if cfg != nil {
-		s.autoConfig = nil
-		s.indexWorkspaceFilesLocked(cfg)
-		return cfgPath, nil
+	scanDir := dir
+	if cfgPath != "" {
+		scanDir = filepath.Dir(cfgPath)
+		s.addIncludeDirLocked(scanDir)
 	}
 
-	discovered := config.Discover(dir)
-	s.autoConfig = discovered
-	if discovered != nil {
-		s.indexWorkspaceFilesLocked(discovered)
+	merged := config.MergeDiscovered(cfg, scanDir)
+	s.autoConfig = merged
+	if merged != nil {
+		s.indexWorkspaceFilesLocked(merged)
 	}
-	return "", nil
+	return cfgPath, err
+}
+
+// IndexedStats returns the number of indexed workspace files and total module definitions.
+func (s *DocumentStore) IndexedStats() (int, int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	modCount := 0
+	for _, doc := range s.workspaceDocs {
+		if doc.Analysis != nil {
+			modCount += len(doc.Analysis.ModuleOrder)
+		}
+	}
+	return len(s.workspaceDocs), modCount
 }
 
 func (s *DocumentStore) indexWorkspaceFilesLocked(cfg *config.Config) {
@@ -112,6 +126,17 @@ func (s *DocumentStore) Open(item TextDocumentItem) *Document {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.rootDir == "" {
+		if fp := uriToFilePath(item.URI); fp != "" {
+			dir := filepath.Clean(filepath.Dir(fp))
+			if dir != "/" && dir != "." && filepath.Dir(dir) != dir {
+				if info, err := os.Stat(dir); err == nil && info.IsDir() {
+					_, _ = s.scanWorkspaceLocked(inferWorkspaceRoot(dir))
+				}
+			}
+		}
+	}
+
 	fileAST, parseErrs := parser.ParseWithOptions(item.Text, s.parseOptionsLocked(item.URI))
 	doc := &Document{
 		URI:        item.URI,
@@ -124,6 +149,28 @@ func (s *DocumentStore) Open(item TextDocumentItem) *Document {
 	}
 	s.docs[item.URI] = doc
 	return doc
+}
+
+func inferWorkspaceRoot(startDir string) string {
+	dir, err := filepath.Abs(startDir)
+	if err != nil {
+		return startDir
+	}
+	cur := dir
+	for {
+		if _, err := os.Stat(filepath.Join(cur, config.ConfigFileName)); err == nil {
+			return cur
+		}
+		if _, err := os.Stat(filepath.Join(cur, ".git")); err == nil {
+			return cur
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
+		}
+		cur = parent
+	}
+	return dir
 }
 
 // Change updates an existing document's version and content, re-parsing the updated text.
@@ -262,11 +309,20 @@ func (s *DocumentStore) WorkspaceModules() []*analyzer.Symbol {
 	return out
 }
 
-// Close removes a document from the store.
+// Close removes a document from the active open store while keeping indexed workspace files.
 func (s *DocumentStore) Close(uri string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if doc, ok := s.docs[uri]; ok {
+		if _, wasIndexed := s.workspaceDocs[uri]; wasIndexed {
+			s.workspaceDocs[uri] = doc
+		} else if fp := uriToFilePath(uri); fp != "" {
+			if _, err := os.Stat(fp); err == nil {
+				s.workspaceDocs[uri] = doc
+			}
+		}
+	}
 	delete(s.docs, uri)
 }
 

@@ -9,20 +9,46 @@ import (
 	"strings"
 )
 
-const maxDiscoverEntries = 4000
+const maxDiscoverEntries = 50000
 
 var ignoredDirNames = map[string]bool{
-	".git":        true,
-	".hg":         true,
-	".svn":        true,
+	".git":         true,
+	".hg":          true,
+	".svn":         true,
 	"node_modules": true,
-	"obj_dir":     true,
-	"work":        true,
-	"simv.daidir": true,
-	"xsim.dir":    true,
-	"build":       true,
-	"dist":        true,
-	"target":      true,
+	"obj_dir":      true,
+	"work":         true,
+	"simv.daidir":  true,
+	"xsim.dir":     true,
+	"build":        true,
+	"dist":         true,
+	"target":       true,
+}
+
+// MergeDiscovered returns base unchanged if base already specifies Files.
+// Otherwise, it scans rootDir to discover Verilog source files (and includeDirs
+// if base did not specify any).
+func MergeDiscovered(base *Config, rootDir string) *Config {
+	if base != nil && len(base.Files) > 0 {
+		return base
+	}
+	discovered := Discover(rootDir)
+	if base == nil {
+		return discovered
+	}
+	if discovered == nil {
+		return base
+	}
+	incDirs := base.IncludeDirs
+	if len(incDirs) == 0 {
+		incDirs = discovered.IncludeDirs
+	}
+	return &Config{
+		Files:       discovered.Files,
+		IncludeDirs: incDirs,
+		Filelists:   append([]string(nil), base.Filelists...),
+		Defines:     base.Defines,
+	}
 }
 
 // Discover scans rootDir for Verilog sources (.v/.sv), header directories (.vh/.svh),

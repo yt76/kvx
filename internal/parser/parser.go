@@ -970,17 +970,17 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 	modNameTok := p.advance() // module type name
 
-	inst := &ast.ModuleInst{
-		ModuleName:      modNameTok.Literal,
-		ModuleNameRange: modNameTok.Range,
-		Range:           ast.Range{Start: modNameTok.Range.Start, End: modNameTok.Range.End},
-	}
-
-	// Optional parameter value assignment: #(...)
+	var paramRefs []ast.IdentifierRef
+	// Optional parameter value assignment: #(...) or #VALUE
 	if p.cur().Type == lexer.TokenHash {
 		p.advance() // '#'
 		if p.cur().Type == lexer.TokenLParen {
-			p.parseInstConnections(&inst.Refs, mod)
+			p.parseInstConnections(&paramRefs, mod)
+		} else if p.cur().Type == lexer.TokenNumber || p.cur().Type == lexer.TokenIdent {
+			tok := p.advance()
+			if tok.Type == lexer.TokenIdent {
+				p.recordRef(&paramRefs, mod, tok)
+			}
 		} else {
 			p.addError(p.cur().Range, "expected '(' after '#' in module instantiation")
 		}
@@ -992,25 +992,53 @@ func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 		return
 	}
 
-	instNameTok := p.advance()
-	inst.InstanceName = instNameTok.Literal
-	inst.InstanceNameRange = instNameTok.Range
+	for !p.isEOF() {
+		if p.cur().Type != lexer.TokenIdent {
+			p.addError(p.cur().Range, "expected instance name in module instantiation")
+			p.syncToStatementEnd()
+			return
+		}
+		instNameTok := p.advance()
+		inst := &ast.ModuleInst{
+			ModuleName:        modNameTok.Literal,
+			ModuleNameRange:   modNameTok.Range,
+			InstanceName:      instNameTok.Literal,
+			InstanceNameRange: instNameTok.Range,
+			Range:             ast.Range{File: modNameTok.Range.File, Start: modNameTok.Range.Start, End: instNameTok.Range.End},
+			Refs:              append([]ast.IdentifierRef(nil), paramRefs...),
+		}
 
-	if p.cur().Type == lexer.TokenLParen {
-		p.parseInstConnections(&inst.Refs, mod)
-	} else {
-		p.addError(instNameTok.Range, fmt.Sprintf("expected '(' for port connections of instance %q", inst.InstanceName))
+		// Optional instance array range: e.g. sub_mod u_sub [3:0] (...);
+		if p.cur().Type == lexer.TokenLBracket {
+			_ = p.parseBitRange(mod)
+		}
+
+		if p.cur().Type == lexer.TokenLParen {
+			p.parseInstConnections(&inst.Refs, mod)
+			inst.Range.End = p.prev().Range.End
+		} else {
+			p.addError(instNameTok.Range, fmt.Sprintf("expected '(' for port connections of instance %q", inst.InstanceName))
+		}
+
+		mod.Items = append(mod.Items, inst)
+
+		if p.cur().Type == lexer.TokenComma {
+			p.advance()
+			continue
+		}
+		break
 	}
 
 	if p.cur().Type == lexer.TokenSemicolon {
 		semi := p.advance()
-		inst.Range.End = semi.Range.End
+		if len(mod.Items) > 0 {
+			if lastInst, ok := mod.Items[len(mod.Items)-1].(*ast.ModuleInst); ok {
+				lastInst.Range.End = semi.Range.End
+			}
+		}
 	} else {
 		p.addError(p.prev().Range, "expected ';' after module instantiation")
-		inst.Range.End = p.prev().Range.End
 	}
-
-	mod.Items = append(mod.Items, inst)
 }
 
 // parseInstConnections parses (.port(expr), ...) or positional (expr, ...) while only recording

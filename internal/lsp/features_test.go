@@ -933,3 +933,98 @@ func TestLSPZeroConfigAutoDiscovery(t *testing.T) {
 		t.Errorf("definition = %+v, want URI=%s Line=0", loc, subURI)
 	}
 }
+
+func TestLSPStartupScanWithConfigWithoutFilesAndInstanceJump(t *testing.T) {
+	root := t.TempDir()
+	rtlDir := filepath.Join(root, "rtl")
+	incDir := filepath.Join(root, "inc")
+	for _, d := range []string{rtlDir, incDir} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// kvx.json specifies ONLY includeDirs (no "files" field).
+	// Startup scan must still discover and index all .v files in the workspace.
+	_ = os.WriteFile(filepath.Join(root, "kvx.json"), []byte(`{"includeDirs": ["inc"]}`), 0644)
+	_ = os.WriteFile(filepath.Join(incDir, "defs.vh"), []byte("`define WIDTH 8\n"), 0644)
+	subPath := filepath.Join(rtlDir, "sub_unit.v")
+	_ = os.WriteFile(subPath, []byte("module sub_unit(input wire a, output wire y);\n  assign y = a;\nendmodule\n"), 0644)
+
+	topPath := filepath.Join(rtlDir, "top.v")
+	topURI := filePathToURI(topPath)
+	subURI := filePathToURI(subPath)
+	topSrc := "`include \"defs.vh\"\n" +
+		"module top(input wire [`WIDTH-1:0] din, output wire dout);\n" +
+		"  sub_unit u_sub (.a(din[0]), .y(dout));\n" +
+		"endmodule\n"
+
+	var in, out bytes.Buffer
+	// Pass workspaceFolders (and leave rootUri empty) to verify modern client initialization.
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"workspaceFolders": []map[string]any{
+				{"uri": filePathToURI(root), "name": "test"},
+			},
+		},
+	})
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/didOpen",
+		"params": DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        topURI,
+				LanguageID: "verilog",
+				Version:    1,
+				Text:       topSrc,
+			},
+		},
+	})
+	// 1. Definition on module type name `sub_unit` (line 2, col 3)
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 2, Character: 3},
+		},
+	})
+	// 2. Definition on instance name `u_sub` (line 2, col 12) -> should also jump to sub_unit.v!
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 2, Character: 12},
+		},
+	})
+
+	srv := NewServer(&in, &out, nil)
+	if err := srv.Run(); err != nil {
+		t.Fatalf("Server.Run() error: %v", err)
+	}
+
+	outReader := bufio.NewReader(&out)
+	_ = readFramedResponse(t, outReader)        // initialize
+	_, _ = readFramedNotification(t, outReader) // publishDiagnostics
+
+	for _, id := range []string{"2", "3"} {
+		respDef := readFramedResponse(t, outReader)
+		if string(respDef.ID) != id {
+			t.Fatalf("got response ID=%s, want %s", string(respDef.ID), id)
+		}
+		rawDef, _ := json.Marshal(respDef.Result)
+		var loc Location
+		if err := json.Unmarshal(rawDef, &loc); err != nil {
+			t.Fatalf("unmarshaling Location (id=%s): %v", id, err)
+		}
+		if loc.URI != subURI || loc.Range.Start.Line != 0 {
+			t.Errorf("definition (id=%s) = %+v, want URI=%s Line=0", id, loc, subURI)
+		}
+	}
+}

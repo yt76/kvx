@@ -11,9 +11,17 @@ const (
 
 // InitializeParams represents the parameters sent in an "initialize" request.
 type InitializeParams struct {
-	ProcessID  *int        `json:"processId,omitempty"`
-	RootURI    string      `json:"rootUri,omitempty"`
-	ClientInfo *ClientInfo `json:"clientInfo,omitempty"`
+	ProcessID        *int              `json:"processId,omitempty"`
+	RootPath         string            `json:"rootPath,omitempty"`
+	RootURI          string            `json:"rootUri,omitempty"`
+	WorkspaceFolders []WorkspaceFolder `json:"workspaceFolders,omitempty"`
+	ClientInfo       *ClientInfo       `json:"clientInfo,omitempty"`
+}
+
+// WorkspaceFolder represents a workspace folder sent by the client during initialize.
+type WorkspaceFolder struct {
+	URI  string `json:"uri"`
+	Name string `json:"name,omitempty"`
 }
 
 // ClientInfo holds information about the editor/client.

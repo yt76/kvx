@@ -216,4 +216,19 @@ func TestDiscoverAndFromArgs(t *testing.T) {
 			t.Errorf("Defines missing SIM: %v", loaded.Defines)
 		}
 	})
+
+	t.Run("MergeDiscovered does not scan when Files is already present", func(t *testing.T) {
+		root := t.TempDir()
+		_ = os.WriteFile(filepath.Join(root, "extra.v"), []byte("module extra; endmodule\n"), 0644)
+
+		explicitFile := filepath.Join(root, "only.v")
+		base := &Config{
+			Files: []string{explicitFile},
+		}
+		merged := MergeDiscovered(base, root)
+		if len(merged.Files) != 1 || merged.Files[0] != explicitFile {
+			t.Errorf("MergeDiscovered scanned extra files when Files was already specified: got %v, want [%q]",
+				merged.Files, explicitFile)
+		}
+	})
 }

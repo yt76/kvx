@@ -249,7 +249,7 @@ func (s *Server) handleHover(msg IncomingMessage) error {
 		return s.sendResult(msg.ID, nil)
 	}
 
-	// If hovering over an external module instantiation, try resolving across open documents.
+	// If hovering over an external module instantiation, try resolving across workspace documents.
 	if sym.Kind == analyzer.KindModule && sym.Signature == "module "+sym.Name {
 		if _, targetSym, found := s.docs.FindModule(sym.Name); found {
 			sym = targetSym
@@ -285,9 +285,14 @@ func (s *Server) handleDefinition(msg IncomingMessage) error {
 	targetURI := doc.URI
 	targetRange := sym.SelectionRange
 
-	if targetRange.File != "" {
-		targetURI = filePathToURI(targetRange.File)
-	} else if sym.Kind == analyzer.KindModule {
+	if sym.Kind == analyzer.KindInstance && sym.TargetModule != "" {
+		if targetScope, existsInSameDoc := doc.Analysis.Modules[sym.TargetModule]; existsInSameDoc {
+			targetRange = targetScope.Symbol.SelectionRange
+		} else if extURI, extSym, found := s.docs.FindModule(sym.TargetModule); found {
+			targetURI = extURI
+			targetRange = extSym.SelectionRange
+		}
+	} else if sym.Kind == analyzer.KindModule && targetRange.File == "" {
 		if _, existsInSameDoc := doc.Analysis.Modules[sym.Name]; !existsInSameDoc {
 			if extURI, extSym, found := s.docs.FindModule(sym.Name); found {
 				targetURI = extURI
@@ -296,6 +301,10 @@ func (s *Server) handleDefinition(msg IncomingMessage) error {
 				return s.sendResult(msg.ID, nil)
 			}
 		}
+	}
+
+	if targetRange.File != "" {
+		targetURI = filePathToURI(targetRange.File)
 	}
 
 	loc := Location{
@@ -437,17 +446,27 @@ func (s *Server) handleInitialize(msg IncomingMessage) error {
 		}
 	}
 
-	if params.RootURI != "" {
-		cfgPath, cfgErr := s.docs.SetRootURI(params.RootURI)
+	rootURI := params.RootURI
+	if rootURI == "" && len(params.WorkspaceFolders) > 0 {
+		rootURI = params.WorkspaceFolders[0].URI
+	}
+	if rootURI == "" && params.RootPath != "" {
+		rootURI = filePathToURI(params.RootPath)
+	}
+
+	if rootURI != "" {
+		cfgPath, cfgErr := s.docs.SetRootURI(rootURI)
 		if cfgErr != nil {
 			s.logger.Printf("warning: failed to load %s: %v", cfgPath, cfgErr)
 		} else if cfgPath != "" {
 			s.logger.Printf("loaded project config: %s", cfgPath)
 		}
+		filesCount, modCount := s.docs.IndexedStats()
+		s.logger.Printf("scanned workspace %s: indexed %d Verilog file(s), %d module(s)", rootURI, filesCount, modCount)
 	}
 	if params.ClientInfo != nil {
 		s.logger.Printf("initializing for client: %s %s (rootUri=%s)",
-			params.ClientInfo.Name, params.ClientInfo.Version, params.RootURI)
+			params.ClientInfo.Name, params.ClientInfo.Version, rootURI)
 	}
 
 	s.initialized = true
