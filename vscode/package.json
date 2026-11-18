@@ -1,0 +1,87 @@
+{
+  "name": "kvx",
+  "displayName": "kvx",
+  "description": "wip",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.146.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:systemverilog",
+    "onLanguage:verilog"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "type": "object",
+      "title": "KVX Language Server",
+      "properties": {
+        "kvx.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the KVX Language Server executable. Supports ${workspaceFolder} placeholder."
+        },
+        "kvx.serverArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "-"
+          ],
+          "description": "Arguments passed to the KVX Language Server."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "kvx.helloWorld",
+        "title": "Hello World"
+      }
+    ],
+    "languages": [
+      {
+        "id": "systemverilog",
+        "extensions": [".sv", ".svh"],
+        "aliases": ["SystemVerilog", "systemverilog"]
+      },
+      {
+        "id": "verilog",
+        "extensions": [".v", ".vh"],
+        "aliases": ["Verilog", "verilog"]
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.146.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "26.x",
+    "typescript-eslint": "^8.73.0",
+    "eslint": "^10.15.0",
+    "typescript": "^6.0.3",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  }
+}
