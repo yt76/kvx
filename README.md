@@ -138,18 +138,38 @@ language-servers = ["kvx"]
 
 ### VS Code
 
-汎用の LSP クライアント拡張機能（[vscode-generic-lsp-proxy](https://marketplace.visualstudio.com/items?itemName=ivia.generic-lsp-proxy) など）を使用するか、最小構成のクライアント拡張で以下のように `Executable` に `kvx` を指定します。
+リポジトリ同梱の VS Code 拡張機能（`vscode/`）をビルドして利用できます（Node.js / npm が必要です）。
 
-```typescript
-const serverOptions: ServerOptions = {
-  command: "kvx",
-  args: [],
-  transport: TransportKind.stdio,
-};
+#### 1. 依存関係のインストールとコンパイル
 
-const clientOptions: LanguageClientOptions = {
-  documentSelector: [{ scheme: "file", language: "verilog" }],
-};
+```bash
+cd vscode
+npm install
+npm run compile
+```
+
+- 開発中にファイル変更を監視して自動再コンパイルする場合は `npm run watch`、Lint チェックは `npm run lint` を実行します。
+- パッケージ化せず動作確認したい場合は、`vscode/` フォルダを VS Code で開いて `F5` を押すと Extension Development Host で実行できます。
+
+#### 2. `.vsix` パッケージの作成とインストール
+
+```bash
+cd vscode
+npx @vscode/vsce package
+code --install-extension kvx-0.0.1.vsix
+```
+
+（VS Code の拡張機能ビューのメニュー「VSIX からインストール...」からも導入できます）
+
+#### 3. VS Code 側の設定
+
+拡張機能をインストールしたら、VS Code の `settings.json` で `kvx.serverPath`（`${workspaceFolder}` プレースホルダに対応）または環境変数 `KVX_SERVER_PATH` にビルドした `kvx` バイナリのパスを指定してください。
+
+```json
+{
+  "kvx.serverPath": "/path/to/kvx",
+  "kvx.serverArgs": []
+}
 ```
 
 ---

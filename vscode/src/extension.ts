@@ -22,7 +22,7 @@ function getServerCommand(): string {
 		return process.env.KVX_SERVER_PATH;
 	}
 
-	return '';
+	return 'kvx';
 }
 
 // This method is called when your extension is activated
