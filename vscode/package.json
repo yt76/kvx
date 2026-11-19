@@ -33,9 +33,7 @@
           "items": {
             "type": "string"
           },
-          "default": [
-            "-"
-          ],
+          "default": [],
           "description": "Arguments passed to the KVX Language Server."
         }
       }

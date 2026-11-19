@@ -6,7 +6,7 @@ WIP
 
 ## Features
 
-Phylotype Verilog language server
+KVX Verilog language server
 
 ## Requirements
 

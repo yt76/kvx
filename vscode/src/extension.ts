@@ -50,7 +50,7 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.window.showErrorMessage('KVX Language Server command is not configured (settings or env.KVX_SERVER_PATH).');
 		return;
 	}
-	const args = config.get<string[]>('serverArgs', ['-']);
+	const args = config.get<string[]>('serverArgs', []);
 
 	const serverOptions: ServerOptions = { command, args };
 
@@ -61,8 +61,8 @@ export function activate(context: vscode.ExtensionContext) {
         ]
     };
 	client = new LanguageClient(
-        "Phylotypes Language Server",
-        "Language Server Extension for Verilog",
+        "kvx",
+        "KVX Language Server",
         serverOptions,
         clientOptions
     );
