@@ -31,22 +31,8 @@ kvx/
     └── analyzer/        # Symbol table construction, scope resolution, and semantic checks
 ```
 
-## Implementation Roadmap
-1. **Step 1: Minimal LSP Server (Handshake & Transport)**
-   - JSON-RPC 2.0 framing (`Content-Length` header over stdio)
-   - Handle `initialize`, `initialized`, `shutdown`, and `exit`
-2. **Step 2: Document Synchronization**
-   - In-memory document store handling `textDocument/didOpen`, `textDocument/didChange`, and `textDocument/didClose`
-3. **Step 3: Lexer, Parser & Diagnostics**
-   - Tokenize and parse core Verilog syntax
-   - Publish syntax errors via `textDocument/publishDiagnostics`
-4. **Step 4: Symbol Table & Core LSP Features**
-   - `textDocument/documentSymbol` (outline of modules, ports, signals)
-   - `textDocument/hover` (display signal type and bit-width)
-   - `textDocument/definition` (jump to declaration of signals/modules)
-   - `textDocument/completion` (autocomplete signals and Verilog keywords)
-
 ## Coding Guidelines
 - Keep packages decoupled: `lexer`, `ast`, and `parser` must not depend on `lsp`.
 - Write table-driven unit tests (`*_test.go`) for each package (`lexer`, `parser`, `lsp`, `analyzer`).
+- When modifying `parser` or `analyzer`, add a regression test `.v` file under `testdata/` and register its expected parser/analyzer error counts in `testdata/cases.txt` whenever possible.
 - Never write logs or debug output to `stdout` (since `stdout` is used for LSP JSON-RPC communication); always use `stderr` or a log file for logging.
