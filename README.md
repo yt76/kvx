@@ -161,9 +161,11 @@ code --install-extension kvx-0.0.1.vsix
 
 (You can also install it from the Extensions view menu via "Install from VSIX...")
 
-#### 3. VS Code settings
+#### 3. VS Code settings (optional)
 
-After installing the extension, set `kvx.serverPath` in VS Code `settings.json` (supports the `${workspaceFolder}` placeholder) or set the `KVX_SERVER_PATH` environment variable to the path of your built `kvx` binary.
+If `kvx` is in your `PATH` (e.g., via `go install ./cmd/kvx`), no additional configuration is required—the extension defaults to running `kvx` with no arguments (`[]`).
+
+If you want to use a `kvx` binary at a specific path (or if VS Code does not inherit your shell `PATH`), set `kvx.serverPath` in VS Code `settings.json` (supports the `${workspaceFolder}` placeholder) or set the `KVX_SERVER_PATH` environment variable:
 
 ```json
 {
