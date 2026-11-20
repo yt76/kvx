@@ -42,6 +42,18 @@ go install ./cmd/kvx
 go test -v ./...
 ```
 
+To run only the Verilog regression tests defined in `testdata/cases.txt`:
+
+```bash
+go test -v ./internal/analyzer -run '^TestRegressionFiles$'
+```
+
+You can also run a single case from `testdata/cases.txt` (e.g., `basic.v`):
+
+```bash
+go test -v ./internal/analyzer -run '^TestRegressionFiles/basic\.v$'
+```
+
 ---
 
 ## CLI Syntax Checking and Debugging
