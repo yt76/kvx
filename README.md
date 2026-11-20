@@ -1,42 +1,42 @@
 # kvx - Verilog Language Server
 
-`kvx` は Go 標準ライブラリのみで実装された軽量・高速な Verilog (IEEE 1364) 向けの Language Server (LSP) です。外部依存（CGO 等）がなく、単一バイナリとして動作します。
+`kvx` is a lightweight, fast Language Server (LSP) for Verilog (IEEE 1364) implemented solely with the Go standard library. It has no external dependencies (such as CGO) and runs as a single binary.
 
-## 主な機能
+## Features
 
 - **Diagnostics (`textDocument/publishDiagnostics`)**
-  - 構文エラーのリアルタイム検出（エラー回復付き再帰下降パーサー）
-  - 未宣言の信号（`undeclared identifier`）や重複宣言（`duplicate declaration`）の警告表示
+  - Real-time syntax error detection (recursive descent parser with error recovery)
+  - Warnings for `undeclared identifier` and `duplicate declaration`
 - **Document Symbols (`textDocument/documentSymbol`)**
-  - モジュール、パラメータ、入出力ポート、信号（`wire` / `reg` / `integer`）、インスタンスの階層アウトライン表示
+  - Hierarchical outline of modules, parameters, I/O ports, signals (`wire` / `reg` / `integer`), and instances
 - **Hover (`textDocument/hover`)**
-  - カーソル下の信号・ポート・パラメータ・モジュールの型やビット幅の表示
+  - Displays the type and bit-width of the signal, port, parameter, or module under the cursor
 - **Go to Definition (`textDocument/definition`)**
-  - 信号・パラメータの宣言箇所へのジャンプ、およびインスタンス化されたモジュール定義へのジャンプ
+  - Jump to signal/parameter declarations and instantiated module definitions
 - **Completion (`textDocument/completion`)**
-  - スコープ内の信号名・ポート名・パラメータ名・モジュール名、および Verilog キーワードの入力補完
+  - Autocompletion for in-scope signals, ports, parameters, module names, and Verilog keywords
 - **Semantic Tokens (`textDocument/semanticTokens/full`)**
-  - Verilog キーワード、モジュール名、パラメータ、入出力ポート、信号変数、数値・文字列リテラル、システムタスク、マクロ、演算子のセマンティックハイライト
+  - Semantic highlighting for Verilog keywords, module names, parameters, I/O ports, signal variables, numeric/string literals, system tasks, macros, and operators
 
 ---
 
-## ビルドとインストール
+## Build and Installation
 
-Go 1.21 以降がインストールされていれば、外部ライブラリなしでビルドできます。
+Can be built without external libraries as long as Go 1.21 or later is installed.
 
-### ローカルにバイナリをビルドする場合
+### Building a local binary
 
 ```bash
 go build -o kvx ./cmd/kvx
 ```
 
-### `$GOPATH/bin` (または `$GOBIN`) にインストールする場合
+### Installing to `$GOPATH/bin` (or `$GOBIN`)
 
 ```bash
 go install ./cmd/kvx
 ```
 
-### テストの実行
+### Running tests
 
 ```bash
 go test -v ./...
@@ -44,22 +44,22 @@ go test -v ./...
 
 ---
 
-## CLI での構文チェック・デバッグ実行
+## CLI Syntax Checking and Debugging
 
-引数なし、または `-`（ハイフン1文字）・`--stdio`・`lsp` を指定して `kvx` を起動すると LSP サーバーモード（`stdio`）になります。ファイルパスを指定するとコマンドラインから Verilog ファイルの構文チェックや AST・トークンの確認ができます。
+Running `kvx` with no arguments, or with `-`, `--stdio`, or `lsp`, starts it in LSP server mode (`stdio`). Passing file paths lets you check Verilog syntax or inspect ASTs and tokens from the command line.
 
 ```bash
-# 単一または複数ファイルの構文エラーチェック
+# Check syntax errors in single or multiple files
 ./kvx path/to/design.v
 ./kvx check rtl/*.v
 
-# オプション付き実行（デバッグ・機能追加の検討用）
-./kvx -tokens path/to/design.v    # トークン列を表示
-./kvx -ast path/to/design.v       # パースされた AST 構造のサマリを表示
-./kvx -semantic path/to/design.v  # 未宣言信号・重複宣言などのセマンティック警告も表示
+# Run with debug options (for debugging or feature development)
+./kvx -tokens path/to/design.v    # Print token stream
+./kvx -ast path/to/design.v       # Print parsed AST summary
+./kvx -semantic path/to/design.v  # Also report semantic warnings (undeclared/duplicate signals, etc.)
 ```
 
-出力例（構文エラーがある場合、該当行とカラム位置に `^` が表示され、終了コード `1` を返します）：
+Example output (when syntax errors exist, `^` marks the line and column, and exit code `1` is returned):
 
 ```text
 broken.v:2:8: syntax error: expected ';' after wire declaration
@@ -68,7 +68,7 @@ broken.v:2:8: syntax error: expected ';' after wire declaration
 broken.v: FAILED (1 syntax error(s))
 ```
 
-構文エラーがない場合（終了コード `0`）：
+When there are no syntax errors (exit code `0`):
 
 ```text
 valid.v: OK (0 syntax errors, 1 module(s))
@@ -76,13 +76,13 @@ valid.v: OK (0 syntax errors, 1 module(s))
 
 ---
 
-## エディタの設定例
+## Editor Configuration
 
-`kvx` は標準入出力（`stdio`）経由で LSP 通信を行います。
+`kvx` communicates over LSP via standard input/output (`stdio`).
 
-### Neovim (組み込み LSP: `vim.lsp.start`)
+### Neovim (Built-in LSP: `vim.lsp.start`)
 
-`init.lua` 等に以下を追加します（`cmd` のパスはビルドした `kvx` バイナリのパスに合わせて変更してください）。
+Add the following to your `init.lua`, etc. (adjust the `cmd` path to match your built `kvx` binary):
 
 ```lua
 vim.api.nvim_create_autocmd("FileType", {
@@ -90,14 +90,14 @@ vim.api.nvim_create_autocmd("FileType", {
   callback = function(args)
     vim.lsp.start({
       name = "kvx",
-      cmd = { "/path/to/kvx" }, -- PATH が通っている場合は { "kvx" }
+      cmd = { "/path/to/kvx" }, -- or { "kvx" } if it is in your PATH
       root_dir = vim.fs.root(args.buf, { ".git" }) or vim.fn.getcwd(),
     })
   end,
 })
 ```
 
-### Neovim (`nvim-lspconfig` を使用する場合)
+### Neovim (`nvim-lspconfig`)
 
 ```lua
 local lspconfig = require("lspconfig")
@@ -138,9 +138,9 @@ language-servers = ["kvx"]
 
 ### VS Code
 
-リポジトリ同梱の VS Code 拡張機能（`vscode/`）をビルドして利用できます（Node.js / npm が必要です）。
+You can build and use the bundled VS Code extension in `vscode/` (requires Node.js / npm).
 
-#### 1. 依存関係のインストールとコンパイル
+#### 1. Install dependencies and compile
 
 ```bash
 cd vscode
@@ -148,10 +148,10 @@ npm install
 npm run compile
 ```
 
-- 開発中にファイル変更を監視して自動再コンパイルする場合は `npm run watch`、Lint チェックは `npm run lint` を実行します。
-- パッケージ化せず動作確認したい場合は、`vscode/` フォルダを VS Code で開いて `F5` を押すと Extension Development Host で実行できます。
+- Run `npm run watch` to automatically recompile on file changes during development, or `npm run lint` to run linting.
+- To test without packaging, open the `vscode/` folder in VS Code and press `F5` to launch an Extension Development Host.
 
-#### 2. `.vsix` パッケージの作成とインストール
+#### 2. Package as `.vsix` and install
 
 ```bash
 cd vscode
@@ -159,11 +159,11 @@ npx @vscode/vsce package
 code --install-extension kvx-0.0.1.vsix
 ```
 
-（VS Code の拡張機能ビューのメニュー「VSIX からインストール...」からも導入できます）
+(You can also install it from the Extensions view menu via "Install from VSIX...")
 
-#### 3. VS Code 側の設定
+#### 3. VS Code settings
 
-拡張機能をインストールしたら、VS Code の `settings.json` で `kvx.serverPath`（`${workspaceFolder}` プレースホルダに対応）または環境変数 `KVX_SERVER_PATH` にビルドした `kvx` バイナリのパスを指定してください。
+After installing the extension, set `kvx.serverPath` in VS Code `settings.json` (supports the `${workspaceFolder}` placeholder) or set the `KVX_SERVER_PATH` environment variable to the path of your built `kvx` binary.
 
 ```json
 {
@@ -174,21 +174,21 @@ code --install-extension kvx-0.0.1.vsix
 
 ---
 
-## プロジェクト設定 (`kvx.json`)
+## Project Configuration (`kvx.json`)
 
-`kvx.json` がない場合でも、LSP 起動時にワークスペース配下の `.v` / `.vh` ディレクトリおよびルート直下の `.f` ファイルを**自動検出（ゼロコンフィグ）**してインデックス化します。
+Even without `kvx.json`, on LSP startup `kvx` **automatically discovers (zero-config)** `.v` / `.vh` directories under the workspace and `.f` files at the workspace root, and indexes them.
 
-細かい設定やマクロ定義を固定したい場合は、`kvx init` コマンドで `kvx.json` を自動生成できます：
+If you want explicit settings or fixed macro definitions, you can generate `kvx.json` with `kvx init`:
 
 ```bash
-# プロジェクトを自動スキャンして kvx.json を生成
+# Scan the project automatically and generate kvx.json
 kvx init
 
-# シミュレータ（iverilog / verilator 等）の引数から kvx.json を生成
+# Generate kvx.json from simulator arguments (iverilog / verilator, etc.)
 kvx init -- -I rtl/include -D SIM -f sim/filelist.f rtl/top.v
 ```
 
-生成される `kvx.json` の例：
+Example generated `kvx.json`:
 
 ```json
 {
@@ -210,14 +210,14 @@ kvx init -- -I rtl/include -D SIM -f sim/filelist.f rtl/top.v
 }
 ```
 
-- **`files`**: プロジェクト内の Verilog ソースファイル（glob パターン指定可）。LSP 起動時にインデックス化され、開いていない別ファイルのモジュールへの定義ジャンプや Hover・補完が有効になります（`kvx check` を引数なしで実行した際の一括チェック対象にもなります）。
-- **`includeDirs`**: `` `include `` で検索するディレクトリのリスト（`kvx.json` からの相対パス、または絶対パス）。
-- **`filelists`**: シミュレーション用 filelist（`.f`）のパスを指定すると、ファイル内の `-I <dir>`・`-I<dir>`・`+incdir+<dir1>+<dir2>`・`-D`・`+define+` 指定および記載されている `.v` ファイルパスも自動で抽出します。
-- **`defines`**: 事前定義マクロ（`` `define `` 相当）のマップ。値なしのフラグマクロは `""` を指定します（例: `"SIM": ""`）。`` `ifdef `` の条件判定や `` `DATA_WIDTH `` のマクロ展開に反映されます。
+- **`files`**: Verilog source files in the project (glob patterns supported). Indexed at LSP startup so Go to Definition, Hover, and Completion work across unopened files (also used as the batch check target when running `kvx check` without arguments).
+- **`includeDirs`**: List of directories searched for `` `include `` directives (relative to `kvx.json` or absolute paths).
+- **`filelists`**: Paths to simulation filelist (`.f`) files. Automatically extracts `-I <dir>`, `-I<dir>`, `+incdir+<dir1>+<dir2>`, `-D`, `+define+` options and listed `.v` file paths.
+- **`defines`**: Map of predefined macros (equivalent to `` `define ``). Use `""` for flag macros without values (e.g., `"SIM": ""`). Applied to `` `ifdef `` condition evaluation and `` `DATA_WIDTH `` macro expansion.
 
-### 環境変数による設定ファイルの指定（`KVX_CONFIG`）
+### Specifying the config file via environment variable (`KVX_CONFIG`)
 
-環境変数 `KVX_CONFIG` に設定ファイルのパスを指定すると、`kvx.json` の自動探索よりも優先してそのファイルを読み込みます。
+Setting the `KVX_CONFIG` environment variable to a config file path overrides the automatic `kvx.json` search and loads that file instead.
 
 ```bash
 KVX_CONFIG=/path/to/custom_kvx.json kvx check
@@ -225,9 +225,9 @@ KVX_CONFIG=/path/to/custom_kvx.json kvx check
 
 ---
 
-## ログ出力（デバッグ用）
+## Logging (for Debugging)
 
-LSP モード時のログは標準エラー出力（`stderr`）に出力されます。環境変数 `KVX_LOG` にファイルパスを指定すると、`stderr` に加えてそのファイルにもログを追記します。
+In LSP mode, logs are written to standard error (`stderr`). If the `KVX_LOG` environment variable is set to a file path, logs are also appended to that file in addition to `stderr`.
 
 ```bash
 KVX_LOG=/tmp/kvx.log kvx
