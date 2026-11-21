@@ -17,6 +17,7 @@ const (
 	KindParam    SymbolKind = "parameter"
 	KindInstance SymbolKind = "instance"
 	KindFunction SymbolKind = "function"
+	KindTask     SymbolKind = "task"
 )
 
 // Symbol represents a named declaration in a Verilog source file.
@@ -46,6 +47,14 @@ type FunctionScope struct {
 	Order   []*Symbol
 }
 
+// TaskScope holds the local symbol table for a task declaration.
+type TaskScope struct {
+	Decl    *ast.TaskDecl
+	Symbol  *Symbol
+	Symbols map[string]*Symbol
+	Order   []*Symbol
+}
+
 // ModuleScope holds the symbol table for a single module declaration.
 type ModuleScope struct {
 	Module    *ast.ModuleDecl
@@ -53,6 +62,7 @@ type ModuleScope struct {
 	Symbols   map[string]*Symbol
 	Order     []*Symbol
 	Functions []*FunctionScope
+	Tasks     []*TaskScope
 }
 
 // Analysis holds the symbol tables and semantic diagnostics for a SourceFile.
@@ -234,6 +244,11 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]Sem
 				addSymbol(fnScope.Symbol, inGenerate)
 				scope.Functions = append(scope.Functions, fnScope)
 
+			case *ast.TaskDecl:
+				taskScope := buildTaskScope(d, diags)
+				addSymbol(taskScope.Symbol, inGenerate)
+				scope.Tasks = append(scope.Tasks, taskScope)
+
 			case *ast.GenerateBlock:
 				collectItems(d.Items, true)
 			}
@@ -249,6 +264,31 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]Sem
 				continue
 			}
 			if _, ok := fnScope.Symbols[ref.Name]; ok {
+				continue
+			}
+			if _, ok := scope.Symbols[ref.Name]; ok {
+				continue
+			}
+			if _, ok := globals[ref.Name]; ok {
+				continue
+			}
+			if ref.Range.File == "" {
+				*diags = append(*diags, SemanticDiagnostic{
+					Range:   ref.Range,
+					Message: fmt.Sprintf("undeclared identifier %q", ref.Name),
+					IsError: false,
+				})
+			}
+		}
+	}
+
+	// Check identifier references inside tasks against local, module, and global scopes.
+	for _, taskScope := range scope.Tasks {
+		for _, ref := range taskScope.Decl.Refs {
+			if strings.HasPrefix(ref.Name, "`") {
+				continue
+			}
+			if _, ok := taskScope.Symbols[ref.Name]; ok {
 				continue
 			}
 			if _, ok := scope.Symbols[ref.Name]; ok {
@@ -395,6 +435,31 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			}
 		}
 
+		// 3b. Check declarations and references inside tasks.
+		for _, taskScope := range scope.Tasks {
+			if !taskScope.Decl.Range.Contains(pos) {
+				continue
+			}
+			for _, sym := range taskScope.Order {
+				if sym.SelectionRange.Contains(pos) {
+					return sym
+				}
+			}
+			for _, ref := range taskScope.Decl.Refs {
+				if ref.Range.Contains(pos) {
+					if sym, ok := taskScope.Symbols[ref.Name]; ok {
+						return sym
+					}
+					if sym, ok := scope.Symbols[ref.Name]; ok {
+						return sym
+					}
+					if sym, ok := a.GlobalSymbols[ref.Name]; ok {
+						return sym
+					}
+				}
+			}
+		}
+
 		// 4. Check identifier references in expressions, assignments, and procedural blocks.
 		for _, ref := range mod.Refs {
 			if ref.Range.Contains(pos) {
@@ -417,6 +482,12 @@ func (a *Analysis) CompletionsAt(pos ast.Position) []*Symbol {
 		for _, fnScope := range scope.Functions {
 			if fnScope.Decl.Range.Contains(pos) {
 				out = append(out, fnScope.Order...)
+				break
+			}
+		}
+		for _, taskScope := range scope.Tasks {
+			if taskScope.Decl.Range.Contains(pos) {
+				out = append(out, taskScope.Order...)
 				break
 			}
 		}
@@ -613,6 +684,115 @@ func formatFunctionSignature(fn *ast.FunctionDecl) string {
 	if len(fn.Params) > 0 {
 		b.WriteString(" (")
 		for i, p := range fn.Params {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(formatPortDeclDetail(p))
+			b.WriteString(" ")
+			b.WriteString(p.Name)
+		}
+		b.WriteString(")")
+	}
+	return b.String()
+}
+
+func buildTaskScope(task *ast.TaskDecl, diags *[]SemanticDiagnostic) *TaskScope {
+	detail := "task"
+	if task.Automatic {
+		detail = "task automatic"
+	}
+	sig := formatTaskSignature(task)
+	taskSym := &Symbol{
+		Name:           task.Name,
+		Kind:           KindTask,
+		TypeDetail:     detail,
+		Signature:      sig,
+		Range:          task.Range,
+		SelectionRange: task.NameRange,
+	}
+
+	ts := &TaskScope{
+		Decl:    task,
+		Symbol:  taskSym,
+		Symbols: make(map[string]*Symbol),
+	}
+
+	addLocal := func(sym *Symbol) {
+		if sym.Name == "" {
+			return
+		}
+		if _, exists := ts.Symbols[sym.Name]; exists {
+			if sym.SelectionRange.File == "" {
+				*diags = append(*diags, SemanticDiagnostic{
+					Range:   sym.SelectionRange,
+					Message: fmt.Sprintf("duplicate declaration of %q", sym.Name),
+					IsError: false,
+				})
+			}
+			return
+		}
+		ts.Symbols[sym.Name] = sym
+		ts.Order = append(ts.Order, sym)
+		if sym.Range.File == "" {
+			taskSym.Children = append(taskSym.Children, sym)
+		}
+	}
+
+	for _, p := range task.Params {
+		pDetail := formatPortDeclDetail(p)
+		addLocal(&Symbol{
+			Name:           p.Name,
+			Kind:           KindPort,
+			TypeDetail:     pDetail,
+			Signature:      pDetail + " " + p.Name,
+			Range:          p.Range,
+			SelectionRange: p.NameRange,
+		})
+	}
+
+	for _, item := range task.Locals {
+		switch d := item.(type) {
+		case *ast.ParamDecl:
+			pDetail := formatParamDetail(d)
+			s := pDetail + " " + d.Name
+			if d.ValueText != "" {
+				s += " = " + d.ValueText
+			}
+			addLocal(&Symbol{
+				Name:           d.Name,
+				Kind:           KindParam,
+				TypeDetail:     pDetail,
+				Signature:      s,
+				Range:          d.Range,
+				SelectionRange: d.NameRange,
+			})
+		case *ast.NetDecl:
+			nDetail := formatNetDeclDetail(d)
+			addLocal(&Symbol{
+				Name:           d.Name,
+				Kind:           KindNet,
+				TypeDetail:     nDetail,
+				Signature:      nDetail + " " + d.Name,
+				Range:          d.Range,
+				SelectionRange: d.NameRange,
+			})
+		}
+	}
+
+	return ts
+}
+
+func formatTaskSignature(task *ast.TaskDecl) string {
+	var b strings.Builder
+	b.WriteString("task")
+	if task.Automatic {
+		b.WriteString(" automatic")
+	}
+	b.WriteString(" ")
+	b.WriteString(task.Name)
+	if len(task.Params) > 0 {
+		b.WriteString(" (")
+		for i, p := range task.Params {
 			if i > 0 {
 				b.WriteString(", ")
 			}

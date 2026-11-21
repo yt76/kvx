@@ -172,7 +172,7 @@ func classifySemanticToken(tok, prevTok lexer.Token, an *analyzer.Analysis) (uin
 					return semTokenProperty, mods, true
 				case analyzer.KindNet, analyzer.KindInstance:
 					return semTokenVariable, mods, true
-				case analyzer.KindFunction:
+				case analyzer.KindFunction, analyzer.KindTask:
 					return semTokenFunction, mods, true
 				}
 			}
@@ -198,7 +198,7 @@ func isKeywordToken(t lexer.TokenType) bool {
 		lexer.TokenIf, lexer.TokenElse,
 		lexer.TokenCase, lexer.TokenCasex, lexer.TokenCasez, lexer.TokenEndcase, lexer.TokenDefault,
 		lexer.TokenFor, lexer.TokenWhile,
-		lexer.TokenFunction, lexer.TokenEndfunction, lexer.TokenAutomatic,
+		lexer.TokenFunction, lexer.TokenEndfunction, lexer.TokenTask, lexer.TokenEndtask, lexer.TokenAutomatic,
 		lexer.TokenGenerate, lexer.TokenEndgenerate, lexer.TokenGenvar:
 		return true
 	default:

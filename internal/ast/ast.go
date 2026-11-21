@@ -179,6 +179,20 @@ type FunctionDecl struct {
 func (f *FunctionDecl) ItemRange() Range { return f.Range }
 func (f *FunctionDecl) moduleItemNode()  {}
 
+// TaskDecl represents a Verilog task declaration (task ... endtask).
+type TaskDecl struct {
+	Automatic bool
+	Name      string
+	NameRange Range
+	Params    []*PortDecl
+	Locals    []ModuleItem
+	Range     Range
+	Refs      []IdentifierRef
+}
+
+func (t *TaskDecl) ItemRange() Range { return t.Range }
+func (t *TaskDecl) moduleItemNode()  {}
+
 // GenerateBlock represents a generate construct (generate...endgenerate, for-generate, if-generate, case-generate, or generate begin...end).
 type GenerateBlock struct {
 	Kind  string // "generate", "for", "if", "case", "begin"

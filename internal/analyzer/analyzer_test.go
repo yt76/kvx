@@ -212,3 +212,39 @@ func TestFindModuleInstantiations(t *testing.T) {
 		t.Errorf("expected 0 instantiations for nonexistent, got %d", len(got))
 	}
 }
+
+func TestAnalyzeTaskScope(t *testing.T) {
+	src := "module m(input wire clk, input wire [7:0] a, output reg [7:0] y);\n" +
+		"  task automatic compute(input [7:0] in_v, output [7:0] out_v);\n" +
+		"    reg [7:0] tmp;\n" +
+		"    begin\n" +
+		"      tmp = in_v + 8'd1;\n" +
+		"      out_v = tmp;\n" +
+		"    end\n" +
+		"  endtask\n" +
+		"  always @(posedge clk) begin\n" +
+		"    compute(a, y);\n" +
+		"  end\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics, got %+v", an.Diagnostics)
+	}
+
+	// Local variable `tmp` inside task (line 5, col 14) -> resolves to `reg [7:0] tmp` at line 2
+	symTmp := an.SymbolAt(ast.Position{Line: 5, Column: 14})
+	if symTmp == nil || symTmp.Name != "tmp" || symTmp.Kind != KindNet || symTmp.SelectionRange.Start.Line != 2 {
+		t.Errorf("SymbolAt(tmp) = %+v, want local net 'tmp' at line 2", symTmp)
+	}
+
+	// Task call `compute` at line 9, col 5 -> resolves to KindTask at line 1
+	symTask := an.SymbolAt(ast.Position{Line: 9, Column: 5})
+	if symTask == nil || symTask.Name != "compute" || symTask.Kind != KindTask || symTask.SelectionRange.Start.Line != 1 {
+		t.Errorf("SymbolAt(compute) = %+v, want KindTask 'compute' at line 1", symTask)
+	}
+}

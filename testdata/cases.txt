@@ -6,3 +6,5 @@ basic.v         0 0
 errors.v        1 1
 module_inst.v   0 0
 func_macro.v    0 0
+attributes.v    0 0
+task.v          0 0

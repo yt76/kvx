@@ -232,6 +232,9 @@ func printASTSummary(path string, file *ast.SourceFile, out io.Writer) {
 			case *ast.FunctionDecl:
 				fmt.Fprintf(out, "    Func:  %s (line %d..%d, %d params)\n",
 					v.Name, v.Range.Start.Line+1, v.Range.End.Line+1, len(v.Params))
+			case *ast.TaskDecl:
+				fmt.Fprintf(out, "    Task:  %s (line %d..%d, %d params)\n",
+					v.Name, v.Range.Start.Line+1, v.Range.End.Line+1, len(v.Params))
 			case *ast.GenerateBlock:
 				lbl := ""
 				if v.Label != "" {

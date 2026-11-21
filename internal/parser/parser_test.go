@@ -640,3 +640,166 @@ func TestParseFunctionLikeMacros(t *testing.T) {
 		"endmodule\n"
 	_, _ = Parse(recSrc)
 }
+
+func TestParseAttributes(t *testing.T) {
+	src := `
+(* keep_hierarchy = "yes" *)
+module attr_demo #(
+    (* fsm_encoding = "one_hot" *) parameter WIDTH = 8
+) (
+    (* mark_debug = "true" *) input wire clk,
+    (* mark_debug = "true", keep = "true" *) input wire [WIDTH-1:0] din,
+    (* dont_touch = "yes" *) output reg [WIDTH-1:0] dout
+);
+    (* ram_style = "block" *) reg [WIDTH-1:0] mem [0:15];
+    (* keep = "true" *) (* ASYNC_REG = "TRUE" *) wire [WIDTH-1:0] stage;
+
+    (* keep = "true" *) assign stage = (* no_opt *) din + 1'b1;
+
+    (* dont_touch = "true" *)
+    sub_mod u_sub (
+        (* keep *) .a(stage),
+        .y()
+    );
+
+    // Ensure always @(*) is still parsed as wildcard sensitivity list, not an attribute!
+    reg [WIDTH-1:0] comb;
+    always @(*) begin
+        (* full_case, parallel_case *)
+        case (din[1:0])
+            2'b00: comb = stage;
+            default: comb = din;
+        endcase
+    end
+
+    always @(posedge clk) begin
+        mem[0] <= comb;
+        dout <= mem[0];
+    end
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(file.Modules))
+	}
+	mod := file.Modules[0]
+	if mod.Name != "attr_demo" {
+		t.Errorf("module name = %q, want %q", mod.Name, "attr_demo")
+	}
+	// Ensure attribute names like mark_debug, full_case, no_opt were NOT recorded as signal references.
+	for _, ref := range mod.Refs {
+		switch ref.Name {
+		case "keep_hierarchy", "fsm_encoding", "mark_debug", "keep", "dont_touch",
+			"ram_style", "ASYNC_REG", "no_opt", "full_case", "parallel_case":
+			t.Errorf("attribute name %q should not be recorded as a signal reference", ref.Name)
+		}
+	}
+
+	// Verify unclosed attribute reports an error and recovers.
+	badSrc := `
+module m(input wire a, output wire y);
+    (* mark_debug = "true" wire w;
+    assign y = a;
+endmodule
+`
+	badFile, badErrs := Parse(badSrc)
+	if len(badErrs) == 0 || !strings.Contains(badErrs[0].Message, "unclosed attribute") {
+		t.Errorf("expected unclosed attribute error, got %v", badErrs)
+	}
+	if len(badFile.Modules) != 1 {
+		t.Errorf("expected 1 module on recovery, got %d", len(badFile.Modules))
+	}
+}
+
+func TestParseTaskDecl(t *testing.T) {
+	src := `
+module task_demo (
+    input  wire       clk,
+    input  wire [7:0] din,
+    output reg  [7:0] dout
+);
+    // ANSI style automatic task
+    task automatic drive_out (
+        input  [7:0] val,
+        output [7:0] res
+    );
+        reg [7:0] tmp;
+        begin
+            tmp = val + 8'd1;
+            res = tmp;
+        end
+    endtask
+
+    // Non-ANSI style task with no arguments
+    task clear_out;
+        begin
+            dout <= 8'h00;
+        end
+    endtask
+
+    // Non-ANSI style task with body port declarations
+    task add_pair;
+        input  [7:0] a;
+        input  [7:0] b;
+        output [7:0] y;
+        begin
+            y = a + b;
+        end
+    endtask
+
+    reg [7:0] next_val;
+    always @(posedge clk) begin
+        if (din == 8'h00) begin
+            clear_out;
+        end else begin
+            drive_out(din, next_val);
+            add_pair(next_val, din, dout);
+        end
+    end
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(file.Modules))
+	}
+
+	var tasks []*ast.TaskDecl
+	for _, item := range file.Modules[0].Items {
+		if tk, ok := item.(*ast.TaskDecl); ok {
+			tasks = append(tasks, tk)
+		}
+	}
+	if len(tasks) != 3 {
+		t.Fatalf("got %d tasks, want 3", len(tasks))
+	}
+	if tasks[0].Name != "drive_out" || !tasks[0].Automatic || len(tasks[0].Params) != 2 || len(tasks[0].Locals) != 1 {
+		t.Errorf("unexpected tasks[0]: %+v", tasks[0])
+	}
+	if tasks[1].Name != "clear_out" || tasks[1].Automatic || len(tasks[1].Params) != 0 {
+		t.Errorf("unexpected tasks[1]: %+v", tasks[1])
+	}
+	if tasks[2].Name != "add_pair" || len(tasks[2].Params) != 3 {
+		t.Errorf("unexpected tasks[2]: %+v", tasks[2])
+	}
+
+	// Verify error recovery when endtask is missing
+	badSrc := `
+module m;
+    task t(input a);
+        $display("%b", a);
+endmodule
+`
+	badFile, badErrs := Parse(badSrc)
+	if len(badErrs) == 0 || !strings.Contains(badErrs[0].Message, "expected 'endtask'") {
+		t.Errorf("expected missing endtask error, got %v", badErrs)
+	}
+	if len(badFile.Modules) != 1 {
+		t.Errorf("expected 1 partial module on recovery, got %d", len(badFile.Modules))
+	}
+}

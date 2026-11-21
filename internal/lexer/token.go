@@ -48,6 +48,8 @@ const (
 	TokenWhile       TokenType = "while"
 	TokenFunction    TokenType = "function"
 	TokenEndfunction TokenType = "endfunction"
+	TokenTask        TokenType = "task"
+	TokenEndtask     TokenType = "endtask"
 	TokenAutomatic   TokenType = "automatic"
 	TokenGenerate    TokenType = "generate"
 	TokenEndgenerate TokenType = "endgenerate"
@@ -127,6 +129,8 @@ var keywords = map[string]TokenType{
 	"while":       TokenWhile,
 	"function":    TokenFunction,
 	"endfunction": TokenEndfunction,
+	"task":        TokenTask,
+	"endtask":     TokenEndtask,
 	"automatic":   TokenAutomatic,
 	"generate":    TokenGenerate,
 	"endgenerate": TokenEndgenerate,

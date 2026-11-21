@@ -63,6 +63,10 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 			p.advance()
 			continue
 		}
+		if p.isAttrStart() {
+			p.skipAttributes()
+			continue
+		}
 		if tok.Type == lexer.TokenModule {
 			if mod := p.parseModuleDecl(); mod != nil {
 				file.Modules = append(file.Modules, mod)
@@ -152,6 +156,10 @@ func (p *Parser) parseModuleParamPortList(mod *ast.ModuleDecl) {
 	p.advance() // consume '('
 
 	for !p.isEOF() && p.cur().Type != lexer.TokenRParen {
+		p.skipAttributes()
+		if p.cur().Type == lexer.TokenRParen {
+			break
+		}
 		startPos := p.cur().Range.Start
 		kind := "parameter"
 		if p.cur().Type == lexer.TokenParameter || p.cur().Type == lexer.TokenLocalparam {
@@ -223,6 +231,10 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 	var curWidth *ast.BitRange
 
 	for !p.isEOF() && p.cur().Type != lexer.TokenRParen {
+		p.skipAttributes()
+		if p.cur().Type == lexer.TokenRParen {
+			break
+		}
 		startPos := p.cur().Range.Start
 
 		if isPortDirection(p.cur().Type) {
@@ -313,6 +325,12 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 }
 
 func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
+	if p.isAttrStart() {
+		p.skipAttributes()
+		if p.isEOF() || p.cur().Type == lexer.TokenEndmodule || p.cur().Type == lexer.TokenModule || p.cur().Type == lexer.TokenEndgenerate || p.cur().Type == lexer.TokenEnd {
+			return
+		}
+	}
 	tok := p.cur()
 	switch tok.Type {
 	case lexer.TokenIllegal:
@@ -332,6 +350,8 @@ func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 		p.parseProceduralBlock(mod)
 	case lexer.TokenFunction:
 		p.parseFunctionDecl(mod)
+	case lexer.TokenTask:
+		p.parseTaskDecl(mod)
 	case lexer.TokenGenerate:
 		p.parseGenerateRegion(mod)
 	case lexer.TokenFor, lexer.TokenIf, lexer.TokenCase, lexer.TokenCasex, lexer.TokenCasez, lexer.TokenBegin:
@@ -623,6 +643,10 @@ func (p *Parser) parseFunctionDecl(mod *ast.ModuleDecl) {
 		p.cur().Type != lexer.TokenEndfunction &&
 		p.cur().Type != lexer.TokenEndmodule &&
 		p.cur().Type != lexer.TokenModule {
+		if p.isAttrStart() {
+			p.skipAttributes()
+			continue
+		}
 		switch p.cur().Type {
 		case lexer.TokenIllegal:
 			p.addError(p.cur().Range, p.cur().Literal)
@@ -660,6 +684,82 @@ func (p *Parser) parseFunctionDecl(mod *ast.ModuleDecl) {
 	}
 	fn.Refs = tempMod.Refs
 	mod.Items = append(mod.Items, fn)
+}
+
+func (p *Parser) parseTaskDecl(mod *ast.ModuleDecl) {
+	startTok := p.advance() // consume 'task'
+	task := &ast.TaskDecl{
+		Range: ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
+	}
+
+	if p.cur().Type == lexer.TokenAutomatic {
+		task.Automatic = true
+		p.advance()
+	}
+
+	if p.cur().Type == lexer.TokenIdent {
+		nameTok := p.advance()
+		task.Name = nameTok.Literal
+		task.NameRange = nameTok.Range
+	} else {
+		p.addError(p.cur().Range, "expected task name")
+	}
+
+	tempMod := &ast.ModuleDecl{}
+
+	// Optional ANSI formal argument list: (input ..., output ...)
+	if p.cur().Type == lexer.TokenLParen {
+		p.parseModulePortList(tempMod)
+	}
+
+	p.expectSemicolon("task header")
+
+	// Parse task item declarations (input, output, inout, reg, integer, parameter, localparam) and statements.
+	for !p.isEOF() &&
+		p.cur().Type != lexer.TokenEndtask &&
+		p.cur().Type != lexer.TokenEndmodule &&
+		p.cur().Type != lexer.TokenModule {
+		if p.isAttrStart() {
+			p.skipAttributes()
+			continue
+		}
+		switch p.cur().Type {
+		case lexer.TokenIllegal:
+			p.addError(p.cur().Range, p.cur().Literal)
+			p.advance()
+		case lexer.TokenSemicolon:
+			p.advance()
+		case lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout:
+			p.parsePortDeclItem(tempMod)
+		case lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger:
+			p.parseNetDeclItem(tempMod)
+		case lexer.TokenParameter, lexer.TokenLocalparam:
+			p.parseParamDeclItem(tempMod)
+		default:
+			block := &ast.ProceduralBlock{
+				Kind:  "task",
+				Range: ast.Range{File: p.cur().Range.File, Start: p.cur().Range.Start, End: p.cur().Range.End},
+			}
+			p.parseStatement(block, tempMod)
+		}
+	}
+
+	if p.cur().Type == lexer.TokenEndtask {
+		endTok := p.advance()
+		task.Range.End = endTok.Range.End
+	} else {
+		p.addError(p.prev().Range, fmt.Sprintf("expected 'endtask' to close task %q", task.Name))
+		task.Range.End = p.prev().Range.End
+	}
+
+	task.Params = tempMod.Ports
+	for _, item := range tempMod.Items {
+		if _, isPort := item.(*ast.PortDecl); !isPort {
+			task.Locals = append(task.Locals, item)
+		}
+	}
+	task.Refs = tempMod.Refs
+	mod.Items = append(mod.Items, task)
 }
 
 func (p *Parser) parseGenerateRegion(mod *ast.ModuleDecl) {
@@ -819,6 +919,12 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 	if p.isEOF() {
 		return
 	}
+	if p.isAttrStart() {
+		p.skipAttributes()
+		if p.isEOF() || p.cur().Type == lexer.TokenEnd || p.cur().Type == lexer.TokenEndcase || p.cur().Type == lexer.TokenEndfunction || p.cur().Type == lexer.TokenEndmodule {
+			return
+		}
+	}
 
 	switch p.cur().Type {
 	case lexer.TokenSemicolon:
@@ -841,6 +947,7 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 		for !p.isEOF() &&
 			p.cur().Type != lexer.TokenEnd &&
 			p.cur().Type != lexer.TokenEndfunction &&
+			p.cur().Type != lexer.TokenEndtask &&
 			p.cur().Type != lexer.TokenEndmodule &&
 			p.cur().Type != lexer.TokenModule {
 			p.parseStatement(block, mod)
@@ -877,6 +984,7 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 			p.cur().Type != lexer.TokenEndcase &&
 			p.cur().Type != lexer.TokenEnd &&
 			p.cur().Type != lexer.TokenEndfunction &&
+			p.cur().Type != lexer.TokenEndtask &&
 			p.cur().Type != lexer.TokenEndmodule &&
 			p.cur().Type != lexer.TokenModule {
 			if p.cur().Type == lexer.TokenDefault {
@@ -945,7 +1053,24 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 		}
 		p.expectSemicolon("system task call")
 
-	case lexer.TokenIdent, lexer.TokenLBrace:
+	case lexer.TokenIdent:
+		// Task call statement: my_task(a, b); or my_task;
+		if p.peekN(1).Type == lexer.TokenLParen {
+			tok := p.advance()
+			p.recordRef(&block.Refs, mod, tok)
+			p.parseBalancedParens(&block.Refs, mod)
+			p.expectSemicolon("task call")
+			return
+		}
+		if p.peekN(1).Type == lexer.TokenSemicolon {
+			tok := p.advance()
+			p.recordRef(&block.Refs, mod, tok)
+			p.advance() // ';'
+			return
+		}
+		fallthrough
+
+	case lexer.TokenLBrace:
 		// Procedural assignment: a = b; or a <= b; or {a, b} <= c;
 		p.collectTokensUntil(&block.Refs, mod, lexer.TokenAssignOp, lexer.TokenLeq, lexer.TokenSemicolon)
 		if p.cur().Type == lexer.TokenAssignOp || p.cur().Type == lexer.TokenLeq {
@@ -1050,6 +1175,10 @@ func (p *Parser) parseInstConnections(refs *[]ast.IdentifierRef, mod *ast.Module
 		if p.cur().Type == lexer.TokenSemicolon || p.cur().Type == lexer.TokenEndmodule {
 			break
 		}
+		if p.isAttrStart() {
+			p.parseAttribute()
+			continue
+		}
 		if p.cur().Type == lexer.TokenDot && depth == 1 {
 			p.advance() // '.'
 			if p.cur().Type == lexer.TokenIdent {
@@ -1141,6 +1270,11 @@ func (p *Parser) parseExprUntil(mod *ast.ModuleDecl, stopTokens ...lexer.TokenTy
 				return strings.Join(parts, " "), endPos
 			}
 		}
+		if p.isAttrStart() {
+			p.parseAttribute()
+			endPos = p.prev().Range.End
+			continue
+		}
 
 		p.advance()
 		endPos = tok.Range.End
@@ -1193,6 +1327,10 @@ func (p *Parser) collectTokensUntil(refs *[]ast.IdentifierRef, mod *ast.ModuleDe
 				return collected
 			}
 		}
+		if p.isAttrStart() {
+			p.parseAttribute()
+			continue
+		}
 
 		p.advance()
 		collected = append(collected, tok)
@@ -1237,6 +1375,7 @@ func (p *Parser) parseBalancedParensOpts(refs *[]ast.IdentifierRef, mod *ast.Mod
 		if (!allowSemicolon && p.cur().Type == lexer.TokenSemicolon) ||
 			p.cur().Type == lexer.TokenEndmodule ||
 			p.cur().Type == lexer.TokenEndfunction ||
+			p.cur().Type == lexer.TokenEndtask ||
 			p.cur().Type == lexer.TokenEndgenerate {
 			break
 		}
@@ -1305,11 +1444,11 @@ func (p *Parser) syncToStatementEnd() {
 		case lexer.TokenSemicolon:
 			p.advance()
 			return
-		case lexer.TokenEnd, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndgenerate, lexer.TokenEndmodule, lexer.TokenModule,
+		case lexer.TokenEnd, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndgenerate, lexer.TokenEndmodule, lexer.TokenModule,
 			lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout,
 			lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger, lexer.TokenGenvar,
 			lexer.TokenParameter, lexer.TokenLocalparam,
-			lexer.TokenAssign, lexer.TokenAlways, lexer.TokenInitial, lexer.TokenFunction, lexer.TokenGenerate:
+			lexer.TokenAssign, lexer.TokenAlways, lexer.TokenInitial, lexer.TokenFunction, lexer.TokenTask, lexer.TokenGenerate:
 			return
 		default:
 			p.advance()
@@ -1323,8 +1462,8 @@ func isPortDirection(t lexer.TokenType) bool {
 
 func isStatementBoundary(t lexer.TokenType) bool {
 	switch t {
-	case lexer.TokenSemicolon, lexer.TokenEnd, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndgenerate, lexer.TokenEndmodule, lexer.TokenModule,
-		lexer.TokenAlways, lexer.TokenInitial, lexer.TokenAssign, lexer.TokenFunction, lexer.TokenGenerate:
+	case lexer.TokenSemicolon, lexer.TokenEnd, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndgenerate, lexer.TokenEndmodule, lexer.TokenModule,
+		lexer.TokenAlways, lexer.TokenInitial, lexer.TokenAssign, lexer.TokenFunction, lexer.TokenTask, lexer.TokenGenerate:
 		return true
 	default:
 		return false
@@ -1336,6 +1475,75 @@ func (p *Parser) cur() lexer.Token {
 		return p.tokens[len(p.tokens)-1]
 	}
 	return p.tokens[p.pos]
+}
+
+func (p *Parser) peekN(offset int) lexer.Token {
+	idx := p.pos + offset
+	if idx < 0 {
+		return p.tokens[0]
+	}
+	if idx >= len(p.tokens) {
+		return p.tokens[len(p.tokens)-1]
+	}
+	return p.tokens[idx]
+}
+
+// isAttrStart reports whether the current tokens begin a Verilog-2001 attribute instance `(* ... *)`.
+// It explicitly excludes `(*)` (wildcard sensitivity list in `always @(*)`).
+func (p *Parser) isAttrStart() bool {
+	t0 := p.cur()
+	t1 := p.peekN(1)
+	if t0.Type != lexer.TokenLParen || t1.Type != lexer.TokenStar {
+		return false
+	}
+	if t0.Range.End.Line != t1.Range.Start.Line || t0.Range.End.Column != t1.Range.Start.Column {
+		return false
+	}
+	// `(*)` is a wildcard sensitivity list, not an attribute instance.
+	t2 := p.peekN(2)
+	if t2.Type == lexer.TokenRParen &&
+		t1.Range.End.Line == t2.Range.Start.Line &&
+		t1.Range.End.Column == t2.Range.Start.Column {
+		return false
+	}
+	return true
+}
+
+func (p *Parser) isAttrEnd() bool {
+	t0 := p.cur()
+	t1 := p.peekN(1)
+	return t0.Type == lexer.TokenStar &&
+		t1.Type == lexer.TokenRParen &&
+		t0.Range.End.Line == t1.Range.Start.Line &&
+		t0.Range.End.Column == t1.Range.Start.Column
+}
+
+func (p *Parser) parseAttribute() {
+	openTok := p.advance() // '('
+	p.advance()            // '*'
+
+	for !p.isEOF() {
+		if p.isAttrEnd() {
+			p.advance() // '*'
+			p.advance() // ')'
+			return
+		}
+		if p.cur().Type == lexer.TokenSemicolon || p.cur().Type == lexer.TokenEndmodule {
+			break
+		}
+		if p.cur().Type == lexer.TokenIllegal {
+			p.addError(p.cur().Range, p.cur().Literal)
+		}
+		p.advance()
+	}
+
+	p.addError(openTok.Range, "unclosed attribute '(*'")
+}
+
+func (p *Parser) skipAttributes() {
+	for p.isAttrStart() {
+		p.parseAttribute()
+	}
 }
 
 func (p *Parser) prev() lexer.Token {
