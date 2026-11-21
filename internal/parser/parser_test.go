@@ -1034,3 +1034,106 @@ endmodule
 		t.Errorf("expected 1 module on recovery, got %d", len(badFile.Modules))
 	}
 }
+
+func TestParseProceduralLoopsAndWait(t *testing.T) {
+	src := `
+module tb_ctrl;
+    reg clk;
+    reg ready;
+    reg done;
+
+    initial begin
+        clk = 1'b0;
+        forever #5 clk = ~clk;
+    end
+
+    initial begin : main_seq
+        ready = 1'b0;
+        done  = 1'b0;
+        repeat (10) @(posedge clk);
+        ready = 1'b1;
+        wait (ready);
+
+        fork : par_blk
+            begin : branch_a
+                #20;
+                disable branch_b;
+            end
+            begin : branch_b
+                forever #10 done = ~done;
+            end
+        join
+    end
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(file.Modules))
+	}
+
+	// Unclosed fork reports missing join and recovers
+	badSrc := `
+module m;
+    initial begin
+        fork
+            #10;
+    end
+endmodule
+`
+	badFile, badErrs := Parse(badSrc)
+	if len(badErrs) == 0 || !strings.Contains(badErrs[0].Message, "expected 'join'") {
+		t.Errorf("expected missing join error, got %v", badErrs)
+	}
+	if len(badFile.Modules) != 1 {
+		t.Errorf("expected 1 module on recovery, got %d", len(badFile.Modules))
+	}
+}
+
+func TestParseGatePrimitives(t *testing.T) {
+	src := `
+module gate_demo (
+    input  wire a,
+    input  wire b,
+    input  wire oe,
+    output wire y_and,
+    output wire y_or,
+    output wire y_not,
+    output wire y_nand,
+    output wire y_xor,
+    inout  wire io,
+    output wire p_up
+);
+    and (y_and, a, b);
+    or (y_or, a, b);
+    not (y_not, a);
+    bufif1 (io, a, oe);
+    nand #1 (y_nand, a, b);
+    xor u_xor (y_xor, a, b);
+    pullup (p_up);
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(file.Modules))
+	}
+
+	// Non-gate identifier followed by '(' in module body must still report an error.
+	badSrc := `
+module m(input wire a, output wire y);
+    unknown_gate (y, a);
+endmodule
+`
+	badFile, badErrs := Parse(badSrc)
+	if len(badErrs) == 0 {
+		t.Errorf("expected error for non-gate identifier without instance name")
+	}
+	if len(badFile.Modules) != 1 {
+		t.Errorf("expected 1 module on recovery, got %d", len(badFile.Modules))
+	}
+}

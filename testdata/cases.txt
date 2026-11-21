@@ -14,3 +14,5 @@ defparam.v              0 0
 decl_assign_variants.v  0 0
 net_var_types.v         0 0
 number_literals.v       0 0
+procedural_control.v    0 0
+gate_primitives.v       0 0

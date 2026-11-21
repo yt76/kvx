@@ -56,6 +56,12 @@ const (
 	TokenDefault    TokenType = "default"
 	TokenFor         TokenType = "for"
 	TokenWhile       TokenType = "while"
+	TokenRepeat      TokenType = "repeat"
+	TokenForever     TokenType = "forever"
+	TokenWait        TokenType = "wait"
+	TokenFork        TokenType = "fork"
+	TokenJoin        TokenType = "join"
+	TokenDisable     TokenType = "disable"
 	TokenFunction    TokenType = "function"
 	TokenEndfunction TokenType = "endfunction"
 	TokenTask        TokenType = "task"
@@ -148,6 +154,12 @@ var keywords = map[string]TokenType{
 	"default":    TokenDefault,
 	"for":         TokenFor,
 	"while":       TokenWhile,
+	"repeat":      TokenRepeat,
+	"forever":     TokenForever,
+	"wait":        TokenWait,
+	"fork":        TokenFork,
+	"join":        TokenJoin,
+	"disable":     TokenDisable,
 	"function":    TokenFunction,
 	"endfunction": TokenEndfunction,
 	"task":        TokenTask,

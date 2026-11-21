@@ -151,6 +151,7 @@ func (s *DefparamStmt) moduleItemNode()  {}
 type ProceduralBlock struct {
 	Kind   string // "always", "initial"
 	Label  string
+	Labels []string
 	Locals []ModuleItem
 	Range  Range
 	Refs   []IdentifierRef

@@ -260,13 +260,16 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]Sem
 			case *ast.ProceduralBlock:
 				blkScope := buildBlockScope(d, diags)
 				scope.Blocks = append(scope.Blocks, blkScope)
-				if d.Label != "" {
-					if _, exists := scope.Symbols[d.Label]; !exists {
-						scope.Symbols[d.Label] = &Symbol{
-							Name:           d.Label,
+				for _, lbl := range d.Labels {
+					if lbl == "" {
+						continue
+					}
+					if _, exists := scope.Symbols[lbl]; !exists {
+						scope.Symbols[lbl] = &Symbol{
+							Name:           lbl,
 							Kind:           KindInstance,
 							TypeDetail:     "named block",
-							Signature:      "begin : " + d.Label,
+							Signature:      "begin : " + lbl,
 							Range:          d.Range,
 							SelectionRange: d.Range,
 						}

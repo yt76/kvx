@@ -200,6 +200,8 @@ func isKeywordToken(t lexer.TokenType) bool {
 		lexer.TokenIf, lexer.TokenElse,
 		lexer.TokenCase, lexer.TokenCasex, lexer.TokenCasez, lexer.TokenEndcase, lexer.TokenDefault,
 		lexer.TokenFor, lexer.TokenWhile,
+		lexer.TokenRepeat, lexer.TokenForever, lexer.TokenWait,
+		lexer.TokenFork, lexer.TokenJoin, lexer.TokenDisable,
 		lexer.TokenFunction, lexer.TokenEndfunction, lexer.TokenTask, lexer.TokenEndtask, lexer.TokenAutomatic,
 		lexer.TokenGenerate, lexer.TokenEndgenerate, lexer.TokenGenvar:
 		return true
