@@ -640,3 +640,31 @@ func findModuleInstAt(items []ast.ModuleItem, pos ast.Position) *ast.ModuleInst 
 	}
 	return nil
 }
+
+// FindModuleInstantiations returns the ModuleNameRange of every instantiation of moduleName in this file.
+func (a *Analysis) FindModuleInstantiations(moduleName string) []ast.Range {
+	if a == nil || moduleName == "" {
+		return nil
+	}
+	var ranges []ast.Range
+	for _, scope := range a.ModuleOrder {
+		if scope.Module == nil {
+			continue
+		}
+		collectModuleInstantiations(scope.Module.Items, moduleName, &ranges)
+	}
+	return ranges
+}
+
+func collectModuleInstantiations(items []ast.ModuleItem, moduleName string, out *[]ast.Range) {
+	for _, item := range items {
+		switch d := item.(type) {
+		case *ast.ModuleInst:
+			if d.ModuleName == moduleName {
+				*out = append(*out, d.ModuleNameRange)
+			}
+		case *ast.GenerateBlock:
+			collectModuleInstantiations(d.Items, moduleName, out)
+		}
+	}
+}

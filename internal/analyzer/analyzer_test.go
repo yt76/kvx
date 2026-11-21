@@ -179,3 +179,36 @@ func TestAnalyzeGenerateScope(t *testing.T) {
 		t.Errorf("SymbolAt(i) = %+v, want genvar 'i' at line 4", symGenvar)
 	}
 }
+
+func TestFindModuleInstantiations(t *testing.T) {
+	src := "module child(input wire a, output wire y);\n" +
+		"  assign y = a;\n" +
+		"endmodule\n" +
+		"module top(input wire [1:0] a, output wire [1:0] y);\n" +
+		"  child u0 (.a(a[0]), .y(y[0]));\n" +
+		"  generate\n" +
+		"    if (1) begin : g_inst\n" +
+		"      child u1 (.a(a[1]), .y(y[1]));\n" +
+		"    end\n" +
+		"  endgenerate\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	ranges := an.FindModuleInstantiations("child")
+	if len(ranges) != 2 {
+		t.Fatalf("got %d instantiations, want 2: %+v", len(ranges), ranges)
+	}
+	if ranges[0].Start.Line != 4 || ranges[0].Start.Column != 2 {
+		t.Errorf("first instantiation = %+v, want line 4 col 2", ranges[0])
+	}
+	if ranges[1].Start.Line != 7 || ranges[1].Start.Column != 6 {
+		t.Errorf("second instantiation = %+v, want line 7 col 6", ranges[1])
+	}
+	if got := an.FindModuleInstantiations("nonexistent"); len(got) != 0 {
+		t.Errorf("expected 0 instantiations for nonexistent, got %d", len(got))
+	}
+}

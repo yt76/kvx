@@ -128,6 +128,8 @@ func (s *Server) handlePayload(payload []byte) (bool, error) {
 		return false, s.handleHover(msg)
 	case "textDocument/definition":
 		return false, s.handleDefinition(msg)
+	case "textDocument/references":
+		return false, s.handleReferences(msg)
 	case "textDocument/completion":
 		return false, s.handleCompletion(msg)
 	case "textDocument/semanticTokens/full":
@@ -314,6 +316,41 @@ func (s *Server) handleDefinition(msg IncomingMessage) error {
 	return s.sendResult(msg.ID, loc)
 }
 
+func (s *Server) handleReferences(msg IncomingMessage) error {
+	var params ReferenceParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return s.sendError(msg.ID, CodeInvalidParams, fmt.Sprintf("invalid references params: %v", err))
+	}
+
+	doc, ok := s.docs.Get(params.TextDocument.URI)
+	if !ok || doc.Analysis == nil {
+		return s.sendResult(msg.ID, []Location{})
+	}
+
+	pos := ast.Position{Line: params.Position.Line, Column: params.Position.Character}
+	sym := doc.Analysis.SymbolAt(pos)
+	if sym == nil {
+		return s.sendResult(msg.ID, []Location{})
+	}
+
+	targetModule := ""
+	if sym.Kind == analyzer.KindModule && sym.TypeDetail != "`include" {
+		targetModule = sym.Name
+	} else if sym.Kind == analyzer.KindInstance && sym.TargetModule != "" {
+		targetModule = sym.TargetModule
+	}
+
+	if targetModule == "" {
+		return s.sendResult(msg.ID, []Location{})
+	}
+
+	locs := s.docs.FindModuleReferences(targetModule, params.Context.IncludeDeclaration)
+	if locs == nil {
+		locs = []Location{}
+	}
+	return s.sendResult(msg.ID, locs)
+}
+
 func (s *Server) handleCompletion(msg IncomingMessage) error {
 	var params CompletionParams
 	if err := json.Unmarshal(msg.Params, &params); err != nil {
@@ -476,6 +513,7 @@ func (s *Server) handleInitialize(msg IncomingMessage) error {
 			TextDocumentSync:       SyncFull,
 			HoverProvider:          true,
 			DefinitionProvider:     true,
+			ReferencesProvider:     true,
 			DocumentSymbolProvider: true,
 			CompletionProvider:     &CompletionOptions{},
 			SemanticTokensProvider: &SemanticTokensOptions{

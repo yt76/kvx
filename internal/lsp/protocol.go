@@ -41,6 +41,7 @@ type ServerCapabilities struct {
 	TextDocumentSync       TextDocumentSyncKind   `json:"textDocumentSync,omitempty"`
 	HoverProvider          bool                   `json:"hoverProvider,omitempty"`
 	DefinitionProvider     bool                   `json:"definitionProvider,omitempty"`
+	ReferencesProvider     bool                   `json:"referencesProvider,omitempty"`
 	DocumentSymbolProvider bool                   `json:"documentSymbolProvider,omitempty"`
 	CompletionProvider     *CompletionOptions     `json:"completionProvider,omitempty"`
 	SemanticTokensProvider *SemanticTokensOptions `json:"semanticTokensProvider,omitempty"`
@@ -151,6 +152,18 @@ type PublishDiagnosticsParams struct {
 type TextDocumentPositionParams struct {
 	TextDocument TextDocumentIdentifier `json:"textDocument"`
 	Position     Position               `json:"position"`
+}
+
+// ReferenceContext contains additional context for a "textDocument/references" request.
+type ReferenceContext struct {
+	IncludeDeclaration bool `json:"includeDeclaration"`
+}
+
+// ReferenceParams is sent with "textDocument/references".
+type ReferenceParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+	Context      ReferenceContext       `json:"context"`
 }
 
 // Location represents a location inside a resource, such as a line inside a text file.

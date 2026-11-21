@@ -2,5 +2,6 @@
 # Format: <filename> <expected_parser_errors> <expected_analyzer_errors>
 # Lines starting with '#' and empty lines are ignored.
 
-basic.v     0 0
-errors.v    1 1
+basic.v         0 0
+errors.v        1 1
+module_inst.v   0 0

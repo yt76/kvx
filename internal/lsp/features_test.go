@@ -1028,3 +1028,152 @@ func TestLSPStartupScanWithConfigWithoutFilesAndInstanceJump(t *testing.T) {
 		}
 	}
 }
+
+func TestLSPModuleReferences(t *testing.T) {
+	root := t.TempDir()
+	rtlDir := filepath.Join(root, "rtl")
+	if err := os.MkdirAll(rtlDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	subPath := filepath.Join(rtlDir, "sub_unit.v")
+	subSrc := "module sub_unit(input wire a, output wire y);\n" +
+		"  assign y = a;\n" +
+		"endmodule\n"
+	if err := os.WriteFile(subPath, []byte(subSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	topPath := filepath.Join(rtlDir, "top.v")
+	topSrc := "module top(input wire [1:0] din, output wire [1:0] dout);\n" +
+		"  sub_unit u_sub0 (.a(din[0]), .y(dout[0]));\n" +
+		"  generate\n" +
+		"    if (1) begin : g_sub\n" +
+		"      sub_unit u_sub1 (.a(din[1]), .y(dout[1]));\n" +
+		"    end\n" +
+		"  endgenerate\n" +
+		"endmodule\n"
+	if err := os.WriteFile(topPath, []byte(topSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	otherPath := filepath.Join(rtlDir, "other.v")
+	otherSrc := "module other(input wire x, output wire z);\n" +
+		"  sub_unit u_other (.a(x), .y(z));\n" +
+		"endmodule\n"
+	if err := os.WriteFile(otherPath, []byte(otherSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	subURI := filePathToURI(subPath)
+	topURI := filePathToURI(topPath)
+	otherURI := filePathToURI(otherPath)
+
+	var in, out bytes.Buffer
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"rootUri": filePathToURI(root),
+		},
+	})
+	// Open only sub_unit.v; top.v and other.v remain indexed workspace files.
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/didOpen",
+		"params": DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        subURI,
+				LanguageID: "verilog",
+				Version:    1,
+				Text:       subSrc,
+			},
+		},
+	})
+	// Request references on `sub_unit` in `module sub_unit(...)` (line 0, col 9) without declaration.
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "textDocument/references",
+		"params": ReferenceParams{
+			TextDocument: TextDocumentIdentifier{URI: subURI},
+			Position:     Position{Line: 0, Character: 9},
+			Context:      ReferenceContext{IncludeDeclaration: false},
+		},
+	})
+	// Request references with includeDeclaration: true.
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "textDocument/references",
+		"params": ReferenceParams{
+			TextDocument: TextDocumentIdentifier{URI: subURI},
+			Position:     Position{Line: 0, Character: 9},
+			Context:      ReferenceContext{IncludeDeclaration: true},
+		},
+	})
+
+	srv := NewServer(&in, &out, nil)
+	if err := srv.Run(); err != nil {
+		t.Fatalf("Server.Run() error: %v", err)
+	}
+
+	outReader := bufio.NewReader(&out)
+	respInit := readFramedResponse(t, outReader)
+	rawInit, _ := json.Marshal(respInit.Result)
+	var initRes InitializeResult
+	if err := json.Unmarshal(rawInit, &initRes); err != nil {
+		t.Fatalf("unmarshaling InitializeResult: %v", err)
+	}
+	if !initRes.Capabilities.ReferencesProvider {
+		t.Fatalf("expected ReferencesProvider capability to be true")
+	}
+
+	_, _ = readFramedNotification(t, outReader) // publishDiagnostics
+
+	// Response id=2 (includeDeclaration: false -> 3 instantiation sites: other.v:1, top.v:1, top.v:4)
+	respRef2 := readFramedResponse(t, outReader)
+	rawRef2, _ := json.Marshal(respRef2.Result)
+	var locs2 []Location
+	if err := json.Unmarshal(rawRef2, &locs2); err != nil {
+		t.Fatalf("unmarshaling references (id=2): %v", err)
+	}
+	if len(locs2) != 3 {
+		t.Fatalf("id=2: got %d references, want 3: %+v", len(locs2), locs2)
+	}
+	wantLocs2 := []struct {
+		uri  string
+		line int
+	}{
+		{otherURI, 1},
+		{topURI, 1},
+		{topURI, 4},
+	}
+	for i, want := range wantLocs2 {
+		if locs2[i].URI != want.uri || locs2[i].Range.Start.Line != want.line {
+			t.Errorf("id=2 ref[%d] = (%s, line %d), want (%s, line %d)",
+				i, locs2[i].URI, locs2[i].Range.Start.Line, want.uri, want.line)
+		}
+	}
+
+	// Response id=3 (includeDeclaration: true -> 4 locations including sub_unit.v:0)
+	respRef3 := readFramedResponse(t, outReader)
+	rawRef3, _ := json.Marshal(respRef3.Result)
+	var locs3 []Location
+	if err := json.Unmarshal(rawRef3, &locs3); err != nil {
+		t.Fatalf("unmarshaling references (id=3): %v", err)
+	}
+	if len(locs3) != 4 {
+		t.Fatalf("id=3: got %d references, want 4: %+v", len(locs3), locs3)
+	}
+	foundDecl := false
+	for _, loc := range locs3 {
+		if loc.URI == subURI && loc.Range.Start.Line == 0 {
+			foundDecl = true
+		}
+	}
+	if !foundDecl {
+		t.Errorf("id=3: expected declaration in %s line 0, got %+v", subURI, locs3)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -282,6 +283,84 @@ func (s *DocumentStore) FindModule(moduleName string) (string, *analyzer.Symbol,
 		}
 	}
 	return "", nil, false
+}
+
+// FindModuleReferences searches all open documents and indexed workspace files for instantiations
+// of moduleName. If includeDeclaration is true, the module declaration itself is also included.
+func (s *DocumentStore) FindModuleReferences(moduleName string, includeDeclaration bool) []Location {
+	if moduleName == "" {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	type locKey struct {
+		uri      string
+		startLn  int
+		startCol int
+		endLn    int
+		endCol   int
+	}
+	seen := make(map[locKey]bool)
+	var out []Location
+
+	addLoc := func(docURI string, rng ast.Range) {
+		targetURI := docURI
+		if rng.File != "" {
+			targetURI = filePathToURI(rng.File)
+		}
+		lspRng := toLSPRange(rng)
+		key := locKey{
+			uri:      targetURI,
+			startLn:  lspRng.Start.Line,
+			startCol: lspRng.Start.Character,
+			endLn:    lspRng.End.Line,
+			endCol:   lspRng.End.Character,
+		}
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, Location{
+			URI:   targetURI,
+			Range: lspRng,
+		})
+	}
+
+	collectDoc := func(uri string, doc *Document) {
+		if doc == nil || doc.Analysis == nil {
+			return
+		}
+		if includeDeclaration {
+			if scope, ok := doc.Analysis.Modules[moduleName]; ok && scope.Symbol != nil {
+				addLoc(uri, scope.Symbol.SelectionRange)
+			}
+		}
+		for _, rng := range doc.Analysis.FindModuleInstantiations(moduleName) {
+			addLoc(uri, rng)
+		}
+	}
+
+	for uri, doc := range s.docs {
+		collectDoc(uri, doc)
+	}
+	for uri, doc := range s.workspaceDocs {
+		if _, isOpen := s.docs[uri]; isOpen {
+			continue
+		}
+		collectDoc(uri, doc)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].URI != out[j].URI {
+			return out[i].URI < out[j].URI
+		}
+		if out[i].Range.Start.Line != out[j].Range.Start.Line {
+			return out[i].Range.Start.Line < out[j].Range.Start.Line
+		}
+		return out[i].Range.Start.Character < out[j].Range.Start.Character
+	})
+	return out
 }
 
 // WorkspaceModules returns all module symbols from indexed workspace files and open documents.
