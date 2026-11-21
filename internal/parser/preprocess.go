@@ -31,9 +31,23 @@ type condFrame struct {
 	rootRange    ast.Range
 }
 
+const maxMacroExpandDepth = 32
+
+type macroParam struct {
+	name       string
+	defaultVal []lexer.Token
+	hasDefault bool
+}
+
+type macroDef struct {
+	params  []macroParam
+	hasArgs bool
+	body    []lexer.Token
+}
+
 type preprocessState struct {
 	opts       Options
-	macros     map[string][]lexer.Token
+	macros     map[string]macroDef
 	condStack  []condFrame
 	includes   []*ast.IncludeDecl
 	macroDecls []*ast.MacroDecl
@@ -47,20 +61,20 @@ func newPreprocessState(opts Options) *preprocessState {
 	if opts.ReadFile == nil {
 		opts.ReadFile = os.ReadFile
 	}
-	macros := make(map[string][]lexer.Token, len(opts.Defines))
+	macros := make(map[string]macroDef, len(opts.Defines))
 	for name, val := range opts.Defines {
 		if name == "" {
 			continue
 		}
 		if val == "" {
-			macros[name] = nil
+			macros[name] = macroDef{}
 			continue
 		}
 		toks := lexer.Tokenize(val)
 		if len(toks) > 0 && toks[len(toks)-1].Type == lexer.TokenEOF {
 			toks = toks[:len(toks)-1]
 		}
-		macros[name] = toks
+		macros[name] = macroDef{body: toks}
 	}
 	return &preprocessState{
 		opts:       opts,
@@ -290,30 +304,22 @@ func (s *preprocessState) preprocessText(
 				nameTok.Range.File = fileTag
 				i++
 
-				// If this is a function-like macro `define FOO(a, b), skip the parameter list (...)
-				// immediately following the macro name.
-				if i+1 < len(raw) && raw[i+1].Range.Start.Line == dirLine &&
+				// If this is a function-like macro `define FOO(a, b), parse the parameter list (...)
+				// immediately following the macro name (no whitespace before '(').
+				var params []macroParam
+				hasArgs := false
+				curLine := dirLine
+				if i+1 < len(raw) && raw[i+1].Range.Start.Line == curLine &&
 					raw[i+1].Type == lexer.TokenLParen &&
 					raw[i+1].Range.Start.Column == nameTok.Range.End.Column {
+					hasArgs = true
 					i++ // consume '('
-					depth := 1
-					for i+1 < len(raw) && depth > 0 {
-						if raw[i+1].Range.Start.Line != dirLine {
-							break
-						}
-						i++
-						if raw[i].Type == lexer.TokenLParen {
-							depth++
-						} else if raw[i].Type == lexer.TokenRParen {
-							depth--
-						}
-					}
+					params, i, curLine = parseMacroParams(raw, i, curLine, fileTag)
 				}
 
 				var bodyTokens []lexer.Token
 				var bodyParts []string
 				endPos := nameTok.Range.End
-				curLine := dirLine
 
 				for i+1 < len(raw) && raw[i+1].Type != lexer.TokenEOF && raw[i+1].Range.Start.Line == curLine {
 					i++
@@ -340,7 +346,11 @@ func (s *preprocessState) preprocessText(
 					},
 				}
 				s.macroDecls = append(s.macroDecls, macroDecl)
-				s.macros[nameTok.Literal] = bodyTokens
+				s.macros[nameTok.Literal] = macroDef{
+					params:  params,
+					hasArgs: hasArgs,
+					body:    bodyTokens,
+				}
 
 			case "`undef":
 				if i+1 >= len(raw) || raw[i+1].Range.Start.Line != dirLine || raw[i+1].Type == lexer.TokenEOF {
@@ -370,19 +380,12 @@ func (s *preprocessState) preprocessText(
 			continue
 		}
 
-		// Handle macro usage: `MACRO_NAME
+		// Handle macro usage: `MACRO_NAME or `MACRO_NAME(arg1, arg2)
 		if tok.Type == lexer.TokenIdent && strings.HasPrefix(tok.Literal, "`") {
-			macroName := strings.TrimPrefix(tok.Literal, "`")
-			s.macroRefs = append(s.macroRefs, ast.IdentifierRef{
-				Name:  tok.Literal,
-				Range: tok.Range,
-			})
-			if body, ok := s.macros[macroName]; ok && len(body) > 0 {
-				for _, bt := range body {
-					expanded := bt
-					expanded.Range = tok.Range
-					out = append(out, expanded)
-				}
+			expanded, nextIdx, ok := s.tryExpandMacro(raw, i, fileTag, rootIncRange, map[string]bool{}, 0, true)
+			if ok {
+				out = append(out, expanded...)
+				i = nextIdx
 				continue
 			}
 		}
@@ -391,6 +394,291 @@ func (s *preprocessState) preprocessText(
 	}
 
 	return out
+}
+
+func parseMacroParams(raw []lexer.Token, lparenIdx int, curLine int, fileTag string) ([]macroParam, int, int) {
+	var params []macroParam
+	i := lparenIdx
+	depth := 1
+	var currentName string
+	var defaultToks []lexer.Token
+	inDefault := false
+
+	flushParam := func() {
+		if currentName != "" {
+			params = append(params, macroParam{
+				name:       currentName,
+				defaultVal: defaultToks,
+				hasDefault: inDefault,
+			})
+		}
+		currentName = ""
+		defaultToks = nil
+		inDefault = false
+	}
+
+	for i+1 < len(raw) && depth > 0 {
+		next := raw[i+1]
+		if next.Type == lexer.TokenEOF || next.Range.Start.Line != curLine {
+			break
+		}
+		i++
+		tok := raw[i]
+		if tok.Literal == "\\" {
+			curLine++
+			continue
+		}
+		tok.Range.File = fileTag
+
+		switch tok.Type {
+		case lexer.TokenLParen:
+			depth++
+			if inDefault {
+				defaultToks = append(defaultToks, tok)
+			}
+		case lexer.TokenRParen:
+			depth--
+			if depth == 0 {
+				flushParam()
+			} else if inDefault {
+				defaultToks = append(defaultToks, tok)
+			}
+		case lexer.TokenComma:
+			if depth == 1 {
+				flushParam()
+			} else if inDefault {
+				defaultToks = append(defaultToks, tok)
+			}
+		case lexer.TokenAssignOp:
+			if depth == 1 && currentName != "" && !inDefault {
+				inDefault = true
+			} else if inDefault {
+				defaultToks = append(defaultToks, tok)
+			}
+		default:
+			if inDefault {
+				defaultToks = append(defaultToks, tok)
+			} else if depth == 1 && currentName == "" && tok.Type == lexer.TokenIdent {
+				currentName = tok.Literal
+			}
+		}
+	}
+
+	return params, i, curLine
+}
+
+// parseMacroCallArgs parses the actual arguments in `FOO(arg1, arg2, ...)` starting at lparenIdx.
+// It returns the slice of argument token lists, the index of the closing ')', and whether ')' was found.
+func parseMacroCallArgs(tokens []lexer.Token, lparenIdx int, fileTag string) ([][]lexer.Token, int, bool) {
+	var args [][]lexer.Token
+	var curArg []lexer.Token
+	parenDepth := 1
+	bracketDepth := 0
+	braceDepth := 0
+	sawAnyToken := false
+	i := lparenIdx
+
+	for i+1 < len(tokens) {
+		i++
+		tok := tokens[i]
+		if tok.Type == lexer.TokenEOF {
+			return args, i - 1, false
+		}
+		if tok.Range.File == "" {
+			tok.Range.File = fileTag
+		}
+
+		switch tok.Type {
+		case lexer.TokenLParen:
+			parenDepth++
+			sawAnyToken = true
+			curArg = append(curArg, tok)
+		case lexer.TokenRParen:
+			parenDepth--
+			if parenDepth == 0 {
+				if sawAnyToken || len(args) > 0 {
+					args = append(args, curArg)
+				}
+				return args, i, true
+			}
+			curArg = append(curArg, tok)
+		case lexer.TokenLBracket:
+			bracketDepth++
+			sawAnyToken = true
+			curArg = append(curArg, tok)
+		case lexer.TokenRBracket:
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+			sawAnyToken = true
+			curArg = append(curArg, tok)
+		case lexer.TokenLBrace:
+			braceDepth++
+			sawAnyToken = true
+			curArg = append(curArg, tok)
+		case lexer.TokenRBrace:
+			if braceDepth > 0 {
+				braceDepth--
+			}
+			sawAnyToken = true
+			curArg = append(curArg, tok)
+		case lexer.TokenComma:
+			if parenDepth == 1 && bracketDepth == 0 && braceDepth == 0 {
+				args = append(args, curArg)
+				curArg = nil
+				sawAnyToken = true
+			} else {
+				sawAnyToken = true
+				curArg = append(curArg, tok)
+			}
+		default:
+			sawAnyToken = true
+			curArg = append(curArg, tok)
+		}
+	}
+
+	return args, i, false
+}
+
+func (s *preprocessState) tryExpandMacro(
+	tokens []lexer.Token,
+	idx int,
+	fileTag string,
+	rootIncRange ast.Range,
+	expanding map[string]bool,
+	depth int,
+	recordRefs bool,
+) ([]lexer.Token, int, bool) {
+	tok := tokens[idx]
+	if tok.Range.File == "" {
+		tok.Range.File = fileTag
+	}
+	macroName := strings.TrimPrefix(tok.Literal, "`")
+	if recordRefs {
+		s.macroRefs = append(s.macroRefs, ast.IdentifierRef{
+			Name:  tok.Literal,
+			Range: tok.Range,
+		})
+	}
+
+	def, ok := s.macros[macroName]
+	if !ok || expanding[macroName] || depth >= maxMacroExpandDepth {
+		return nil, idx, false
+	}
+
+	if def.hasArgs {
+		// Function-like macro invocation requires '(' following the macro name.
+		if idx+1 >= len(tokens) || tokens[idx+1].Type != lexer.TokenLParen {
+			return nil, idx, false
+		}
+		rawArgs, endIdx, closed := parseMacroCallArgs(tokens, idx+1, fileTag)
+		if !closed {
+			s.addPreprocessError(tok.Range, rootIncRange, fmt.Sprintf("unterminated argument list for macro `%s", macroName))
+		}
+		// Handle single empty argument: `FOO()` for a 1-parameter macro passes 1 empty arg.
+		if len(rawArgs) == 0 && len(def.params) == 1 && !def.params[0].hasDefault {
+			rawArgs = [][]lexer.Token{nil}
+		}
+
+		if len(rawArgs) > len(def.params) {
+			s.addPreprocessError(tok.Range, rootIncRange, fmt.Sprintf("too many arguments for macro `%s: got %d, want %d", macroName, len(rawArgs), len(def.params)))
+		}
+		minRequired := 0
+		for idxP, p := range def.params {
+			if !p.hasDefault {
+				minRequired = idxP + 1
+			}
+		}
+		if len(rawArgs) < minRequired {
+			s.addPreprocessError(tok.Range, rootIncRange, fmt.Sprintf("too few arguments for macro `%s: got %d, want at least %d", macroName, len(rawArgs), minRequired))
+		}
+
+		// Pre-expand macros within actual arguments so nested calls like `ADD(`A, `B) work cleanly.
+		paramMap := make(map[string][]lexer.Token, len(def.params))
+		for pIdx, p := range def.params {
+			var argToks []lexer.Token
+			if pIdx < len(rawArgs) && len(rawArgs[pIdx]) > 0 {
+				argToks = s.expandTokenSlice(rawArgs[pIdx], fileTag, rootIncRange, expanding, depth+1, recordRefs)
+			} else if p.hasDefault {
+				argToks = cloneTokensWithRange(p.defaultVal, tok.Range)
+			}
+			paramMap[p.name] = argToks
+		}
+
+		substituted := make([]lexer.Token, 0, len(def.body))
+		for _, bt := range def.body {
+			if bt.Type == lexer.TokenIdent {
+				if argToks, isParam := paramMap[bt.Literal]; isParam {
+					substituted = append(substituted, argToks...)
+					continue
+				}
+			}
+			expanded := bt
+			expanded.Range = tok.Range
+			substituted = append(substituted, expanded)
+		}
+
+		nextExpanding := copyExpandingSet(expanding, macroName)
+		res := s.expandTokenSlice(substituted, fileTag, rootIncRange, nextExpanding, depth+1, false)
+		return res, endIdx, true
+	}
+
+	// Object-like macro
+	if len(def.body) == 0 {
+		return nil, idx, false
+	}
+
+	substituted := cloneTokensWithRange(def.body, tok.Range)
+	nextExpanding := copyExpandingSet(expanding, macroName)
+	res := s.expandTokenSlice(substituted, fileTag, rootIncRange, nextExpanding, depth+1, false)
+	return res, idx, true
+}
+
+func (s *preprocessState) expandTokenSlice(
+	tokens []lexer.Token,
+	fileTag string,
+	rootIncRange ast.Range,
+	expanding map[string]bool,
+	depth int,
+	recordRefs bool,
+) []lexer.Token {
+	if len(tokens) == 0 {
+		return nil
+	}
+	out := make([]lexer.Token, 0, len(tokens))
+	for i := 0; i < len(tokens); i++ {
+		tok := tokens[i]
+		if tok.Type == lexer.TokenIdent && strings.HasPrefix(tok.Literal, "`") {
+			if expanded, nextIdx, ok := s.tryExpandMacro(tokens, i, fileTag, rootIncRange, expanding, depth, recordRefs); ok {
+				out = append(out, expanded...)
+				i = nextIdx
+				continue
+			}
+		}
+		out = append(out, tok)
+	}
+	return out
+}
+
+func cloneTokensWithRange(tokens []lexer.Token, rng ast.Range) []lexer.Token {
+	if len(tokens) == 0 {
+		return nil
+	}
+	out := make([]lexer.Token, len(tokens))
+	for i, t := range tokens {
+		t.Range = rng
+		out[i] = t
+	}
+	return out
+}
+
+func copyExpandingSet(src map[string]bool, add string) map[string]bool {
+	dst := make(map[string]bool, len(src)+1)
+	for k, v := range src {
+		dst[k] = v
+	}
+	dst[add] = true
+	return dst
 }
 
 func (s *preprocessState) resolveInclude(incPath string, currentFilePath string) (string, []byte, error) {

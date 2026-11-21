@@ -565,3 +565,78 @@ endmodule
 		t.Errorf("expected 1 partial module on recovery, got %d", len(badFile.Modules))
 	}
 }
+
+func TestParseFunctionLikeMacros(t *testing.T) {
+	src := "`define WIDTH 8\n" +
+		"`define BUS(w) [w-1:0]\n" +
+		"`define ADD(a, b) ((a) + (b))\n" +
+		"`define ADD3(a, b, c) `ADD(`ADD(a, b), c)\n" +
+		"`define INC(x, step=1) ((x) + (step))\n" +
+		"`define ZERO() 1'b0\n" +
+		"`define MUX(sel, t, f) ((sel) ? (t) : (f))\n" +
+		"`define FF_ASSIGN(clk, q, d) \\\n" +
+		"  always @(posedge clk) begin \\\n" +
+		"    q <= d; \\\n" +
+		"  end\n" +
+		"\n" +
+		"module func_macro_demo (\n" +
+		"  input  wire clk,\n" +
+		"  input  wire sel,\n" +
+		"  input  wire `BUS(`WIDTH) a,\n" +
+		"  input  wire `BUS(`WIDTH) b,\n" +
+		"  input  wire `BUS(`WIDTH) c,\n" +
+		"  output wire `BUS(`WIDTH) sum,\n" +
+		"  output wire [3:0]        nib,\n" +
+		"  output reg  `BUS(`WIDTH) q,\n" +
+		"  output wire              z\n" +
+		");\n" +
+		"  assign sum = `ADD3(a, b, `INC(c));\n" +
+		"  assign nib = `MUX(sel, {a[1:0], b[1:0]}, c[3:0]);\n" +
+		"  assign z   = `ZERO();\n" +
+		"  `FF_ASSIGN(clk, q, `INC(sum, 2))\n" +
+		"endmodule\n"
+
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(file.Modules))
+	}
+	mod := file.Modules[0]
+	if mod.Name != "func_macro_demo" {
+		t.Errorf("module name = %q, want %q", mod.Name, "func_macro_demo")
+	}
+
+	// Verify expanded identifiers (a, b, c, sel, clk, q, sum) appear in module Refs with real source positions.
+	refNames := make(map[string]bool)
+	for _, r := range mod.Refs {
+		refNames[r.Name] = true
+	}
+	for _, want := range []string{"a", "b", "c", "sel", "clk", "q", "sum"} {
+		if !refNames[want] {
+			t.Errorf("expected expanded argument identifier %q in module Refs, got %+v", want, refNames)
+		}
+	}
+
+	// Verify argument count mismatch errors and recovery
+	badArgsSrc := "`define PAIR(x, y) ((x) + (y))\n" +
+		"module m(input wire a, input wire b, input wire c, output wire y1, output wire y2);\n" +
+		"  assign y1 = `PAIR(a);\n" +
+		"  assign y2 = `PAIR(a, b, c);\n" +
+		"endmodule\n"
+	badFile, badErrs := Parse(badArgsSrc)
+	if len(badErrs) < 2 {
+		t.Fatalf("expected at least 2 errors for too few / too many args, got %d: %v", len(badErrs), badErrs)
+	}
+	if len(badFile.Modules) != 1 {
+		t.Errorf("expected 1 module on recovery, got %d", len(badFile.Modules))
+	}
+
+	// Verify self-recursive function-like macro does not hang
+	recSrc := "`define SELF(x) `SELF(x)\n" +
+		"module m(input wire a, output wire y);\n" +
+		"  assign y = `SELF(a);\n" +
+		"endmodule\n"
+	_, _ = Parse(recSrc)
+}
