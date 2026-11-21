@@ -440,3 +440,46 @@ func TestAnalyzeSystemVerilogPackages(t *testing.T) {
 		t.Errorf("expected 1 undeclared diagnostic for p::MISSING, got %+v", badAn.Diagnostics)
 	}
 }
+
+func TestAnalyzeSystemVerilogInterfaces(t *testing.T) {
+	src := "interface bus_if (input logic clk);\n" +
+		"  logic valid;\n" +
+		"  logic ready;\n" +
+		"  modport master (input clk, ready, output valid);\n" +
+		"  modport slave  (input clk, valid, output ready);\n" +
+		"endinterface\n" +
+		"module producer (bus_if.master bus, input logic en);\n" +
+		"  assign bus.valid = en;\n" +
+		"endmodule\n" +
+		"module top (input logic clk, input logic en);\n" +
+		"  bus_if u_bus (.clk(clk));\n" +
+		"  producer u_prod (.bus(u_bus.master), .en(en));\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics, got %+v", an.Diagnostics)
+	}
+
+	// `bus_if` in `bus_if.master bus` (line 6, col 18) resolves to KindInterface `bus_if` at line 0.
+	symIf := an.SymbolAt(ast.Position{Line: 6, Column: 18})
+	if symIf == nil || symIf.Kind != KindInterface || symIf.Name != "bus_if" || symIf.SelectionRange.Start.Line != 0 {
+		t.Errorf("SymbolAt(bus_if) = %+v, want KindInterface bus_if at line 0", symIf)
+	}
+
+	// `master` in `bus_if.master bus` (line 6, col 25) resolves to KindModport `master` at line 3.
+	symMp := an.SymbolAt(ast.Position{Line: 6, Column: 25})
+	if symMp == nil || symMp.Kind != KindModport || symMp.Name != "master" || symMp.SelectionRange.Start.Line != 3 {
+		t.Errorf("SymbolAt(master) = %+v, want KindModport master at line 3", symMp)
+	}
+
+	// `bus_if` in `bus_if u_bus (.clk(clk));` (line 10, col 3) resolves to KindInterface `bus_if` at line 0.
+	symInstIf := an.SymbolAt(ast.Position{Line: 10, Column: 3})
+	if symInstIf == nil || symInstIf.Kind != KindInterface || symInstIf.Name != "bus_if" || symInstIf.SelectionRange.Start.Line != 0 {
+		t.Errorf("SymbolAt(inst bus_if) = %+v, want KindInterface bus_if at line 0", symInstIf)
+	}
+}

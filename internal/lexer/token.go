@@ -24,6 +24,10 @@ const (
 	TokenPackage      TokenType = "package"
 	TokenEndpackage   TokenType = "endpackage"
 	TokenImport       TokenType = "import"
+	TokenExport       TokenType = "export"
+	TokenInterface    TokenType = "interface"
+	TokenEndinterface TokenType = "endinterface"
+	TokenModport      TokenType = "modport"
 	TokenPrimitive    TokenType = "primitive"
 	TokenEndprimitive TokenType = "endprimitive"
 	TokenTable        TokenType = "table"
@@ -35,6 +39,7 @@ const (
 	TokenInput        TokenType = "input"
 	TokenOutput       TokenType = "output"
 	TokenInout        TokenType = "inout"
+	TokenRef          TokenType = "ref"
 	TokenWire         TokenType = "wire"
 	TokenUwire        TokenType = "uwire"
 	TokenReg          TokenType = "reg"
@@ -186,6 +191,10 @@ var keywords = map[string]TokenType{
 	"package":      TokenPackage,
 	"endpackage":   TokenEndpackage,
 	"import":       TokenImport,
+	"export":       TokenExport,
+	"interface":    TokenInterface,
+	"endinterface": TokenEndinterface,
+	"modport":      TokenModport,
 	"primitive":    TokenPrimitive,
 	"endprimitive": TokenEndprimitive,
 	"table":        TokenTable,
@@ -197,6 +206,7 @@ var keywords = map[string]TokenType{
 	"input":        TokenInput,
 	"output":       TokenOutput,
 	"inout":        TokenInout,
+	"ref":          TokenRef,
 	"wire":         TokenWire,
 	"uwire":        TokenUwire,
 	"reg":          TokenReg,

@@ -193,13 +193,14 @@ type DocumentSymbolParams struct {
 type LSPSymbolKind int
 
 const (
-	LSPSymbolKindModule   LSPSymbolKind = 2
-	LSPSymbolKindField    LSPSymbolKind = 8
-	LSPSymbolKindFunction LSPSymbolKind = 12
-	LSPSymbolKindVariable LSPSymbolKind = 13
-	LSPSymbolKindConstant LSPSymbolKind = 14
-	LSPSymbolKindObject   LSPSymbolKind = 19
-	LSPSymbolKindStruct   LSPSymbolKind = 23
+	LSPSymbolKindModule    LSPSymbolKind = 2
+	LSPSymbolKindField     LSPSymbolKind = 8
+	LSPSymbolKindInterface LSPSymbolKind = 11
+	LSPSymbolKindFunction  LSPSymbolKind = 12
+	LSPSymbolKindVariable  LSPSymbolKind = 13
+	LSPSymbolKindConstant  LSPSymbolKind = 14
+	LSPSymbolKindObject    LSPSymbolKind = 19
+	LSPSymbolKindStruct    LSPSymbolKind = 23
 )
 
 // DocumentSymbol represents programming constructs like modules, ports, or nets in an outline.
@@ -222,13 +223,14 @@ type CompletionParams struct {
 type CompletionItemKind int
 
 const (
-	CompletionKindFunction CompletionItemKind = 3
-	CompletionKindField    CompletionItemKind = 5
-	CompletionKindVariable CompletionItemKind = 6
-	CompletionKindModule   CompletionItemKind = 9
-	CompletionKindKeyword  CompletionItemKind = 14
-	CompletionKindConstant CompletionItemKind = 21
-	CompletionKindStruct   CompletionItemKind = 22
+	CompletionKindFunction  CompletionItemKind = 3
+	CompletionKindField     CompletionItemKind = 5
+	CompletionKindVariable  CompletionItemKind = 6
+	CompletionKindInterface CompletionItemKind = 8
+	CompletionKindModule    CompletionItemKind = 9
+	CompletionKindKeyword   CompletionItemKind = 14
+	CompletionKindConstant  CompletionItemKind = 21
+	CompletionKindStruct    CompletionItemKind = 22
 )
 
 // CompletionItem represents a completion suggestion returned by "textDocument/completion".

@@ -227,9 +227,14 @@ func (s *Server) handleDocumentSymbol(msg IncomingMessage) error {
 		return s.sendResult(msg.ID, []DocumentSymbol{})
 	}
 
-	out := make([]DocumentSymbol, 0, len(doc.Analysis.PackageOrder)+len(doc.Analysis.ModuleOrder))
+	out := make([]DocumentSymbol, 0, len(doc.Analysis.PackageOrder)+len(doc.Analysis.InterfaceOrder)+len(doc.Analysis.ModuleOrder))
 	for _, pkgScope := range doc.Analysis.PackageOrder {
 		if ds, ok := toDocumentSymbol(pkgScope.Symbol); ok {
+			out = append(out, ds)
+		}
+	}
+	for _, ifaceScope := range doc.Analysis.InterfaceOrder {
+		if ds, ok := toDocumentSymbol(ifaceScope.Symbol); ok {
 			out = append(out, ds)
 		}
 	}
@@ -258,9 +263,15 @@ func (s *Server) handleHover(msg IncomingMessage) error {
 		return s.sendResult(msg.ID, nil)
 	}
 
-	// If hovering over an external module instantiation, try resolving across workspace documents.
+	// If hovering over an external module or interface instantiation, try resolving across workspace documents.
 	if sym.Kind == analyzer.KindModule && sym.Signature == "module "+sym.Name {
 		if _, targetSym, found := s.docs.FindModule(sym.Name); found {
+			sym = targetSym
+		} else if _, targetSym, found := s.docs.FindInterface(sym.Name); found {
+			sym = targetSym
+		}
+	} else if sym.Kind == analyzer.KindInterface && sym.Signature == "interface "+sym.Name {
+		if _, targetSym, found := s.docs.FindInterface(sym.Name); found {
 			sym = targetSym
 		}
 	}
@@ -302,16 +313,41 @@ func (s *Server) handleDefinition(msg IncomingMessage) error {
 		}
 	}
 
+	if sym.InterfaceName != "" && targetRange.File == "" {
+		if _, existsInSameDoc := doc.Analysis.Interfaces[sym.InterfaceName]; !existsInSameDoc {
+			if ifaceURI, found := s.docs.FindInterfaceURI(sym.InterfaceName); found {
+				targetURI = ifaceURI
+			}
+		}
+	}
+
 	if sym.Kind == analyzer.KindInstance && sym.TargetModule != "" {
 		if targetScope, existsInSameDoc := doc.Analysis.Modules[sym.TargetModule]; existsInSameDoc {
 			targetRange = targetScope.Symbol.SelectionRange
+		} else if ifaceScope, existsInSameDoc := doc.Analysis.Interfaces[sym.TargetModule]; existsInSameDoc {
+			targetRange = ifaceScope.Symbol.SelectionRange
 		} else if extURI, extSym, found := s.docs.FindModule(sym.TargetModule); found {
+			targetURI = extURI
+			targetRange = extSym.SelectionRange
+		} else if extURI, extSym, found := s.docs.FindInterface(sym.TargetModule); found {
 			targetURI = extURI
 			targetRange = extSym.SelectionRange
 		}
 	} else if sym.Kind == analyzer.KindModule && targetRange.File == "" {
 		if _, existsInSameDoc := doc.Analysis.Modules[sym.Name]; !existsInSameDoc {
 			if extURI, extSym, found := s.docs.FindModule(sym.Name); found {
+				targetURI = extURI
+				targetRange = extSym.SelectionRange
+			} else if extURI, extSym, found := s.docs.FindInterface(sym.Name); found {
+				targetURI = extURI
+				targetRange = extSym.SelectionRange
+			} else {
+				return s.sendResult(msg.ID, nil)
+			}
+		}
+	} else if sym.Kind == analyzer.KindInterface && targetRange.File == "" {
+		if _, existsInSameDoc := doc.Analysis.Interfaces[sym.Name]; !existsInSameDoc {
+			if extURI, extSym, found := s.docs.FindInterface(sym.Name); found {
 				targetURI = extURI
 				targetRange = extSym.SelectionRange
 			} else {
@@ -349,9 +385,9 @@ func (s *Server) handleReferences(msg IncomingMessage) error {
 	}
 
 	targetModule := ""
-	if sym.Kind == analyzer.KindModule && sym.TypeDetail != "`include" {
+	if (sym.Kind == analyzer.KindModule || sym.Kind == analyzer.KindInterface) && sym.TypeDetail != "`include" {
 		targetModule = sym.Name
-	} else if sym.Kind == analyzer.KindInstance && sym.TargetModule != "" {
+	} else if (sym.Kind == analyzer.KindInstance || sym.Kind == analyzer.KindPort) && sym.TargetModule != "" {
 		targetModule = sym.TargetModule
 	}
 
@@ -391,6 +427,18 @@ func (s *Server) handleCompletion(msg IncomingMessage) error {
 	}
 
 	for _, sym := range s.docs.WorkspaceModules() {
+		if sym.Name == "" || seen[sym.Name] {
+			continue
+		}
+		seen[sym.Name] = true
+		items = append(items, CompletionItem{
+			Label:  sym.Name,
+			Kind:   toCompletionKind(sym.Kind),
+			Detail: sym.TypeDetail,
+		})
+	}
+
+	for _, sym := range s.docs.WorkspaceInterfaces() {
 		if sym.Name == "" || seen[sym.Name] {
 			continue
 		}
@@ -456,7 +504,9 @@ func toLSPSymbolKind(k analyzer.SymbolKind) LSPSymbolKind {
 	switch k {
 	case analyzer.KindModule, analyzer.KindPackage:
 		return LSPSymbolKindModule
-	case analyzer.KindPort:
+	case analyzer.KindInterface:
+		return LSPSymbolKindInterface
+	case analyzer.KindPort, analyzer.KindModport:
 		return LSPSymbolKindField
 	case analyzer.KindNet:
 		return LSPSymbolKindVariable
@@ -477,7 +527,9 @@ func toCompletionKind(k analyzer.SymbolKind) CompletionItemKind {
 	switch k {
 	case analyzer.KindModule, analyzer.KindPackage:
 		return CompletionKindModule
-	case analyzer.KindPort:
+	case analyzer.KindInterface:
+		return CompletionKindInterface
+	case analyzer.KindPort, analyzer.KindModport:
 		return CompletionKindField
 	case analyzer.KindParam:
 		return CompletionKindConstant

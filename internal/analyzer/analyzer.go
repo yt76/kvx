@@ -11,15 +11,17 @@ import (
 type SymbolKind string
 
 const (
-	KindModule   SymbolKind = "module"
-	KindPort     SymbolKind = "port"
-	KindNet      SymbolKind = "net"
-	KindParam    SymbolKind = "parameter"
-	KindInstance SymbolKind = "instance"
-	KindFunction SymbolKind = "function"
-	KindTask     SymbolKind = "task"
-	KindType     SymbolKind = "type"
-	KindPackage  SymbolKind = "package"
+	KindModule    SymbolKind = "module"
+	KindInterface SymbolKind = "interface"
+	KindModport   SymbolKind = "modport"
+	KindPort      SymbolKind = "port"
+	KindNet       SymbolKind = "net"
+	KindParam     SymbolKind = "parameter"
+	KindInstance  SymbolKind = "instance"
+	KindFunction  SymbolKind = "function"
+	KindTask      SymbolKind = "task"
+	KindType      SymbolKind = "type"
+	KindPackage   SymbolKind = "package"
 )
 
 // Symbol represents a named declaration in a Verilog source file.
@@ -32,6 +34,7 @@ type Symbol struct {
 	SelectionRange ast.Range
 	TargetModule   string
 	PackageName    string
+	InterfaceName  string
 	Children       []*Symbol
 }
 
@@ -86,34 +89,67 @@ type PackageScope struct {
 	Tasks     []*TaskScope
 }
 
+// InterfaceScope holds the symbol table for a single SystemVerilog interface declaration.
+type InterfaceScope struct {
+	Interface *ast.InterfaceDecl
+	Symbol    *Symbol
+	Symbols   map[string]*Symbol
+	Order     []*Symbol
+	Modports  map[string]*Symbol
+	Functions []*FunctionScope
+	Tasks     []*TaskScope
+	Blocks    []*BlockScope
+}
+
+// WorkspaceContext provides cross-file packages and interfaces for semantic analysis.
+type WorkspaceContext struct {
+	Packages   map[string]*PackageScope
+	Interfaces map[string]*InterfaceScope
+}
+
 // Analysis holds the symbol tables and semantic diagnostics for a SourceFile.
 type Analysis struct {
-	File          *ast.SourceFile
-	Modules       map[string]*ModuleScope
-	ModuleOrder   []*ModuleScope
-	Packages      map[string]*PackageScope
-	PackageOrder  []*PackageScope
-	AllPackages   map[string]*PackageScope
-	GlobalSymbols map[string]*Symbol
-	GlobalOrder   []*Symbol
-	Diagnostics   []SemanticDiagnostic
+	File           *ast.SourceFile
+	Modules        map[string]*ModuleScope
+	ModuleOrder    []*ModuleScope
+	Interfaces     map[string]*InterfaceScope
+	InterfaceOrder []*InterfaceScope
+	AllInterfaces  map[string]*InterfaceScope
+	Packages       map[string]*PackageScope
+	PackageOrder   []*PackageScope
+	AllPackages    map[string]*PackageScope
+	GlobalSymbols  map[string]*Symbol
+	GlobalOrder    []*Symbol
+	Diagnostics    []SemanticDiagnostic
 }
 
 // Analyze builds symbol tables and performs semantic checks on file.
 func Analyze(file *ast.SourceFile) *Analysis {
-	return AnalyzeWithPackages(file, nil)
+	return AnalyzeWithWorkspace(file, WorkspaceContext{})
 }
 
 // AnalyzeWithPackages builds symbol tables and performs semantic checks on file,
 // resolving package imports and `pkg::sym` references against both local and external packages.
 func AnalyzeWithPackages(file *ast.SourceFile, extPackages map[string]*PackageScope) *Analysis {
-	allPkgs := make(map[string]*PackageScope, len(extPackages))
-	for k, v := range extPackages {
+	return AnalyzeWithWorkspace(file, WorkspaceContext{Packages: extPackages})
+}
+
+// AnalyzeWithWorkspace builds symbol tables and performs semantic checks on file,
+// resolving packages and interfaces against both local and workspace declarations.
+func AnalyzeWithWorkspace(file *ast.SourceFile, ctx WorkspaceContext) *Analysis {
+	allPkgs := make(map[string]*PackageScope, len(ctx.Packages))
+	for k, v := range ctx.Packages {
 		allPkgs[k] = v
+	}
+	allIfaces := make(map[string]*InterfaceScope, len(ctx.Interfaces))
+	for k, v := range ctx.Interfaces {
+		allIfaces[k] = v
 	}
 	res := &Analysis{
 		File:          file,
 		Modules:       make(map[string]*ModuleScope),
+		Interfaces:    make(map[string]*InterfaceScope),
+		AllInterfaces: allIfaces,
 		Packages:      make(map[string]*PackageScope),
 		AllPackages:   allPkgs,
 		GlobalSymbols: make(map[string]*Symbol),
@@ -205,7 +241,7 @@ func AnalyzeWithPackages(file *ast.SourceFile, extPackages map[string]*PackageSc
 	}
 
 	for _, pkg := range file.Packages {
-		pkgScope := analyzePackage(pkg, res.GlobalSymbols, res.AllPackages, &res.Diagnostics)
+		pkgScope := analyzePackage(pkg, res.GlobalSymbols, res.AllPackages, res.AllInterfaces, &res.Diagnostics)
 		res.PackageOrder = append(res.PackageOrder, pkgScope)
 		if pkg.Name != "" {
 			res.Packages[pkg.Name] = pkgScope
@@ -234,8 +270,17 @@ func AnalyzeWithPackages(file *ast.SourceFile, extPackages map[string]*PackageSc
 		}
 	}
 
+	for _, iface := range file.Interfaces {
+		ifaceScope := analyzeInterface(iface, res.GlobalSymbols, res.AllPackages, res.AllInterfaces, fileHasExtWildcard, &res.Diagnostics)
+		res.InterfaceOrder = append(res.InterfaceOrder, ifaceScope)
+		if iface.Name != "" {
+			res.Interfaces[iface.Name] = ifaceScope
+			res.AllInterfaces[iface.Name] = ifaceScope
+		}
+	}
+
 	for _, mod := range file.Modules {
-		scope := analyzeModule(mod, res.GlobalSymbols, res.AllPackages, fileHasExtWildcard, &res.Diagnostics)
+		scope := analyzeModule(mod, res.GlobalSymbols, res.AllPackages, res.AllInterfaces, fileHasExtWildcard, &res.Diagnostics)
 		res.ModuleOrder = append(res.ModuleOrder, scope)
 		if mod.Name != "" {
 			res.Modules[mod.Name] = scope
@@ -245,7 +290,55 @@ func AnalyzeWithPackages(file *ast.SourceFile, extPackages map[string]*PackageSc
 	return res
 }
 
-func analyzePackage(pkg *ast.PackageDecl, globals map[string]*Symbol, allPkgs map[string]*PackageScope, diags *[]SemanticDiagnostic) *PackageScope {
+func analyzeInterface(iface *ast.InterfaceDecl, globals map[string]*Symbol, allPkgs map[string]*PackageScope, allIfaces map[string]*InterfaceScope, fileHasExtWildcard bool, diags *[]SemanticDiagnostic) *InterfaceScope {
+	detail := "interface"
+	if len(iface.Ports) > 0 || len(iface.Modports) > 0 {
+		detail = fmt.Sprintf("interface (%d ports, %d modports)", len(iface.Ports), len(iface.Modports))
+	}
+	ifaceSym := &Symbol{
+		Name:           iface.Name,
+		Kind:           KindInterface,
+		TypeDetail:     detail,
+		Signature:      formatInterfaceSignature(iface),
+		Range:          iface.Range,
+		SelectionRange: iface.NameRange,
+		InterfaceName:  iface.Name,
+	}
+
+	dummyMod := &ast.ModuleDecl{
+		Name:      iface.Name,
+		NameRange: iface.NameRange,
+		Range:     iface.Range,
+		Imports:   iface.Imports,
+		Params:    iface.Params,
+		Ports:     iface.Ports,
+		Items:     iface.Items,
+		Refs:      iface.Refs,
+	}
+	modScope := analyzeModule(dummyMod, globals, allPkgs, allIfaces, fileHasExtWildcard, diags)
+
+	modports := make(map[string]*Symbol)
+	for _, sym := range modScope.Order {
+		sym.InterfaceName = iface.Name
+		if sym.Kind == KindModport && sym.Name != "" {
+			modports[sym.Name] = sym
+		}
+	}
+	ifaceSym.Children = modScope.Symbol.Children
+
+	return &InterfaceScope{
+		Interface: iface,
+		Symbol:    ifaceSym,
+		Symbols:   modScope.Symbols,
+		Order:     modScope.Order,
+		Modports:  modports,
+		Functions: modScope.Functions,
+		Tasks:     modScope.Tasks,
+		Blocks:    modScope.Blocks,
+	}
+}
+
+func analyzePackage(pkg *ast.PackageDecl, globals map[string]*Symbol, allPkgs map[string]*PackageScope, allIfaces map[string]*InterfaceScope, diags *[]SemanticDiagnostic) *PackageScope {
 	pkgSym := &Symbol{
 		Name:           pkg.Name,
 		Kind:           KindPackage,
@@ -264,7 +357,7 @@ func analyzePackage(pkg *ast.PackageDecl, globals map[string]*Symbol, allPkgs ma
 		Items:     pkg.Items,
 		Refs:      pkg.Refs,
 	}
-	modScope := analyzeModule(dummyMod, globals, allPkgs, false, diags)
+	modScope := analyzeModule(dummyMod, globals, allPkgs, allIfaces, false, diags)
 
 	// Tag all package symbols with PackageName for cross-file resolution.
 	for _, sym := range modScope.Order {
@@ -282,7 +375,7 @@ func analyzePackage(pkg *ast.PackageDecl, globals map[string]*Symbol, allPkgs ma
 	}
 }
 
-func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[string]*PackageScope, fileHasExtWildcard bool, diags *[]SemanticDiagnostic) *ModuleScope {
+func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[string]*PackageScope, allIfaces map[string]*InterfaceScope, fileHasExtWildcard bool, diags *[]SemanticDiagnostic) *ModuleScope {
 	modSym := &Symbol{
 		Name:           mod.Name,
 		Kind:           KindModule,
@@ -363,6 +456,17 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[
 					Kind:           KindPort,
 					TypeDetail:     detail,
 					Signature:      detail + " " + d.Name,
+					Range:          d.Range,
+					SelectionRange: d.NameRange,
+					TargetModule:   d.InterfaceName,
+				}, inGenerate)
+
+			case *ast.ModportDecl:
+				addSymbol(&Symbol{
+					Name:           d.Name,
+					Kind:           KindModport,
+					TypeDetail:     "modport",
+					Signature:      formatModportSignature(d),
 					Range:          d.Range,
 					SelectionRange: d.NameRange,
 				}, inGenerate)
@@ -516,7 +620,7 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[
 	}
 
 	checkRef := func(ref ast.IdentifierRef, localSyms map[string]*Symbol) {
-		if _, resolved := resolveRefInScopes(ref.Name, localSyms, scope.Symbols, globals, allPkgs, hasExtWildcard); resolved {
+		if _, resolved := resolveRefInScopes(ref.Name, localSyms, scope.Symbols, globals, allPkgs, allIfaces, hasExtWildcard); resolved {
 			return
 		}
 		if ref.Range.File == "" {
@@ -563,6 +667,7 @@ func resolveRefInScopes(
 	modSyms map[string]*Symbol,
 	globals map[string]*Symbol,
 	allPkgs map[string]*PackageScope,
+	allIfaces map[string]*InterfaceScope,
 	hasExtWildcard bool,
 ) (*Symbol, bool) {
 	if strings.HasPrefix(name, "`") {
@@ -593,6 +698,11 @@ func resolveRefInScopes(
 			return sym, true
 		}
 	}
+	if allIfaces != nil {
+		if ifaceScope, ok := allIfaces[name]; ok {
+			return ifaceScope.Symbol, true
+		}
+	}
 	if hasExtWildcard {
 		return nil, true
 	}
@@ -603,6 +713,16 @@ func resolveRefInScopes(
 func (a *Analysis) ModuleAt(pos ast.Position) *ModuleScope {
 	for _, scope := range a.ModuleOrder {
 		if scope.Module.Range.Contains(pos) {
+			return scope
+		}
+	}
+	return nil
+}
+
+// InterfaceAt returns the InterfaceScope enclosing pos, or nil if pos is outside all interfaces.
+func (a *Analysis) InterfaceAt(pos ast.Position) *InterfaceScope {
+	for _, scope := range a.InterfaceOrder {
+		if scope.Interface.Range.Contains(pos) {
 			return scope
 		}
 	}
@@ -670,7 +790,86 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 		}
 		for _, ref := range pkg.Refs {
 			if ref.Range.Contains(pos) {
-				if sym, ok := resolveRefInScopes(ref.Name, nil, pkgScope.Symbols, a.GlobalSymbols, a.AllPackages, false); ok && sym != nil {
+				if sym, ok := resolveRefInScopes(ref.Name, nil, pkgScope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
+					return sym
+				}
+			}
+		}
+	}
+
+	// Check interface declarations and their contents.
+	for _, ifaceScope := range a.InterfaceOrder {
+		iface := ifaceScope.Interface
+		if iface.NameRange.Contains(pos) {
+			return ifaceScope.Symbol
+		}
+		if !iface.Range.Contains(pos) {
+			continue
+		}
+		for _, imp := range iface.Imports {
+			if sym := a.resolveImportAt(imp, pos); sym != nil {
+				return sym
+			}
+		}
+		for _, sym := range ifaceScope.Order {
+			if sym.SelectionRange.Contains(pos) {
+				return sym
+			}
+		}
+		for _, fnScope := range ifaceScope.Functions {
+			if !fnScope.Decl.Range.Contains(pos) {
+				continue
+			}
+			for _, sym := range fnScope.Order {
+				if sym.SelectionRange.Contains(pos) {
+					return sym
+				}
+			}
+			for _, ref := range fnScope.Decl.Refs {
+				if ref.Range.Contains(pos) {
+					if sym, ok := resolveRefInScopes(ref.Name, fnScope.Symbols, ifaceScope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
+						return sym
+					}
+				}
+			}
+		}
+		for _, taskScope := range ifaceScope.Tasks {
+			if !taskScope.Decl.Range.Contains(pos) {
+				continue
+			}
+			for _, sym := range taskScope.Order {
+				if sym.SelectionRange.Contains(pos) {
+					return sym
+				}
+			}
+			for _, ref := range taskScope.Decl.Refs {
+				if ref.Range.Contains(pos) {
+					if sym, ok := resolveRefInScopes(ref.Name, taskScope.Symbols, ifaceScope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
+						return sym
+					}
+				}
+			}
+		}
+		for _, blkScope := range ifaceScope.Blocks {
+			if !blkScope.Block.Range.Contains(pos) {
+				continue
+			}
+			for _, sym := range blkScope.Order {
+				if sym.SelectionRange.Contains(pos) {
+					return sym
+				}
+			}
+			for _, ref := range blkScope.Block.Refs {
+				if ref.Range.Contains(pos) {
+					if sym, ok := resolveRefInScopes(ref.Name, blkScope.Symbols, ifaceScope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
+						return sym
+					}
+				}
+			}
+		}
+		for _, ref := range iface.Refs {
+			if ref.Range.Contains(pos) {
+				if sym, ok := resolveRefInScopes(ref.Name, nil, ifaceScope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
 					return sym
 				}
 			}
@@ -693,6 +892,40 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			}
 		}
 
+		// 0b. Check interface port type and modport references (`axi_if.master bus`).
+		for _, port := range mod.Ports {
+			if port.InterfaceName != "" && port.InterfaceNameRange.Contains(pos) {
+				if ifaceScope, ok := a.AllInterfaces[port.InterfaceName]; ok {
+					return ifaceScope.Symbol
+				}
+				return &Symbol{
+					Name:           port.InterfaceName,
+					Kind:           KindInterface,
+					TypeDetail:     "interface",
+					Signature:      "interface " + port.InterfaceName,
+					Range:          port.InterfaceNameRange,
+					SelectionRange: port.InterfaceNameRange,
+					InterfaceName:  port.InterfaceName,
+				}
+			}
+			if port.ModportName != "" && port.ModportNameRange.Contains(pos) {
+				if ifaceScope, ok := a.AllInterfaces[port.InterfaceName]; ok {
+					if mpSym, found := ifaceScope.Modports[port.ModportName]; found {
+						return mpSym
+					}
+				}
+				return &Symbol{
+					Name:           port.ModportName,
+					Kind:           KindModport,
+					TypeDetail:     "modport",
+					Signature:      "modport " + port.ModportName,
+					Range:          port.ModportNameRange,
+					SelectionRange: port.ModportNameRange,
+					InterfaceName:  port.InterfaceName,
+				}
+			}
+		}
+
 		// 1. Check declarations in the module.
 		for _, sym := range scope.Order {
 			if sym.SelectionRange.Contains(pos) {
@@ -700,10 +933,13 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			}
 		}
 
-		// 2. Check module instantiation type names (e.g. clicking on `sub_alu` in `sub_alu u_alu (...)`).
+		// 2. Check module/interface instantiation type names (e.g. clicking on `sub_alu` in `sub_alu u_alu (...)`).
 		if inst := findModuleInstAt(mod.Items, pos); inst != nil {
 			if targetScope, exists := a.Modules[inst.ModuleName]; exists {
 				return targetScope.Symbol
+			}
+			if ifaceScope, exists := a.AllInterfaces[inst.ModuleName]; exists {
+				return ifaceScope.Symbol
 			}
 			return &Symbol{
 				Name:           inst.ModuleName,
@@ -727,7 +963,7 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			}
 			for _, ref := range fnScope.Decl.Refs {
 				if ref.Range.Contains(pos) {
-					if sym, ok := resolveRefInScopes(ref.Name, fnScope.Symbols, scope.Symbols, a.GlobalSymbols, a.AllPackages, false); ok && sym != nil {
+					if sym, ok := resolveRefInScopes(ref.Name, fnScope.Symbols, scope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
 						return sym
 					}
 				}
@@ -746,7 +982,7 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			}
 			for _, ref := range taskScope.Decl.Refs {
 				if ref.Range.Contains(pos) {
-					if sym, ok := resolveRefInScopes(ref.Name, taskScope.Symbols, scope.Symbols, a.GlobalSymbols, a.AllPackages, false); ok && sym != nil {
+					if sym, ok := resolveRefInScopes(ref.Name, taskScope.Symbols, scope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
 						return sym
 					}
 				}
@@ -765,7 +1001,7 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			}
 			for _, ref := range blkScope.Block.Refs {
 				if ref.Range.Contains(pos) {
-					if sym, ok := resolveRefInScopes(ref.Name, blkScope.Symbols, scope.Symbols, a.GlobalSymbols, a.AllPackages, false); ok && sym != nil {
+					if sym, ok := resolveRefInScopes(ref.Name, blkScope.Symbols, scope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
 						return sym
 					}
 				}
@@ -775,7 +1011,7 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 		// 4. Check identifier references in expressions, assignments, and procedural blocks.
 		for _, ref := range mod.Refs {
 			if ref.Range.Contains(pos) {
-				if sym, ok := resolveRefInScopes(ref.Name, nil, scope.Symbols, a.GlobalSymbols, a.AllPackages, false); ok && sym != nil {
+				if sym, ok := resolveRefInScopes(ref.Name, nil, scope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
 					return sym
 				}
 			}
@@ -823,14 +1059,81 @@ func (a *Analysis) CompletionsAt(pos ast.Position) []*Symbol {
 			}
 		}
 		out = append(out, scope.Order...)
+	} else if ifaceScope := a.InterfaceAt(pos); ifaceScope != nil {
+		for _, fnScope := range ifaceScope.Functions {
+			if fnScope.Decl.Range.Contains(pos) {
+				out = append(out, fnScope.Order...)
+				break
+			}
+		}
+		for _, taskScope := range ifaceScope.Tasks {
+			if taskScope.Decl.Range.Contains(pos) {
+				out = append(out, taskScope.Order...)
+				break
+			}
+		}
+		for _, blkScope := range ifaceScope.Blocks {
+			if blkScope.Block.Range.Contains(pos) {
+				out = append(out, blkScope.Order...)
+				break
+			}
+		}
+		out = append(out, ifaceScope.Order...)
 	}
 	out = append(out, a.GlobalOrder...)
+	for _, ifaceScope := range a.InterfaceOrder {
+		if ifaceScope.Symbol.Name != "" {
+			out = append(out, ifaceScope.Symbol)
+		}
+	}
 	for _, modScope := range a.ModuleOrder {
 		if modScope.Symbol.Name != "" {
 			out = append(out, modScope.Symbol)
 		}
 	}
 	return out
+}
+
+func formatInterfaceSignature(iface *ast.InterfaceDecl) string {
+	var b strings.Builder
+	b.WriteString("interface ")
+	b.WriteString(iface.Name)
+	if len(iface.Ports) > 0 {
+		b.WriteString(" (")
+		for i, p := range iface.Ports {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(formatPortDeclDetail(p))
+			b.WriteString(" ")
+			b.WriteString(p.Name)
+		}
+		b.WriteString(")")
+	}
+	return b.String()
+}
+
+func formatModportSignature(mp *ast.ModportDecl) string {
+	var b strings.Builder
+	b.WriteString("modport ")
+	b.WriteString(mp.Name)
+	if len(mp.Ports) > 0 {
+		b.WriteString(" (")
+		lastDir := ""
+		for i, p := range mp.Ports {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			if p.Direction != "" && p.Direction != lastDir {
+				b.WriteString(p.Direction)
+				b.WriteString(" ")
+				lastDir = p.Direction
+			}
+			b.WriteString(p.Name)
+		}
+		b.WriteString(")")
+	}
+	return b.String()
 }
 
 func formatModuleSignature(mod *ast.ModuleDecl) string {
@@ -853,6 +1156,18 @@ func formatModuleSignature(mod *ast.ModuleDecl) string {
 }
 
 func formatPortDeclDetail(d *ast.PortDecl) string {
+	if d.InterfaceName != "" {
+		if d.ModportName != "" {
+			return d.InterfaceName + "." + d.ModportName
+		}
+		return d.InterfaceName
+	}
+	if d.Direction == "interface" {
+		if d.ModportName != "" {
+			return "interface." + d.ModportName
+		}
+		return "interface"
+	}
 	parts := []string{d.Direction}
 	if d.NetType != "" {
 		parts = append(parts, d.NetType)
@@ -1337,7 +1652,7 @@ func findModuleInstAt(items []ast.ModuleItem, pos ast.Position) *ast.ModuleInst 
 	return nil
 }
 
-// FindModuleInstantiations returns the ModuleNameRange of every instantiation of moduleName in this file.
+// FindModuleInstantiations returns the ModuleNameRange of every instantiation (or interface port usage) of moduleName in this file.
 func (a *Analysis) FindModuleInstantiations(moduleName string) []ast.Range {
 	if a == nil || moduleName == "" {
 		return nil
@@ -1347,7 +1662,18 @@ func (a *Analysis) FindModuleInstantiations(moduleName string) []ast.Range {
 		if scope.Module == nil {
 			continue
 		}
+		for _, port := range scope.Module.Ports {
+			if port.InterfaceName == moduleName {
+				ranges = append(ranges, port.InterfaceNameRange)
+			}
+		}
 		collectModuleInstantiations(scope.Module.Items, moduleName, &ranges)
+	}
+	for _, scope := range a.InterfaceOrder {
+		if scope.Interface == nil {
+			continue
+		}
+		collectModuleInstantiations(scope.Interface.Items, moduleName, &ranges)
 	}
 	return ranges
 }

@@ -35,14 +35,46 @@ func (r Range) Contains(pos Position) bool {
 
 // SourceFile represents a parsed Verilog source file.
 type SourceFile struct {
-	Modules  []*ModuleDecl
-	Packages []*PackageDecl
-	Imports  []*ImportDecl
-	Includes []*IncludeDecl
-	Macros   []*MacroDecl
-	Params   []*ParamDecl
-	Typedefs []*TypedefDecl
-	Refs     []IdentifierRef
+	Modules    []*ModuleDecl
+	Interfaces []*InterfaceDecl
+	Packages   []*PackageDecl
+	Imports    []*ImportDecl
+	Includes   []*IncludeDecl
+	Macros     []*MacroDecl
+	Params     []*ParamDecl
+	Typedefs   []*TypedefDecl
+	Refs       []IdentifierRef
+}
+
+// InterfaceDecl represents a SystemVerilog interface declaration (interface ... endinterface).
+type InterfaceDecl struct {
+	Name      string
+	NameRange Range
+	Range     Range
+	Imports   []*ImportDecl
+	Params    []*ParamDecl
+	Ports     []*PortDecl
+	Modports  []*ModportDecl
+	Items     []ModuleItem
+	Refs      []IdentifierRef
+}
+
+// ModportDecl represents a modport declaration inside a SystemVerilog interface.
+type ModportDecl struct {
+	Name      string
+	NameRange Range
+	Ports     []ModportPort
+	Range     Range
+}
+
+func (m *ModportDecl) ItemRange() Range { return m.Range }
+func (m *ModportDecl) moduleItemNode()  {}
+
+// ModportPort represents a single signal or task/function entry inside a modport declaration.
+type ModportPort struct {
+	Direction string // "input", "output", "inout", "ref", "import", "export"
+	Name      string
+	NameRange Range
 }
 
 // PackageDecl represents a SystemVerilog package declaration (package ... endpackage).
@@ -114,15 +146,19 @@ type ModuleDecl struct {
 	Refs      []IdentifierRef
 }
 
-// PortDecl represents a module port declaration (input, output, inout).
+// PortDecl represents a module or interface port declaration (input, output, inout, ref, or interface port).
 type PortDecl struct {
-	Direction string // "input", "output", "inout"
-	NetType   string // "wire", "reg", or ""
-	Signed    bool
-	Width     *BitRange
-	Name      string
-	NameRange Range
-	Range     Range
+	Direction          string // "input", "output", "inout", "ref", or "interface"
+	NetType            string // "wire", "reg", "logic", "axi_if.master", or ""
+	InterfaceName      string // non-empty for typed interface ports (e.g. "axi_if")
+	InterfaceNameRange Range
+	ModportName        string // non-empty when a modport is specified (e.g. "master")
+	ModportNameRange   Range
+	Signed             bool
+	Width              *BitRange
+	Name               string
+	NameRange          Range
+	Range              Range
 }
 
 func (d *PortDecl) ItemRange() Range { return d.Range }

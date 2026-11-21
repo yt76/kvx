@@ -1346,3 +1346,130 @@ func TestLSPCrossFilePackageResolution(t *testing.T) {
 		t.Errorf("definition(IDLE) = %+v, want URI=%s line=2", loc3, pkgURI)
 	}
 }
+
+func TestLSPCrossFileInterfaceResolution(t *testing.T) {
+	root := t.TempDir()
+	rtlDir := filepath.Join(root, "rtl")
+	if err := os.MkdirAll(rtlDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	ifPath := filepath.Join(rtlDir, "bus_if.sv")
+	ifSrc := "interface bus_if (input logic clk);\n" +
+		"  logic valid;\n" +
+		"  logic ready;\n" +
+		"  modport master (input clk, ready, output valid);\n" +
+		"endinterface\n"
+	if err := os.WriteFile(ifPath, []byte(ifSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	prodPath := filepath.Join(rtlDir, "producer.sv")
+	prodSrc := "module producer (bus_if.master bus, input logic en);\n" +
+		"  assign bus.valid = en;\n" +
+		"endmodule\n"
+	if err := os.WriteFile(prodPath, []byte(prodSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ifURI := filePathToURI(ifPath)
+	prodURI := filePathToURI(prodPath)
+
+	var in, out bytes.Buffer
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"rootUri": filePathToURI(root),
+		},
+	})
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/didOpen",
+		"params": DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        prodURI,
+				LanguageID: "systemverilog",
+				Version:    1,
+				Text:       prodSrc,
+			},
+		},
+	})
+	// 1. Go to definition on `bus_if` (line 0, col 18) -> bus_if.sv line 0
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: prodURI},
+			Position:     Position{Line: 0, Character: 18},
+		},
+	})
+	// 2. Go to definition on `master` (line 0, col 25) -> bus_if.sv line 3
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: prodURI},
+			Position:     Position{Line: 0, Character: 25},
+		},
+	})
+	// 3. Hover on `master` (line 0, col 25) -> shows modport signature
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      4,
+		"method":  "textDocument/hover",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: prodURI},
+			Position:     Position{Line: 0, Character: 25},
+		},
+	})
+
+	srv := NewServer(&in, &out, nil)
+	if err := srv.Run(); err != nil {
+		t.Fatalf("Server.Run() error: %v", err)
+	}
+
+	outReader := bufio.NewReader(&out)
+	_ = readFramedResponse(t, outReader) // initialize
+
+	_, diagParams := readFramedNotification(t, outReader)
+	if len(diagParams.Diagnostics) != 0 {
+		t.Fatalf("expected 0 diagnostics for cross-file interface port, got %+v", diagParams.Diagnostics)
+	}
+
+	// Definition id=2: bus_if -> bus_if.sv line 0
+	respDef2 := readFramedResponse(t, outReader)
+	raw2, _ := json.Marshal(respDef2.Result)
+	var loc2 Location
+	if err := json.Unmarshal(raw2, &loc2); err != nil {
+		t.Fatalf("unmarshaling loc2: %v", err)
+	}
+	if loc2.URI != ifURI || loc2.Range.Start.Line != 0 {
+		t.Errorf("definition(bus_if) = %+v, want URI=%s line=0", loc2, ifURI)
+	}
+
+	// Definition id=3: master -> bus_if.sv line 3
+	respDef3 := readFramedResponse(t, outReader)
+	raw3, _ := json.Marshal(respDef3.Result)
+	var loc3 Location
+	if err := json.Unmarshal(raw3, &loc3); err != nil {
+		t.Fatalf("unmarshaling loc3: %v", err)
+	}
+	if loc3.URI != ifURI || loc3.Range.Start.Line != 3 {
+		t.Errorf("definition(master) = %+v, want URI=%s line=3", loc3, ifURI)
+	}
+
+	// Hover id=4: master -> contains "modport master"
+	respHover := readFramedResponse(t, outReader)
+	raw4, _ := json.Marshal(respHover.Result)
+	var hover Hover
+	if err := json.Unmarshal(raw4, &hover); err != nil {
+		t.Fatalf("unmarshaling hover: %v", err)
+	}
+	if !strings.Contains(hover.Contents.Value, "modport master") {
+		t.Errorf("hover(master) = %q, want to contain 'modport master'", hover.Contents.Value)
+	}
+}

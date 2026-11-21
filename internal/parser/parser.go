@@ -77,6 +77,12 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 			}
 			continue
 		}
+		if tok.Type == lexer.TokenInterface {
+			if iface := p.parseInterfaceDecl(); iface != nil {
+				file.Interfaces = append(file.Interfaces, iface)
+			}
+			continue
+		}
 		if tok.Type == lexer.TokenPackage {
 			if pkg := p.parsePackageDecl(); pkg != nil {
 				file.Packages = append(file.Packages, pkg)
@@ -109,6 +115,7 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 		for !p.isEOF() &&
 			p.cur().Type != lexer.TokenModule &&
 			p.cur().Type != lexer.TokenMacromodule &&
+			p.cur().Type != lexer.TokenInterface &&
 			p.cur().Type != lexer.TokenPackage &&
 			p.cur().Type != lexer.TokenImport &&
 			p.cur().Type != lexer.TokenPrimitive &&
@@ -173,8 +180,13 @@ func (p *Parser) parseModuleDecl() *ast.ModuleDecl {
 		p.addError(p.prev().Range, "expected ';' after module header")
 	}
 
-	// Parse module body items until 'endmodule', 'module', 'primitive', or EOF.
-	for !p.isEOF() && p.cur().Type != lexer.TokenEndmodule && p.cur().Type != lexer.TokenModule && p.cur().Type != lexer.TokenPrimitive {
+	// Parse module body items until 'endmodule', 'module', 'interface', 'package', 'primitive', or EOF.
+	for !p.isEOF() &&
+		p.cur().Type != lexer.TokenEndmodule &&
+		p.cur().Type != lexer.TokenModule &&
+		p.cur().Type != lexer.TokenInterface &&
+		p.cur().Type != lexer.TokenPackage &&
+		p.cur().Type != lexer.TokenPrimitive {
 		p.parseModuleItem(mod)
 	}
 
@@ -282,6 +294,10 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 
 	var curDir string
 	var curNetType string
+	var curIfName string
+	var curIfRange ast.Range
+	var curModportName string
+	var curModportRange ast.Range
 	var curSigned bool
 	var curWidth *ast.BitRange
 
@@ -314,6 +330,10 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 		if isPortDirection(p.cur().Type) {
 			curDir = p.cur().Literal
 			curNetType = ""
+			curIfName = ""
+			curIfRange = ast.Range{}
+			curModportName = ""
+			curModportRange = ast.Range{}
 			curSigned = false
 			curWidth = nil
 			p.advance()
@@ -341,10 +361,61 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 					curWidth = r
 				}
 			}
+		} else if p.cur().Type == lexer.TokenInterface {
+			// Generic interface port: `interface bus` or `interface.master bus`
+			p.advance()
+			curDir = "interface"
+			curNetType = ""
+			curIfName = ""
+			curIfRange = ast.Range{}
+			curModportName = ""
+			curModportRange = ast.Range{}
+			curSigned = false
+			curWidth = nil
+			if p.cur().Type == lexer.TokenDot && p.peekN(1).Type == lexer.TokenIdent {
+				p.advance() // '.'
+				mpTok := p.advance()
+				curModportName = mpTok.Literal
+				curModportRange = mpTok.Range
+				curNetType = "." + mpTok.Literal
+			}
+		} else if p.cur().Type == lexer.TokenIdent &&
+			p.peekN(1).Type == lexer.TokenDot &&
+			p.peekN(2).Type == lexer.TokenIdent &&
+			p.peekN(3).Type == lexer.TokenIdent {
+			// Typed interface port with modport: `axi_if.master bus`
+			ifTok := p.advance()
+			p.advance() // '.'
+			mpTok := p.advance()
+			curDir = "interface"
+			curIfName = ifTok.Literal
+			curIfRange = ifTok.Range
+			curModportName = mpTok.Literal
+			curModportRange = mpTok.Range
+			curNetType = ifTok.Literal + "." + mpTok.Literal
+			curSigned = false
+			curWidth = nil
+		} else if (curDir == "" || curDir == "interface") &&
+			p.cur().Type == lexer.TokenIdent &&
+			p.peekN(1).Type == lexer.TokenIdent {
+			// Typed interface port without modport: `axi_if bus`
+			ifTok := p.advance()
+			curDir = "interface"
+			curIfName = ifTok.Literal
+			curIfRange = ifTok.Range
+			curModportName = ""
+			curModportRange = ast.Range{}
+			curNetType = ifTok.Literal
+			curSigned = false
+			curWidth = nil
 		} else if curDir != "" {
 			// Subsequent port in ANSI port list might override netType/signed/width or inherit curDir.
 			if isPortNetType(p.cur().Type) {
 				curNetType = p.cur().Literal
+				curIfName = ""
+				curIfRange = ast.Range{}
+				curModportName = ""
+				curModportRange = ast.Range{}
 				curSigned = false
 				curWidth = nil
 				p.advance()
@@ -353,6 +424,10 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 				}
 			} else if p.isUserTypeBeforeIdent() {
 				curNetType, _ = p.parseScopedTypeName(nil, mod)
+				curIfName = ""
+				curIfRange = ast.Range{}
+				curModportName = ""
+				curModportRange = ast.Range{}
 				curSigned = false
 				curWidth = nil
 			}
@@ -397,13 +472,17 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 
 		if curDir != "" {
 			port := &ast.PortDecl{
-				Direction: curDir,
-				NetType:   curNetType,
-				Signed:    curSigned,
-				Width:     curWidth,
-				Name:      nameTok.Literal,
-				NameRange: nameTok.Range,
-				Range:     ast.Range{File: nameTok.Range.File, Start: startPos, End: endPos},
+				Direction:          curDir,
+				NetType:            curNetType,
+				InterfaceName:      curIfName,
+				InterfaceNameRange: curIfRange,
+				ModportName:        curModportName,
+				ModportNameRange:   curModportRange,
+				Signed:             curSigned,
+				Width:              curWidth,
+				Name:               nameTok.Literal,
+				NameRange:          nameTok.Range,
+				Range:              ast.Range{File: nameTok.Range.File, Start: startPos, End: endPos},
 			}
 			mod.Ports = append(mod.Ports, port)
 			mod.Items = append(mod.Items, port)
@@ -432,7 +511,7 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 	if p.isAttrStart() {
 		p.skipAttributes()
-		if p.isEOF() || p.cur().Type == lexer.TokenEndmodule || p.cur().Type == lexer.TokenModule || p.cur().Type == lexer.TokenEndgenerate || p.cur().Type == lexer.TokenEnd {
+		if p.isEOF() || p.cur().Type == lexer.TokenEndmodule || p.cur().Type == lexer.TokenEndinterface || p.cur().Type == lexer.TokenModule || p.cur().Type == lexer.TokenEndgenerate || p.cur().Type == lexer.TokenEnd {
 			return
 		}
 	}
@@ -443,8 +522,10 @@ func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 		p.advance()
 	case lexer.TokenSemicolon:
 		p.advance()
-	case lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout:
+	case lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout, lexer.TokenRef:
 		p.parsePortDeclItem(mod)
+	case lexer.TokenModport:
+		p.parseModportDecl(mod)
 	case lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg,
 		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint,
 		lexer.TokenInteger, lexer.TokenGenvar,
@@ -1740,7 +1821,7 @@ func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 		if p.cur().Type == lexer.TokenLParen {
 			p.parseInstConnections(&inst.Refs, mod)
 			inst.Range.End = p.prev().Range.End
-		} else {
+		} else if p.cur().Type != lexer.TokenSemicolon && p.cur().Type != lexer.TokenComma {
 			p.addError(instNameTok.Range, fmt.Sprintf("expected '(' for port connections of instance %q", inst.InstanceName))
 		}
 
@@ -2186,8 +2267,8 @@ func (p *Parser) syncToStatementEnd() {
 		case lexer.TokenSemicolon:
 			p.advance()
 			return
-		case lexer.TokenEnd, lexer.TokenJoin, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndgenerate, lexer.TokenEndspecify, lexer.TokenEndmodule, lexer.TokenEndpackage, lexer.TokenModule, lexer.TokenMacromodule, lexer.TokenPackage, lexer.TokenPrimitive,
-			lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout,
+		case lexer.TokenEnd, lexer.TokenJoin, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndgenerate, lexer.TokenEndspecify, lexer.TokenEndmodule, lexer.TokenEndinterface, lexer.TokenEndpackage, lexer.TokenModule, lexer.TokenMacromodule, lexer.TokenInterface, lexer.TokenPackage, lexer.TokenPrimitive,
+			lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout, lexer.TokenRef, lexer.TokenModport,
 			lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg,
 			lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint,
 			lexer.TokenInteger, lexer.TokenGenvar,
@@ -2207,7 +2288,7 @@ func (p *Parser) syncToStatementEnd() {
 }
 
 func isPortDirection(t lexer.TokenType) bool {
-	return t == lexer.TokenInput || t == lexer.TokenOutput || t == lexer.TokenInout
+	return t == lexer.TokenInput || t == lexer.TokenOutput || t == lexer.TokenInout || t == lexer.TokenRef
 }
 
 func isGatePrimitive(name string) bool {
@@ -2285,7 +2366,7 @@ func isPortNetType(t lexer.TokenType) bool {
 
 func isStatementBoundary(t lexer.TokenType) bool {
 	switch t {
-	case lexer.TokenSemicolon, lexer.TokenEnd, lexer.TokenJoin, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndgenerate, lexer.TokenEndspecify, lexer.TokenEndmodule, lexer.TokenEndpackage, lexer.TokenModule, lexer.TokenMacromodule, lexer.TokenPackage, lexer.TokenPrimitive,
+	case lexer.TokenSemicolon, lexer.TokenEnd, lexer.TokenJoin, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndgenerate, lexer.TokenEndspecify, lexer.TokenEndmodule, lexer.TokenEndinterface, lexer.TokenEndpackage, lexer.TokenModule, lexer.TokenMacromodule, lexer.TokenInterface, lexer.TokenPackage, lexer.TokenPrimitive, lexer.TokenModport,
 		lexer.TokenAlways, lexer.TokenAlwaysComb, lexer.TokenAlwaysFF, lexer.TokenAlwaysLatch, lexer.TokenInitial,
 		lexer.TokenAssign, lexer.TokenDefparam, lexer.TokenFunction, lexer.TokenTask, lexer.TokenGenerate, lexer.TokenSpecify:
 		return true
@@ -2483,6 +2564,220 @@ func (p *Parser) parseUserTypeVarDecl(mod *ast.ModuleDecl) {
 	p.expectSemicolon("variable declaration")
 }
 
+func (p *Parser) parseInterfaceDecl() *ast.InterfaceDecl {
+	startTok := p.advance() // consume 'interface'
+	if p.cur().Type == lexer.TokenAutomatic {
+		p.advance()
+	}
+	iface := &ast.InterfaceDecl{
+		Range: ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
+	}
+
+	if p.cur().Type == lexer.TokenIdent {
+		nameTok := p.advance()
+		iface.Name = nameTok.Literal
+		iface.NameRange = nameTok.Range
+	} else {
+		p.addError(p.cur().Range, "expected interface name after 'interface'")
+	}
+
+	dummyMod := &ast.ModuleDecl{
+		Name:      iface.Name,
+		NameRange: iface.NameRange,
+		Range:     iface.Range,
+	}
+
+	// Optional SystemVerilog header package imports: `interface bus_if import pkg::*; #(...) (...);`
+	for p.cur().Type == lexer.TokenImport {
+		p.parseImportDecl(dummyMod, nil)
+	}
+
+	// Optional parameter port list: #(...)
+	if p.cur().Type == lexer.TokenHash {
+		p.advance() // '#'
+		if p.cur().Type == lexer.TokenLParen {
+			p.parseModuleParamPortList(dummyMod)
+		} else {
+			p.addError(p.cur().Range, "expected '(' after '#' in interface header")
+		}
+	}
+
+	// Optional port list: (...)
+	if p.cur().Type == lexer.TokenLParen {
+		p.parseModulePortList(dummyMod)
+	}
+
+	if p.cur().Type == lexer.TokenSemicolon {
+		p.advance()
+	} else {
+		p.addError(p.prev().Range, "expected ';' after interface header")
+	}
+
+	for !p.isEOF() &&
+		p.cur().Type != lexer.TokenEndinterface &&
+		p.cur().Type != lexer.TokenModule &&
+		p.cur().Type != lexer.TokenMacromodule &&
+		p.cur().Type != lexer.TokenInterface &&
+		p.cur().Type != lexer.TokenPackage &&
+		p.cur().Type != lexer.TokenPrimitive {
+		p.parseModuleItem(dummyMod)
+	}
+
+	if p.cur().Type == lexer.TokenEndinterface {
+		p.advance()
+		p.consumeOptionalEndLabel()
+		iface.Range.End = p.prev().Range.End
+	} else {
+		p.addError(p.prev().Range, fmt.Sprintf("expected 'endinterface' to close interface %q", iface.Name))
+		iface.Range.End = p.prev().Range.End
+	}
+
+	iface.Imports = dummyMod.Imports
+	iface.Params = dummyMod.Params
+	iface.Ports = dummyMod.Ports
+	iface.Items = dummyMod.Items
+	iface.Refs = dummyMod.Refs
+	for _, item := range dummyMod.Items {
+		if mp, ok := item.(*ast.ModportDecl); ok {
+			iface.Modports = append(iface.Modports, mp)
+		}
+	}
+	return iface
+}
+
+func (p *Parser) parseModportDecl(mod *ast.ModuleDecl) {
+	startTok := p.advance() // consume 'modport'
+
+	for !p.isEOF() {
+		if p.cur().Type != lexer.TokenIdent {
+			p.addError(p.cur().Range, "expected modport name after 'modport'")
+			p.syncToStatementEnd()
+			return
+		}
+		nameTok := p.advance()
+		mp := &ast.ModportDecl{
+			Name:      nameTok.Literal,
+			NameRange: nameTok.Range,
+			Range:     ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: nameTok.Range.End},
+		}
+
+		if p.cur().Type != lexer.TokenLParen {
+			p.addError(p.cur().Range, fmt.Sprintf("expected '(' after modport name %q", mp.Name))
+			p.syncToStatementEnd()
+			return
+		}
+		openTok := p.advance() // '('
+
+		curDir := ""
+		for !p.isEOF() && p.cur().Type != lexer.TokenRParen && p.cur().Type != lexer.TokenSemicolon && p.cur().Type != lexer.TokenEndinterface {
+			p.skipAttributes()
+			if p.cur().Type == lexer.TokenRParen {
+				break
+			}
+			if p.cur().Type == lexer.TokenComma {
+				p.advance()
+				continue
+			}
+
+			if isPortDirection(p.cur().Type) || p.cur().Type == lexer.TokenImport || p.cur().Type == lexer.TokenExport {
+				curDir = p.advance().Literal
+			}
+
+			// Handle task/function prototype inside modport: `import function void foo(input int x)` or `export task bar()`
+			if (curDir == "import" || curDir == "export") &&
+				(p.cur().Type == lexer.TokenFunction || p.cur().Type == lexer.TokenTask) {
+				p.advance() // function / task
+				if p.cur().Type == lexer.TokenAutomatic {
+					p.advance()
+				}
+				// Skip optional return type tokens up to function/task name + '(' or ',' / ')'
+				var lastIdent lexer.Token
+				for !p.isEOF() &&
+					p.cur().Type != lexer.TokenLParen &&
+					p.cur().Type != lexer.TokenComma &&
+					p.cur().Type != lexer.TokenRParen &&
+					p.cur().Type != lexer.TokenSemicolon {
+					tok := p.advance()
+					if tok.Type == lexer.TokenIdent {
+						lastIdent = tok
+					}
+				}
+				if p.cur().Type == lexer.TokenLParen {
+					p.parseBalancedParens(nil, nil)
+				}
+				if lastIdent.Literal != "" {
+					mp.Ports = append(mp.Ports, ast.ModportPort{
+						Direction: curDir,
+						Name:      lastIdent.Literal,
+						NameRange: lastIdent.Range,
+					})
+				}
+				if p.cur().Type == lexer.TokenComma {
+					p.advance()
+				}
+				continue
+			}
+
+			// Handle explicit port expression in modport: `.port_name(expr)`
+			if p.cur().Type == lexer.TokenDot {
+				p.advance() // '.'
+				if p.cur().Type == lexer.TokenIdent {
+					portTok := p.advance()
+					mp.Ports = append(mp.Ports, ast.ModportPort{
+						Direction: curDir,
+						Name:      portTok.Literal,
+						NameRange: portTok.Range,
+					})
+				}
+				if p.cur().Type == lexer.TokenLParen {
+					p.parseBalancedParens(nil, mod)
+				}
+				if p.cur().Type == lexer.TokenComma {
+					p.advance()
+				}
+				continue
+			}
+
+			if p.cur().Type == lexer.TokenIdent {
+				sigTok := p.advance()
+				p.recordRef(nil, mod, sigTok)
+				mp.Ports = append(mp.Ports, ast.ModportPort{
+					Direction: curDir,
+					Name:      sigTok.Literal,
+					NameRange: sigTok.Range,
+				})
+				if p.cur().Type == lexer.TokenComma {
+					p.advance()
+				}
+				continue
+			}
+
+			p.addError(p.cur().Range, fmt.Sprintf("unexpected token %q in modport %q", p.cur().Literal, mp.Name))
+			p.advance()
+		}
+
+		if p.cur().Type == lexer.TokenRParen {
+			closeTok := p.advance()
+			mp.Range.End = closeTok.Range.End
+		} else {
+			p.addError(openTok.Range, fmt.Sprintf("expected ')' to close modport %q", mp.Name))
+			mp.Range.End = p.prev().Range.End
+		}
+
+		if mod != nil {
+			mod.Items = append(mod.Items, mp)
+		}
+
+		if p.cur().Type == lexer.TokenComma {
+			p.advance()
+			continue
+		}
+		break
+	}
+
+	p.expectSemicolon("modport declaration")
+}
+
 func (p *Parser) parsePackageDecl() *ast.PackageDecl {
 	startTok := p.advance() // consume 'package'
 	if p.cur().Type == lexer.TokenAutomatic {
@@ -2505,6 +2800,7 @@ func (p *Parser) parsePackageDecl() *ast.PackageDecl {
 		p.cur().Type != lexer.TokenEndpackage &&
 		p.cur().Type != lexer.TokenModule &&
 		p.cur().Type != lexer.TokenMacromodule &&
+		p.cur().Type != lexer.TokenInterface &&
 		p.cur().Type != lexer.TokenPackage {
 		p.parseModuleItem(dummyMod)
 	}

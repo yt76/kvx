@@ -1566,3 +1566,53 @@ endmodule
 		t.Fatalf("expected 1 module with 2 imports, got %+v", file.Modules)
 	}
 }
+
+func TestParseSystemVerilogInterfaces(t *testing.T) {
+	src := `
+interface simple_bus #(parameter int W = 8) (input logic clk);
+    logic         valid;
+    logic         ready;
+    logic [W-1:0] data;
+
+    modport master (input clk, ready, output valid, data),
+            slave  (input clk, valid, data, output ready);
+endinterface : simple_bus
+
+module producer (simple_bus.master bus, input logic en);
+    assign bus.valid = en;
+endmodule
+
+module consumer (input logic rdy, simple_bus.slave bus, output logic [7:0] q);
+    assign bus.ready = rdy;
+    assign q = bus.data;
+endmodule
+
+module top (input logic clk, input logic en, output logic [7:0] q);
+    simple_bus #(.W(8)) u_bus (.clk(clk));
+    producer u_prod (.bus(u_bus.master), .en(en));
+    consumer u_cons (.rdy(1'b1), .bus(u_bus.slave), .q(q));
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Interfaces) != 1 || file.Interfaces[0].Name != "simple_bus" {
+		t.Fatalf("expected 1 interface 'simple_bus', got %+v", file.Interfaces)
+	}
+	iface := file.Interfaces[0]
+	if len(iface.Params) != 1 || len(iface.Ports) != 1 || len(iface.Modports) != 2 {
+		t.Fatalf("unexpected interface structure: params=%d ports=%d modports=%d",
+			len(iface.Params), len(iface.Ports), len(iface.Modports))
+	}
+	if iface.Modports[0].Name != "master" || iface.Modports[1].Name != "slave" {
+		t.Errorf("unexpected modport names: %q, %q", iface.Modports[0].Name, iface.Modports[1].Name)
+	}
+	if len(file.Modules) != 3 {
+		t.Fatalf("expected 3 modules, got %d", len(file.Modules))
+	}
+	p0 := file.Modules[0].Ports[0]
+	if p0.InterfaceName != "simple_bus" || p0.ModportName != "master" || p0.Name != "bus" {
+		t.Errorf("unexpected interface port: %+v", p0)
+	}
+}

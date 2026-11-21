@@ -107,13 +107,72 @@ func (s *DocumentStore) indexWorkspaceFilesLocked(cfg *config.Config) {
 			Analysis:   analyzer.Analyze(fileAST),
 		}
 	}
-	// Second pass: re-analyze files with all discovered workspace packages for cross-file imports.
-	pkgs := s.workspacePackagesLocked()
-	if len(pkgs) > 0 {
+	// Second pass: re-analyze files with all discovered workspace packages and interfaces for cross-file resolution.
+	ctx := s.workspaceContextLocked()
+	if len(ctx.Packages) > 0 || len(ctx.Interfaces) > 0 {
 		for _, doc := range s.workspaceDocs {
-			doc.Analysis = analyzer.AnalyzeWithPackages(doc.AST, pkgs)
+			doc.Analysis = analyzer.AnalyzeWithWorkspace(doc.AST, ctx)
 		}
 	}
+}
+
+func (s *DocumentStore) workspaceContextLocked() analyzer.WorkspaceContext {
+	return analyzer.WorkspaceContext{
+		Packages:   s.workspacePackagesLocked(),
+		Interfaces: s.workspaceInterfacesLocked(),
+	}
+}
+
+func (s *DocumentStore) workspaceInterfacesLocked() map[string]*analyzer.InterfaceScope {
+	ifaces := make(map[string]*analyzer.InterfaceScope)
+	collect := func(m map[string]*Document) {
+		for _, doc := range m {
+			if doc.Analysis == nil {
+				continue
+			}
+			for name, ifaceScope := range doc.Analysis.Interfaces {
+				if _, exists := ifaces[name]; !exists {
+					ifaces[name] = ifaceScope
+				}
+			}
+		}
+	}
+	collect(s.docs)
+	collect(s.workspaceDocs)
+	return ifaces
+}
+
+// FindInterface searches open documents and indexed workspace files for an interface declaration by name.
+func (s *DocumentStore) FindInterface(ifaceName string) (string, *analyzer.Symbol, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for uri, doc := range s.docs {
+		if doc.Analysis == nil {
+			continue
+		}
+		if scope, ok := doc.Analysis.Interfaces[ifaceName]; ok {
+			return uri, scope.Symbol, true
+		}
+	}
+	for uri, doc := range s.workspaceDocs {
+		if _, isOpen := s.docs[uri]; isOpen {
+			continue
+		}
+		if doc.Analysis == nil {
+			continue
+		}
+		if scope, ok := doc.Analysis.Interfaces[ifaceName]; ok {
+			return uri, scope.Symbol, true
+		}
+	}
+	return "", nil, false
+}
+
+// FindInterfaceURI returns the document URI declaring ifaceName across open and indexed workspace files.
+func (s *DocumentStore) FindInterfaceURI(ifaceName string) (string, bool) {
+	uri, _, ok := s.FindInterface(ifaceName)
+	return uri, ok
 }
 
 func (s *DocumentStore) workspacePackagesLocked() map[string]*analyzer.PackageScope {
@@ -197,7 +256,7 @@ func (s *DocumentStore) Open(item TextDocumentItem) *Document {
 		Text:       item.Text,
 		AST:        fileAST,
 		ParseErrs:  parseErrs,
-		Analysis:   analyzer.AnalyzeWithPackages(fileAST, s.workspacePackagesLocked()),
+		Analysis:   analyzer.AnalyzeWithWorkspace(fileAST, s.workspaceContextLocked()),
 	}
 	s.docs[item.URI] = doc
 	return doc
@@ -253,7 +312,7 @@ func (s *DocumentStore) Change(id VersionedTextDocumentIdentifier, changes []Tex
 	doc.Text = text
 	doc.AST = fileAST
 	doc.ParseErrs = parseErrs
-	doc.Analysis = analyzer.AnalyzeWithPackages(fileAST, s.workspacePackagesLocked())
+	doc.Analysis = analyzer.AnalyzeWithWorkspace(fileAST, s.workspaceContextLocked())
 	return doc, nil
 }
 
@@ -386,6 +445,9 @@ func (s *DocumentStore) FindModuleReferences(moduleName string, includeDeclarati
 			if scope, ok := doc.Analysis.Modules[moduleName]; ok && scope.Symbol != nil {
 				addLoc(uri, scope.Symbol.SelectionRange)
 			}
+			if scope, ok := doc.Analysis.Interfaces[moduleName]; ok && scope.Symbol != nil {
+				addLoc(uri, scope.Symbol.SelectionRange)
+			}
 		}
 		for _, rng := range doc.Analysis.FindModuleInstantiations(moduleName) {
 			addLoc(uri, rng)
@@ -430,6 +492,31 @@ func (s *DocumentStore) WorkspaceModules() []*analyzer.Symbol {
 				if modScope.Symbol.Name != "" && !seen[modScope.Symbol.Name] {
 					seen[modScope.Symbol.Name] = true
 					out = append(out, modScope.Symbol)
+				}
+			}
+		}
+	}
+	collect(s.docs)
+	collect(s.workspaceDocs)
+	return out
+}
+
+// WorkspaceInterfaces returns all interface symbols from indexed workspace files and open documents.
+func (s *DocumentStore) WorkspaceInterfaces() []*analyzer.Symbol {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []*analyzer.Symbol
+	seen := make(map[string]bool)
+	collect := func(m map[string]*Document) {
+		for _, doc := range m {
+			if doc.Analysis == nil {
+				continue
+			}
+			for _, ifaceScope := range doc.Analysis.InterfaceOrder {
+				if ifaceScope.Symbol.Name != "" && !seen[ifaceScope.Symbol.Name] {
+					seen[ifaceScope.Symbol.Name] = true
+					out = append(out, ifaceScope.Symbol)
 				}
 			}
 		}

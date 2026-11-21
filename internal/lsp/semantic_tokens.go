@@ -161,11 +161,11 @@ func classifySemanticToken(tok, prevTok lexer.Token, an *analyzer.Analysis) (uin
 					mods |= semModDeclaration
 				}
 				switch sym.Kind {
-				case analyzer.KindModule, analyzer.KindType, analyzer.KindPackage:
+				case analyzer.KindModule, analyzer.KindInterface, analyzer.KindType, analyzer.KindPackage:
 					return semTokenType, mods, true
 				case analyzer.KindParam:
 					return semTokenParameter, mods | semModReadonly, true
-				case analyzer.KindPort:
+				case analyzer.KindPort, analyzer.KindModport:
 					if strings.HasPrefix(sym.TypeDetail, "input") {
 						mods |= semModReadonly
 					}
@@ -189,12 +189,13 @@ func classifySemanticToken(tok, prevTok lexer.Token, an *analyzer.Analysis) (uin
 func isKeywordToken(t lexer.TokenType) bool {
 	switch t {
 	case lexer.TokenModule, lexer.TokenMacromodule, lexer.TokenEndmodule,
-		lexer.TokenPackage, lexer.TokenEndpackage, lexer.TokenImport,
+		lexer.TokenPackage, lexer.TokenEndpackage, lexer.TokenImport, lexer.TokenExport,
+		lexer.TokenInterface, lexer.TokenEndinterface, lexer.TokenModport,
 		lexer.TokenPrimitive, lexer.TokenEndprimitive,
 		lexer.TokenTable, lexer.TokenEndtable,
 		lexer.TokenSpecify, lexer.TokenEndspecify,
 		lexer.TokenConfig, lexer.TokenEndconfig,
-		lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout,
+		lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout, lexer.TokenRef,
 		lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg,
 		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenVoid,
 		lexer.TokenTypedef, lexer.TokenEnum, lexer.TokenStruct, lexer.TokenUnion, lexer.TokenPacked, lexer.TokenTypeKw,
