@@ -172,6 +172,14 @@ type MemberRef struct {
 	Range      Range // source range of MemberName
 }
 
+// WriteRef records a signal write on the LHS of a continuous or procedural assignment.
+type WriteRef struct {
+	Name          string
+	Op            string // "=", "<=", "+=", "++", etc.
+	IsMemberWrite bool   // true when writing to a member (`bus.valid = ...` or `pkt.addr = ...`)
+	Range         Range
+}
+
 // ModuleDecl represents a Verilog module declaration (module ... endmodule).
 type ModuleDecl struct {
 	Name       string
@@ -264,8 +272,9 @@ func (d *ParamDecl) moduleItemNode()  {}
 
 // AssignStmt represents a continuous assignment (assign lhs = rhs;).
 type AssignStmt struct {
-	Range Range
-	Refs  []IdentifierRef
+	Range  Range
+	Refs   []IdentifierRef
+	Writes []WriteRef
 }
 
 func (s *AssignStmt) ItemRange() Range { return s.Range }
@@ -288,6 +297,7 @@ type ProceduralBlock struct {
 	Locals []ModuleItem
 	Range  Range
 	Refs   []IdentifierRef
+	Writes []WriteRef
 }
 
 func (b *ProceduralBlock) ItemRange() Range { return b.Range }

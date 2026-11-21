@@ -1096,7 +1096,149 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 		}
 	}
 
+	validateModuleWrites(mod, scope, diags)
+
 	return scope
+}
+
+func isNetOnlyKind(detail string) bool {
+	// True for classic net types that cannot be assigned procedurally (`wire`, `tri`, `uwire`, `wand`, `wor`, `supply0`, `supply1`).
+	fields := strings.Fields(detail)
+	for _, f := range fields {
+		switch f {
+		case "reg", "logic", "bit", "byte", "shortint", "int", "longint", "integer", "real", "time", "realtime", "string":
+			return false
+		}
+	}
+	for _, f := range fields {
+		switch f {
+		case "wire", "uwire", "tri", "tri0", "tri1", "triand", "trior", "trireg", "wand", "wor", "supply0", "supply1":
+			return true
+		}
+	}
+	return false
+}
+
+func validateModuleWrites(mod *ast.ModuleDecl, scope *ModuleScope, diags *[]SemanticDiagnostic) {
+	if mod == nil || scope == nil {
+		return
+	}
+
+	type driverInfo struct {
+		procID   int
+		isSVProc bool // true for always_comb, always_latch, always_ff
+		rng      ast.Range
+	}
+	drivers := make(map[string]driverInfo)
+	nextProcID := 1
+
+	recordDriver := func(w ast.WriteRef, procID int, isSVProc bool) {
+		if w.IsMemberWrite || w.Range.File != "" {
+			return
+		}
+		if prev, exists := drivers[w.Name]; exists {
+			if prev.procID != procID && (prev.isSVProc || isSVProc) {
+				*diags = append(*diags, SemanticDiagnostic{
+					Range:   w.Range,
+					Message: fmt.Sprintf("multiple drivers to %q (also driven at line %d)", w.Name, prev.rng.Start.Line+1),
+					IsError: false,
+				})
+			}
+			return
+		}
+		drivers[w.Name] = driverInfo{
+			procID:   procID,
+			isSVProc: isSVProc,
+			rng:      w.Range,
+		}
+	}
+
+	var checkItems func(items []ast.ModuleItem, inGenerate bool)
+	checkItems = func(items []ast.ModuleItem, inGenerate bool) {
+		for _, item := range items {
+			switch d := item.(type) {
+			case *ast.GenerateBlock:
+				checkItems(d.Items, true)
+			case *ast.AssignStmt:
+				procID := nextProcID
+				nextProcID++
+				for _, w := range d.Writes {
+					if w.Range.File != "" {
+						continue
+					}
+					if sym, ok := scope.Symbols[w.Name]; ok {
+						if sym.Kind == KindPort && strings.HasPrefix(sym.TypeDetail, "input") {
+							*diags = append(*diags, SemanticDiagnostic{
+								Range:   w.Range,
+								Message: fmt.Sprintf("cannot assign to input port %q", w.Name),
+								IsError: false,
+							})
+						}
+					}
+					if !inGenerate {
+						recordDriver(w, procID, false)
+					}
+				}
+			}
+		}
+	}
+	checkItems(mod.Items, false)
+
+	for _, blkScope := range scope.Blocks {
+		blk := blkScope.Block
+		if blk == nil {
+			continue
+		}
+		procID := nextProcID
+		nextProcID++
+		isSVProc := blk.Kind == "always_comb" || blk.Kind == "always_latch" || blk.Kind == "always_ff"
+
+		for _, w := range blk.Writes {
+			if w.Range.File != "" {
+				continue
+			}
+			_, isLocal := blkScope.Symbols[w.Name]
+
+			// 1. Check assignment to input port or net (`wire`)
+			if !isLocal {
+				if sym, ok := scope.Symbols[w.Name]; ok {
+					if sym.Kind == KindPort && strings.HasPrefix(sym.TypeDetail, "input") {
+						*diags = append(*diags, SemanticDiagnostic{
+							Range:   w.Range,
+							Message: fmt.Sprintf("cannot assign to input port %q", w.Name),
+							IsError: false,
+						})
+					} else if !w.IsMemberWrite && isNetOnlyKind(sym.TypeDetail) {
+						*diags = append(*diags, SemanticDiagnostic{
+							Range:   w.Range,
+							Message: fmt.Sprintf("cannot procedurally assign to net %q (%s)", w.Name, sym.TypeDetail),
+							IsError: false,
+						})
+					}
+				}
+			}
+
+			// 2. Check blocking vs non-blocking assignment rules in always_comb / always_latch / always_ff
+			if (blk.Kind == "always_comb" || blk.Kind == "always_latch") && w.Op == "<=" {
+				*diags = append(*diags, SemanticDiagnostic{
+					Range:   w.Range,
+					Message: fmt.Sprintf("non-blocking assignment '<=' in %s block (use '=')", blk.Kind),
+					IsError: false,
+				})
+			} else if blk.Kind == "always_ff" && w.Op != "<=" && !isLocal {
+				*diags = append(*diags, SemanticDiagnostic{
+					Range:   w.Range,
+					Message: fmt.Sprintf("blocking assignment %q to %q in always_ff block (use '<=')", w.Op, w.Name),
+					IsError: false,
+				})
+			}
+
+			// 3. Check multiple drivers across always_comb / always_latch / always_ff and assign
+			if !isLocal && isSVProc {
+				recordDriver(w, procID, true)
+			}
+		}
+	}
 }
 
 func findFieldByName(fields []*Symbol, name string) *Symbol {

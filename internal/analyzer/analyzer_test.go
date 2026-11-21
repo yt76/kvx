@@ -704,3 +704,56 @@ func TestAnalyzeSystemVerilogClasses(t *testing.T) {
 		t.Errorf("MemberCompletions(pkt.) = %v, want addr, data, calc", memberNames)
 	}
 }
+
+func TestAnalyzeLinterDiagnostics(t *testing.T) {
+	src := "module lint_demo (\n" +
+		"  input  logic clk,\n" +
+		"  input  logic a,\n" +
+		"  output logic y_comb,\n" +
+		"  output logic y_ff,\n" +
+		"  output logic multi\n" +
+		");\n" +
+		"  wire w;\n" +
+		"  assign a = 1'b0;\n" +
+		"  assign multi = a;\n" +
+		"  always_comb begin\n" +
+		"    w = a;\n" +
+		"    y_comb <= a;\n" +
+		"    multi = 1'b1;\n" +
+		"  end\n" +
+		"  always_ff @(posedge clk) begin\n" +
+		"    int local_tmp;\n" +
+		"    local_tmp = 1;\n" +
+		"    y_ff = a;\n" +
+		"  end\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 5 {
+		t.Fatalf("expected 5 linter diagnostics, got %d: %+v", len(an.Diagnostics), an.Diagnostics)
+	}
+
+	wantSubstrings := []string{
+		`cannot assign to input port "a"`,
+		`cannot procedurally assign to net "w"`,
+		`non-blocking assignment '<=' in always_comb`,
+		`multiple drivers to "multi"`,
+		`blocking assignment "=" to "y_ff" in always_ff`,
+	}
+	for _, want := range wantSubstrings {
+		found := false
+		for _, d := range an.Diagnostics {
+			if strings.Contains(d.Message, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing expected diagnostic containing %q in %+v", want, an.Diagnostics)
+		}
+	}
+}

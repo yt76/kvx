@@ -904,6 +904,7 @@ func (p *Parser) parseAssignStmt(mod *ast.ModuleDecl) {
 
 		if p.cur().Type == lexer.TokenAssignOp {
 			eqTok := p.advance() // '='
+			stmt.Writes = append(stmt.Writes, extractLHSWrites(lhsTokens, eqTok.Literal)...)
 			rhsTokens := p.collectTokensUntil(&stmt.Refs, mod, lexer.TokenComma, lexer.TokenSemicolon)
 			if len(rhsTokens) == 0 {
 				p.addError(eqTok.Range, "expected expression after '=' in assign statement")
@@ -1704,8 +1705,11 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 
 	case lexer.TokenPlusPlus, lexer.TokenMinusMinus:
 		// Prefix increment/decrement statement: ++i; or --i;
-		p.advance()
-		p.collectTokensUntil(&block.Refs, mod, lexer.TokenSemicolon)
+		opTok := p.advance()
+		lhsTokens := p.collectTokensUntil(&block.Refs, mod, lexer.TokenSemicolon)
+		if block != nil {
+			block.Writes = append(block.Writes, extractLHSWrites(lhsTokens, opTok.Literal)...)
+		}
 		p.expectSemicolon("increment/decrement statement")
 
 	case lexer.TokenDisable:
@@ -1855,17 +1859,23 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 	case lexer.TokenLBrace:
 		// Procedural assignment or postfix increment/decrement:
 		// a = b; a <= b; a += b; i++; {a, b} <= c;
-		p.collectTokensUntil(&block.Refs, mod,
+		lhsTokens := p.collectTokensUntil(&block.Refs, mod,
 			lexer.TokenAssignOp, lexer.TokenLeq,
 			lexer.TokenPlusPlus, lexer.TokenMinusMinus,
 			lexer.TokenPlusEq, lexer.TokenMinusEq, lexer.TokenMulEq, lexer.TokenDivEq, lexer.TokenModEq,
 			lexer.TokenAndEq, lexer.TokenOrEq, lexer.TokenXorEq, lexer.TokenShlEq, lexer.TokenShrEq,
 			lexer.TokenSemicolon)
 		if p.cur().Type == lexer.TokenPlusPlus || p.cur().Type == lexer.TokenMinusMinus {
-			p.advance()
+			opTok := p.advance()
+			if block != nil {
+				block.Writes = append(block.Writes, extractLHSWrites(lhsTokens, opTok.Literal)...)
+			}
 			p.expectSemicolon("increment/decrement statement")
 		} else if isProceduralAssignOp(p.cur().Type) {
 			opTok := p.advance()
+			if block != nil {
+				block.Writes = append(block.Writes, extractLHSWrites(lhsTokens, opTok.Literal)...)
+			}
 			rhs := p.collectTokensUntil(&block.Refs, mod, lexer.TokenSemicolon)
 			if len(rhs) == 0 {
 				p.addError(opTok.Range, fmt.Sprintf("expected expression after %q", opTok.Literal))
@@ -2508,6 +2518,60 @@ func (p *Parser) recordMemberRef(mod *ast.ModuleDecl, baseName string, memberTok
 		MemberName: memberTok.Literal,
 		Range:      memberTok.Range,
 	})
+}
+
+func extractLHSWrites(lhsTokens []lexer.Token, op string) []ast.WriteRef {
+	var writes []ast.WriteRef
+	bracketDepth := 0
+	parenDepth := 0
+	prevWasDot := false
+
+	for i, tok := range lhsTokens {
+		switch tok.Type {
+		case lexer.TokenLBracket:
+			bracketDepth++
+		case lexer.TokenRBracket:
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case lexer.TokenLParen:
+			parenDepth++
+		case lexer.TokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case lexer.TokenIdent:
+			if bracketDepth == 0 && parenDepth == 0 && !prevWasDot {
+				// Skip package prefix `pkg::`
+				if i+1 < len(lhsTokens) && lhsTokens[i+1].Type == lexer.TokenColonColon {
+					break
+				}
+				// Check if followed (after optional `[...]` index) by `.member`
+				j := i + 1
+				for j < len(lhsTokens) && lhsTokens[j].Type == lexer.TokenLBracket {
+					d := 1
+					j++
+					for j < len(lhsTokens) && d > 0 {
+						if lhsTokens[j].Type == lexer.TokenLBracket {
+							d++
+						} else if lhsTokens[j].Type == lexer.TokenRBracket {
+							d--
+						}
+						j++
+					}
+				}
+				isMember := j < len(lhsTokens) && lhsTokens[j].Type == lexer.TokenDot
+				writes = append(writes, ast.WriteRef{
+					Name:          tok.Literal,
+					Op:            op,
+					IsMemberWrite: isMember,
+					Range:         tok.Range,
+				})
+			}
+		}
+		prevWasDot = tok.Type == lexer.TokenDot
+	}
+	return writes
 }
 
 func (p *Parser) expectSemicolon(context string) {
