@@ -112,6 +112,48 @@ func TestLexerEdgeCases(t *testing.T) {
 			wantLit:  "16'shA5_F0",
 		},
 		{
+			name:     "unsized hex literal",
+			input:    "'hFF",
+			wantType: TokenNumber,
+			wantLit:  "'hFF",
+		},
+		{
+			name:     "unsized binary literal",
+			input:    "'b01_01",
+			wantType: TokenNumber,
+			wantLit:  "'b01_01",
+		},
+		{
+			name:     "unsized signed decimal literal",
+			input:    "'sd42",
+			wantType: TokenNumber,
+			wantLit:  "'sd42",
+		},
+		{
+			name:     "unsized fill one literal",
+			input:    "'1",
+			wantType: TokenNumber,
+			wantLit:  "'1",
+		},
+		{
+			name:     "real literal with decimal point",
+			input:    "1.5",
+			wantType: TokenNumber,
+			wantLit:  "1.5",
+		},
+		{
+			name:     "real literal with scientific notation",
+			input:    "1e-9",
+			wantType: TokenNumber,
+			wantLit:  "1e-9",
+		},
+		{
+			name:     "real literal with decimal and positive exponent",
+			input:    "2.5_0E+3",
+			wantType: TokenNumber,
+			wantLit:  "2.5_0E+3",
+		},
+		{
 			name:     "system task identifier",
 			input:    "$display",
 			wantType: TokenSystemIdent,

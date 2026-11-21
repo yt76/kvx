@@ -963,3 +963,74 @@ endmodule
 		t.Errorf("non_ansi_init ports = %d, want 6", len(file.Modules[1].Ports))
 	}
 }
+
+func TestParseNetVarTypesAndEvent(t *testing.T) {
+	src := `
+module net_var_demo (
+    input  wire       clk,
+    inout  tri  [7:0] io_bus,
+    output wor        irq_n
+);
+    supply0 gnd;
+    supply1 vdd;
+    tri     tri_sig;
+    wand    and_bus;
+    wor     or_bus;
+
+    real     gain;
+    time     ts;
+    realtime rts;
+    event    ev_done;
+
+    assign and_bus = vdd;
+    assign and_bus = ~gnd;
+    assign or_bus  = gnd;
+    assign irq_n   = or_bus;
+
+    function real scale_val(input real x);
+        begin
+            scale_val = x;
+        end
+    endfunction
+
+    always @(posedge clk) begin : blk
+        real local_r;
+        time local_t;
+        event local_ev;
+        local_r = scale_val(gain);
+        local_t = $time;
+        ts <= local_t;
+        rts <= local_r;
+        -> ev_done;
+        -> local_ev;
+    end
+
+    always @(ev_done) begin
+        tri_sig <= io_bus[0];
+    end
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(file.Modules))
+	}
+
+	// Missing identifier after '->' reports an error and recovers.
+	badSrc := `
+module m;
+    initial begin
+        -> ;
+    end
+endmodule
+`
+	badFile, badErrs := Parse(badSrc)
+	if len(badErrs) == 0 || !strings.Contains(badErrs[0].Message, "expected event identifier after '->'") {
+		t.Errorf("expected missing event identifier error, got %v", badErrs)
+	}
+	if len(badFile.Modules) != 1 {
+		t.Errorf("expected 1 module on recovery, got %d", len(badFile.Modules))
+	}
+}

@@ -191,6 +191,8 @@ func isKeywordToken(t lexer.TokenType) bool {
 	case lexer.TokenModule, lexer.TokenEndmodule,
 		lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout,
 		lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger,
+		lexer.TokenTri, lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
+		lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime, lexer.TokenEvent,
 		lexer.TokenParameter, lexer.TokenLocalparam, lexer.TokenDefparam, lexer.TokenSigned,
 		lexer.TokenAssign, lexer.TokenAlways, lexer.TokenInitial,
 		lexer.TokenPosedge, lexer.TokenNegedge, lexer.TokenOr,
@@ -215,7 +217,7 @@ func isOperatorToken(t lexer.TokenType) bool {
 		lexer.TokenAmp, lexer.TokenPipe, lexer.TokenCaret, lexer.TokenTilde, lexer.TokenBang,
 		lexer.TokenLand, lexer.TokenLor,
 		lexer.TokenShl, lexer.TokenShr, lexer.TokenAshl, lexer.TokenAshr,
-		lexer.TokenQuestion, lexer.TokenAt, lexer.TokenHash:
+		lexer.TokenQuestion, lexer.TokenAt, lexer.TokenHash, lexer.TokenArrow:
 		return true
 	default:
 		return false

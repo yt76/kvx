@@ -126,8 +126,8 @@ func (l *Lexer) NextToken() Token {
 		}
 	}
 
-	// Numeric literals (sized, unsized decimal, or unsized based like 'hFF, 'b0, '0)
-	if isDigit(ch) || (ch == '\'' && isBaseOrFillStart(l.peekNext())) {
+	// Numeric literals (sized, unsized decimal, real/scientific, or unsized based like 'hFF, 'b0, '0)
+	if isDigit(ch) || (ch == '\'' && l.isUnsizedLiteralStart()) {
 		lit := l.readNumber()
 		return Token{
 			Type:    TokenNumber,
@@ -173,6 +173,10 @@ func (l *Lexer) NextToken() Token {
 	case '+':
 		return l.makeToken(TokenPlus, "+", start)
 	case '-':
+		if l.peek() == '>' {
+			l.advance()
+			return l.makeToken(TokenArrow, "->", start)
+		}
 		return l.makeToken(TokenMinus, "-", start)
 	case '*':
 		return l.makeToken(TokenStar, "*", start)
@@ -273,10 +277,15 @@ func (l *Lexer) peek() byte {
 }
 
 func (l *Lexer) peekNext() byte {
-	if l.offset+1 >= len(l.input) {
+	return l.peekAt(1)
+}
+
+func (l *Lexer) peekAt(n int) byte {
+	idx := l.offset + n
+	if idx < 0 || idx >= len(l.input) {
 		return 0
 	}
-	return l.input[l.offset+1]
+	return l.input[idx]
 }
 
 func (l *Lexer) advance() byte {
@@ -418,25 +427,63 @@ func (l *Lexer) readEscapedIdent() string {
 func (l *Lexer) readNumber() string {
 	startOffset := l.offset
 
-	// Read leading decimal digits (size or decimal number).
+	// Read leading decimal digits (size or integer part of decimal/real number).
 	for l.offset < len(l.input) && (isDigit(l.peek()) || l.peek() == '_') {
 		l.advance()
 	}
 
-	// Skip optional spaces before base specifier if followed by ' (e.g. 8 'hFF is allowed, though 8'hFF is standard).
+	// Based literal: [size]'[s|S]<base>[spaces]<digits> or '[0|1|x|X|z|Z|?]
 	if l.peek() == '\'' {
 		l.advance() // '\''
-		// Optional signed specifier 's' or 'S'
-		if l.peek() == 's' || l.peek() == 'S' {
+		if (l.peek() == 's' || l.peek() == 'S') && isBaseChar(l.peekNext()) {
 			l.advance()
 		}
-		// Base specifier: b/B, o/O, d/D, h/H
 		if isBaseChar(l.peek()) {
 			l.advance()
+			// IEEE 1364 allows horizontal whitespace between base specifier and value digits.
+			wsOffset := 0
+			for {
+				ch := l.peekAt(wsOffset)
+				if ch == ' ' || ch == '\t' {
+					wsOffset++
+					continue
+				}
+				break
+			}
+			if wsOffset > 0 && isNumberValueChar(l.peekAt(wsOffset)) {
+				for j := 0; j < wsOffset; j++ {
+					l.advance()
+				}
+			}
 		}
-		// Skip spaces between base and digits if any (Wait: only horizontal whitespace if followed by value digits).
 		for l.offset < len(l.input) && isNumberValueChar(l.peek()) {
 			l.advance()
+		}
+		return l.input[startOffset:l.offset]
+	}
+
+	// Real literal fractional part: '.' followed by at least one digit (e.g. 1.5, 1_000.25)
+	if l.peek() == '.' && isDigit(l.peekNext()) {
+		l.advance() // '.'
+		for l.offset < len(l.input) && (isDigit(l.peek()) || l.peek() == '_') {
+			l.advance()
+		}
+	}
+
+	// Real literal exponent part: [e|E][+|-]?<digits> (e.g. 1e-9, 2.5E+3, 1e6)
+	if l.peek() == 'e' || l.peek() == 'E' {
+		expOff := 1
+		if l.peekAt(expOff) == '+' || l.peekAt(expOff) == '-' {
+			expOff++
+		}
+		if isDigit(l.peekAt(expOff)) {
+			l.advance() // 'e' or 'E'
+			if l.peek() == '+' || l.peek() == '-' {
+				l.advance()
+			}
+			for l.offset < len(l.input) && (isDigit(l.peek()) || l.peek() == '_') {
+				l.advance()
+			}
 		}
 	}
 
@@ -497,11 +544,15 @@ func isBaseChar(ch byte) bool {
 	}
 }
 
-func isBaseOrFillStart(ch byte) bool {
-	if isBaseChar(ch) || ch == 's' || ch == 'S' {
+func (l *Lexer) isUnsizedLiteralStart() bool {
+	next := l.peekNext()
+	if isBaseChar(next) {
 		return true
 	}
-	switch ch {
+	if (next == 's' || next == 'S') && isBaseChar(l.peekAt(2)) {
+		return true
+	}
+	switch next {
 	case '0', '1', 'x', 'X', 'z', 'Z', '?':
 		return true
 	default:

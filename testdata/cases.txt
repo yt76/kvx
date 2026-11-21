@@ -12,3 +12,5 @@ hierarchical_ref.v      0 0
 block_locals.v          0 0
 defparam.v              0 0
 decl_assign_variants.v  0 0
+net_var_types.v         0 0
+number_literals.v       0 0

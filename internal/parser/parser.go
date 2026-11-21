@@ -167,6 +167,11 @@ func (p *Parser) parseModuleParamPortList(mod *ast.ModuleDecl) {
 			p.advance()
 		}
 
+		if p.cur().Type == lexer.TokenInteger || p.cur().Type == lexer.TokenReal ||
+			p.cur().Type == lexer.TokenTime || p.cur().Type == lexer.TokenRealtime {
+			p.advance()
+		}
+
 		signed := false
 		if p.cur().Type == lexer.TokenSigned {
 			signed = true
@@ -244,7 +249,7 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 			curWidth = nil
 			p.advance()
 
-			if p.cur().Type == lexer.TokenWire || p.cur().Type == lexer.TokenReg {
+			if isPortNetType(p.cur().Type) {
 				curNetType = p.cur().Literal
 				p.advance()
 			}
@@ -257,7 +262,7 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 			}
 		} else if curDir != "" {
 			// Subsequent port in ANSI port list might override netType/signed/width or inherit curDir.
-			if p.cur().Type == lexer.TokenWire || p.cur().Type == lexer.TokenReg {
+			if isPortNetType(p.cur().Type) {
 				curNetType = p.cur().Literal
 				curSigned = false
 				curWidth = nil
@@ -346,7 +351,9 @@ func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 		p.advance()
 	case lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout:
 		p.parsePortDeclItem(mod)
-	case lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger, lexer.TokenGenvar:
+	case lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger, lexer.TokenGenvar,
+		lexer.TokenTri, lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
+		lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime, lexer.TokenEvent:
 		p.parseNetDeclItem(mod)
 	case lexer.TokenParameter, lexer.TokenLocalparam:
 		p.parseParamDeclItem(mod)
@@ -378,8 +385,13 @@ func (p *Parser) parsePortDeclItem(mod *ast.ModuleDecl) {
 	dir := startTok.Literal
 
 	netType := ""
-	if p.cur().Type == lexer.TokenWire || p.cur().Type == lexer.TokenReg {
+	if isPortNetType(p.cur().Type) {
 		netType = p.cur().Literal
+		p.advance()
+	}
+
+	if p.cur().Type == lexer.TokenInteger || p.cur().Type == lexer.TokenReal ||
+		p.cur().Type == lexer.TokenTime || p.cur().Type == lexer.TokenRealtime {
 		p.advance()
 	}
 
@@ -440,6 +452,11 @@ func (p *Parser) parsePortDeclItem(mod *ast.ModuleDecl) {
 func (p *Parser) parseNetDeclItem(mod *ast.ModuleDecl) {
 	startTok := p.advance() // wire / reg / integer
 	kind := startTok.Literal
+
+	if p.cur().Type == lexer.TokenInteger || p.cur().Type == lexer.TokenReal ||
+		p.cur().Type == lexer.TokenTime || p.cur().Type == lexer.TokenRealtime {
+		p.advance()
+	}
 
 	signed := false
 	if p.cur().Type == lexer.TokenSigned {
@@ -509,6 +526,11 @@ func (p *Parser) parseNetDeclItem(mod *ast.ModuleDecl) {
 func (p *Parser) parseParamDeclItem(mod *ast.ModuleDecl) {
 	startTok := p.advance() // parameter / localparam
 	kind := startTok.Literal
+
+	if p.cur().Type == lexer.TokenInteger || p.cur().Type == lexer.TokenReal ||
+		p.cur().Type == lexer.TokenTime || p.cur().Type == lexer.TokenRealtime {
+		p.advance()
+	}
 
 	signed := false
 	if p.cur().Type == lexer.TokenSigned {
@@ -710,8 +732,9 @@ func (p *Parser) parseFunctionDecl(mod *ast.ModuleDecl) {
 		p.advance()
 	}
 
-	if p.cur().Type == lexer.TokenInteger || p.cur().Type == lexer.TokenReg {
-		if p.cur().Type == lexer.TokenInteger {
+	if p.cur().Type == lexer.TokenInteger || p.cur().Type == lexer.TokenReg ||
+		p.cur().Type == lexer.TokenReal || p.cur().Type == lexer.TokenTime || p.cur().Type == lexer.TokenRealtime {
+		if p.cur().Type != lexer.TokenReg {
 			fn.ReturnType = p.cur().Literal
 		}
 		p.advance()
@@ -759,7 +782,8 @@ func (p *Parser) parseFunctionDecl(mod *ast.ModuleDecl) {
 			p.advance()
 		case lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout:
 			p.parsePortDeclItem(tempMod)
-		case lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger:
+		case lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger,
+			lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime, lexer.TokenEvent:
 			p.parseNetDeclItem(tempMod)
 		case lexer.TokenParameter, lexer.TokenLocalparam:
 			p.parseParamDeclItem(tempMod)
@@ -835,7 +859,8 @@ func (p *Parser) parseTaskDecl(mod *ast.ModuleDecl) {
 			p.advance()
 		case lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout:
 			p.parsePortDeclItem(tempMod)
-		case lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger:
+		case lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger,
+			lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime, lexer.TokenEvent:
 			p.parseNetDeclItem(tempMod)
 		case lexer.TokenParameter, lexer.TokenLocalparam:
 			p.parseParamDeclItem(tempMod)
@@ -1034,7 +1059,8 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 	case lexer.TokenSemicolon:
 		p.advance()
 
-	case lexer.TokenReg, lexer.TokenInteger:
+	case lexer.TokenReg, lexer.TokenInteger,
+		lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime, lexer.TokenEvent:
 		// Block-local variable declaration (e.g., `begin : blk integer i; reg [7:0] tmp; ... end`)
 		p.parseNetDeclItem(mod)
 
@@ -1164,6 +1190,27 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 			p.parseBalancedParens(&block.Refs, mod)
 		}
 		p.expectSemicolon("system task call")
+
+	case lexer.TokenArrow:
+		// Event trigger: -> ev; or -> u_sub.ev;
+		arrowTok := p.advance()
+		if p.cur().Type == lexer.TokenIdent {
+			tok := p.advance()
+			p.recordRef(&block.Refs, mod, tok)
+			for p.cur().Type == lexer.TokenDot || p.cur().Type == lexer.TokenLBracket {
+				if p.cur().Type == lexer.TokenDot {
+					p.advance()
+					if p.cur().Type == lexer.TokenIdent {
+						p.advance()
+					}
+				} else {
+					_ = p.parseBitRange(mod)
+				}
+			}
+		} else {
+			p.addError(arrowTok.Range, "expected event identifier after '->'")
+		}
+		p.expectSemicolon("event trigger")
 
 	case lexer.TokenIdent:
 		// Task call statement: my_task(a, b); or my_task; or u_sub.my_task(a, b);
@@ -1570,6 +1617,8 @@ func (p *Parser) syncToStatementEnd() {
 		case lexer.TokenEnd, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndgenerate, lexer.TokenEndmodule, lexer.TokenModule,
 			lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout,
 			lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger, lexer.TokenGenvar,
+			lexer.TokenTri, lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
+			lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime, lexer.TokenEvent,
 			lexer.TokenParameter, lexer.TokenLocalparam, lexer.TokenDefparam,
 			lexer.TokenAssign, lexer.TokenAlways, lexer.TokenInitial, lexer.TokenFunction, lexer.TokenTask, lexer.TokenGenerate:
 			return
@@ -1581,6 +1630,17 @@ func (p *Parser) syncToStatementEnd() {
 
 func isPortDirection(t lexer.TokenType) bool {
 	return t == lexer.TokenInput || t == lexer.TokenOutput || t == lexer.TokenInout
+}
+
+func isPortNetType(t lexer.TokenType) bool {
+	switch t {
+	case lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger,
+		lexer.TokenTri, lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
+		lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime:
+		return true
+	default:
+		return false
+	}
 }
 
 func isStatementBoundary(t lexer.TokenType) bool {

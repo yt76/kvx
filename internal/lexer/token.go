@@ -26,6 +26,15 @@ const (
 	TokenWire       TokenType = "wire"
 	TokenReg        TokenType = "reg"
 	TokenInteger    TokenType = "integer"
+	TokenTri        TokenType = "tri"
+	TokenSupply0    TokenType = "supply0"
+	TokenSupply1    TokenType = "supply1"
+	TokenWand       TokenType = "wand"
+	TokenWor        TokenType = "wor"
+	TokenReal       TokenType = "real"
+	TokenTime       TokenType = "time"
+	TokenRealtime   TokenType = "realtime"
+	TokenEvent      TokenType = "event"
 	TokenParameter  TokenType = "parameter"
 	TokenLocalparam TokenType = "localparam"
 	TokenDefparam   TokenType = "defparam"
@@ -97,6 +106,7 @@ const (
 	TokenShr      TokenType = ">>"
 	TokenAshl     TokenType = "<<<"
 	TokenAshr     TokenType = ">>>"
+	TokenArrow    TokenType = "->"
 )
 
 var keywords = map[string]TokenType{
@@ -108,6 +118,15 @@ var keywords = map[string]TokenType{
 	"wire":       TokenWire,
 	"reg":        TokenReg,
 	"integer":    TokenInteger,
+	"tri":        TokenTri,
+	"supply0":    TokenSupply0,
+	"supply1":    TokenSupply1,
+	"wand":       TokenWand,
+	"wor":        TokenWor,
+	"real":       TokenReal,
+	"time":       TokenTime,
+	"realtime":   TokenRealtime,
+	"event":      TokenEvent,
 	"parameter":  TokenParameter,
 	"localparam": TokenLocalparam,
 	"defparam":   TokenDefparam,
