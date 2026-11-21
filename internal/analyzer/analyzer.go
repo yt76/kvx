@@ -35,6 +35,7 @@ type Symbol struct {
 	Range          ast.Range
 	SelectionRange ast.Range
 	TargetModule   string
+	ModuleName     string
 	PackageName    string
 	InterfaceName  string
 	Fields         []*Symbol
@@ -104,8 +105,9 @@ type InterfaceScope struct {
 	Blocks    []*BlockScope
 }
 
-// WorkspaceContext provides cross-file packages and interfaces for semantic analysis.
+// WorkspaceContext provides cross-file modules, packages, and interfaces for semantic analysis.
 type WorkspaceContext struct {
+	Modules    map[string]*ModuleScope
 	Packages   map[string]*PackageScope
 	Interfaces map[string]*InterfaceScope
 }
@@ -115,6 +117,7 @@ type Analysis struct {
 	File           *ast.SourceFile
 	Modules        map[string]*ModuleScope
 	ModuleOrder    []*ModuleScope
+	AllModules     map[string]*ModuleScope
 	Interfaces     map[string]*InterfaceScope
 	InterfaceOrder []*InterfaceScope
 	AllInterfaces  map[string]*InterfaceScope
@@ -140,6 +143,10 @@ func AnalyzeWithPackages(file *ast.SourceFile, extPackages map[string]*PackageSc
 // AnalyzeWithWorkspace builds symbol tables and performs semantic checks on file,
 // resolving packages and interfaces against both local and workspace declarations.
 func AnalyzeWithWorkspace(file *ast.SourceFile, ctx WorkspaceContext) *Analysis {
+	allMods := make(map[string]*ModuleScope, len(ctx.Modules))
+	for k, v := range ctx.Modules {
+		allMods[k] = v
+	}
 	allPkgs := make(map[string]*PackageScope, len(ctx.Packages))
 	for k, v := range ctx.Packages {
 		allPkgs[k] = v
@@ -151,6 +158,7 @@ func AnalyzeWithWorkspace(file *ast.SourceFile, ctx WorkspaceContext) *Analysis 
 	res := &Analysis{
 		File:          file,
 		Modules:       make(map[string]*ModuleScope),
+		AllModules:    allMods,
 		Interfaces:    make(map[string]*InterfaceScope),
 		AllInterfaces: allIfaces,
 		Packages:      make(map[string]*PackageScope),
@@ -288,10 +296,101 @@ func AnalyzeWithWorkspace(file *ast.SourceFile, ctx WorkspaceContext) *Analysis 
 		res.ModuleOrder = append(res.ModuleOrder, scope)
 		if mod.Name != "" {
 			res.Modules[mod.Name] = scope
+			res.AllModules[mod.Name] = scope
 		}
 	}
 
+	for _, scope := range res.ModuleOrder {
+		res.validateModuleInstantiations(scope)
+	}
+
 	return res
+}
+
+func (a *Analysis) validateModuleInstantiations(scope *ModuleScope) {
+	if scope == nil || scope.Module == nil {
+		return
+	}
+	var checkItems func(items []ast.ModuleItem)
+	checkItems = func(items []ast.ModuleItem) {
+		for _, item := range items {
+			switch d := item.(type) {
+			case *ast.GenerateBlock:
+				checkItems(d.Items)
+			case *ast.ModuleInst:
+				if d.Range.File != "" {
+					continue
+				}
+				var targetSyms map[string]*Symbol
+				var targetOrder []*Symbol
+				targetKind := "module"
+				if modScope, ok := a.AllModules[d.ModuleName]; ok {
+					targetSyms = modScope.Symbols
+					targetOrder = modScope.Order
+				} else if ifaceScope, ok := a.AllInterfaces[d.ModuleName]; ok {
+					targetSyms = ifaceScope.Symbols
+					targetOrder = ifaceScope.Order
+					targetKind = "interface"
+				}
+
+				connectedPorts := make(map[string]bool, len(d.PortRefs))
+				for _, pref := range d.PortRefs {
+					if pref.Range.File != "" {
+						continue
+					}
+					if connectedPorts[pref.Name] {
+						a.Diagnostics = append(a.Diagnostics, SemanticDiagnostic{
+							Range:   pref.Range,
+							Message: fmt.Sprintf("duplicate port connection %q in instance %q", pref.Name, d.InstanceName),
+							IsError: false,
+						})
+					}
+					connectedPorts[pref.Name] = true
+
+					if targetSyms != nil {
+						if sym, ok := targetSyms[pref.Name]; !ok || sym.Kind != KindPort {
+							a.Diagnostics = append(a.Diagnostics, SemanticDiagnostic{
+								Range:   pref.Range,
+								Message: fmt.Sprintf("unknown port %q on %s %q", pref.Name, targetKind, d.ModuleName),
+								IsError: false,
+							})
+						}
+					}
+				}
+
+				if targetSyms != nil {
+					for _, paramRef := range d.ParamRefs {
+						if paramRef.Range.File != "" {
+							continue
+						}
+						if sym, ok := targetSyms[paramRef.Name]; !ok || sym.Kind != KindParam {
+							a.Diagnostics = append(a.Diagnostics, SemanticDiagnostic{
+								Range:   paramRef.Range,
+								Message: fmt.Sprintf("unknown parameter %q on %s %q", paramRef.Name, targetKind, d.ModuleName),
+								IsError: false,
+							})
+						}
+					}
+				}
+
+				if d.HasWildcard && targetOrder != nil && d.WildcardRange.File == "" {
+					for _, sym := range targetOrder {
+						if sym.Kind != KindPort || sym.Name == "" || connectedPorts[sym.Name] {
+							continue
+						}
+						if _, resolved := resolveRefInScopes(sym.Name, nil, scope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); !resolved {
+							a.Diagnostics = append(a.Diagnostics, SemanticDiagnostic{
+								Range:   d.WildcardRange,
+								Message: fmt.Sprintf("undeclared signal %q required by '.*' port connection of %s %q", sym.Name, targetKind, d.ModuleName),
+								IsError: false,
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+	checkItems(scope.Module.Items)
 }
 
 func analyzeInterface(iface *ast.InterfaceDecl, globals map[string]*Symbol, allPkgs map[string]*PackageScope, allIfaces map[string]*InterfaceScope, fileHasExtWildcard bool, diags *[]SemanticDiagnostic) *InterfaceScope {
@@ -434,6 +533,9 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[
 		}
 		scope.Symbols[sym.Name] = sym
 		scope.Order = append(scope.Order, sym)
+		if mod.Name != "" {
+			sym.ModuleName = mod.Name
+		}
 		if sym.Range.File == "" {
 			modSym.Children = append(modSym.Children, sym)
 		}
@@ -1103,6 +1205,16 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			}
 		}
 
+		// 3d. Check named port/parameter connections (`.a(din)`, `.clk`, `.*`, `#(.WIDTH(8))`)
+		// and member references (`bus.valid`, `pkt.addr`) before plain `mod.Refs` so implicit `.clk`
+		// resolves to the target module's port when known.
+		if sym, _ := a.ResolveInstPortAt(pos, nil); sym != nil {
+			return sym
+		}
+		if sym, _ := a.ResolveMemberAt(pos, nil); sym != nil {
+			return sym
+		}
+
 		// 4. Check identifier references in expressions, assignments, and procedural blocks.
 		for _, ref := range mod.Refs {
 			if ref.Range.Contains(pos) {
@@ -1113,12 +1225,6 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 		}
 	}
 
-	if sym, _ := a.ResolveMemberAt(pos, nil); sym != nil {
-		return sym
-	}
-	if sym, _ := a.ResolveInstPortAt(pos, nil); sym != nil {
-		return sym
-	}
 	return nil
 }
 
@@ -1208,9 +1314,13 @@ func (a *Analysis) ResolveMemberAt(pos ast.Position, extModuleLookup func(string
 				return sym, ""
 			}
 		}
-		if modScope, found := a.Modules[baseSym.TargetModule]; found {
+		if modScope, found := a.AllModules[baseSym.TargetModule]; found {
 			if sym, exists := modScope.Symbols[mref.MemberName]; exists {
-				return sym, ""
+				owner := ""
+				if _, inSame := a.Modules[baseSym.TargetModule]; !inSame {
+					owner = baseSym.TargetModule
+				}
+				return sym, owner
 			}
 		}
 		if extModuleLookup != nil {
@@ -1238,12 +1348,67 @@ func (a *Analysis) ResolveMemberAt(pos ast.Position, extModuleLookup func(string
 	return nil, ""
 }
 
-// ResolveInstPortAt resolves a named port or parameter connection (e.g. `.a(din)` or `#(.WIDTH(8))`) at pos.
+// ResolveInstPortAt resolves a named port, implicit `.sig`, wildcard `.*`, or parameter connection at pos.
 func (a *Analysis) ResolveInstPortAt(pos ast.Position, extModuleLookup func(string) *ModuleScope) (*Symbol, string) {
 	inst := a.InstantiationAt(pos)
 	if inst == nil {
 		return nil, ""
 	}
+
+	resolveTargetScope := func() (map[string]*Symbol, []*Symbol, *Symbol, string) {
+		if ifaceScope, found := a.AllInterfaces[inst.ModuleName]; found {
+			owner := ""
+			if _, inSame := a.Interfaces[inst.ModuleName]; !inSame {
+				owner = inst.ModuleName
+			}
+			return ifaceScope.Symbols, ifaceScope.Order, ifaceScope.Symbol, owner
+		}
+		if modScope, found := a.AllModules[inst.ModuleName]; found {
+			owner := ""
+			if _, inSame := a.Modules[inst.ModuleName]; !inSame {
+				owner = inst.ModuleName
+			}
+			return modScope.Symbols, modScope.Order, modScope.Symbol, owner
+		}
+		if extModuleLookup != nil {
+			if modScope := extModuleLookup(inst.ModuleName); modScope != nil {
+				return modScope.Symbols, modScope.Order, modScope.Symbol, inst.ModuleName
+			}
+		}
+		return nil, nil, nil, ""
+	}
+
+	if inst.HasWildcard && inst.WildcardRange.Contains(pos) {
+		_, targetOrder, targetSym, owner := resolveTargetScope()
+		if targetSym != nil {
+			explicit := make(map[string]bool, len(inst.PortRefs))
+			for _, p := range inst.PortRefs {
+				explicit[p.Name] = true
+			}
+			var parts []string
+			for _, sym := range targetOrder {
+				if sym.Kind == KindPort && !explicit[sym.Name] {
+					parts = append(parts, sym.Signature)
+				}
+			}
+			sig := fmt.Sprintf(".* -> %s", targetSym.Signature)
+			if len(parts) > 0 {
+				sig = fmt.Sprintf(".* -> %s (%s)", inst.ModuleName, strings.Join(parts, ", "))
+			}
+			return &Symbol{
+				Name:           ".*",
+				Kind:           targetSym.Kind,
+				TypeDetail:     ".* wildcard connection",
+				Signature:      sig,
+				Range:          inst.WildcardRange,
+				SelectionRange: targetSym.SelectionRange,
+				ModuleName:     targetSym.Name,
+				InterfaceName:  targetSym.InterfaceName,
+			}, owner
+		}
+		return nil, ""
+	}
+
 	targetName := ""
 	for _, pref := range inst.PortRefs {
 		if pref.Range.Contains(pos) {
@@ -1263,21 +1428,10 @@ func (a *Analysis) ResolveInstPortAt(pos ast.Position, extModuleLookup func(stri
 		return nil, ""
 	}
 
-	if ifaceScope, found := a.AllInterfaces[inst.ModuleName]; found {
-		if sym, exists := ifaceScope.Symbols[targetName]; exists {
-			return sym, ""
-		}
-	}
-	if modScope, found := a.Modules[inst.ModuleName]; found {
-		if sym, exists := modScope.Symbols[targetName]; exists {
-			return sym, ""
-		}
-	}
-	if extModuleLookup != nil {
-		if modScope := extModuleLookup(inst.ModuleName); modScope != nil {
-			if sym, exists := modScope.Symbols[targetName]; exists {
-				return sym, inst.ModuleName
-			}
+	targetSyms, _, _, owner := resolveTargetScope()
+	if targetSyms != nil {
+		if sym, exists := targetSyms[targetName]; exists {
+			return sym, owner
 		}
 	}
 	return nil, ""

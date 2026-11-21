@@ -107,9 +107,9 @@ func (s *DocumentStore) indexWorkspaceFilesLocked(cfg *config.Config) {
 			Analysis:   analyzer.Analyze(fileAST),
 		}
 	}
-	// Second pass: re-analyze files with all discovered workspace packages and interfaces for cross-file resolution.
+	// Second pass: re-analyze files with all discovered workspace modules, packages, and interfaces for cross-file resolution.
 	ctx := s.workspaceContextLocked()
-	if len(ctx.Packages) > 0 || len(ctx.Interfaces) > 0 {
+	if len(ctx.Modules) > 0 || len(ctx.Packages) > 0 || len(ctx.Interfaces) > 0 {
 		for _, doc := range s.workspaceDocs {
 			doc.Analysis = analyzer.AnalyzeWithWorkspace(doc.AST, ctx)
 		}
@@ -118,9 +118,29 @@ func (s *DocumentStore) indexWorkspaceFilesLocked(cfg *config.Config) {
 
 func (s *DocumentStore) workspaceContextLocked() analyzer.WorkspaceContext {
 	return analyzer.WorkspaceContext{
+		Modules:    s.workspaceModulesLocked(),
 		Packages:   s.workspacePackagesLocked(),
 		Interfaces: s.workspaceInterfacesLocked(),
 	}
+}
+
+func (s *DocumentStore) workspaceModulesLocked() map[string]*analyzer.ModuleScope {
+	mods := make(map[string]*analyzer.ModuleScope)
+	collect := func(m map[string]*Document) {
+		for _, doc := range m {
+			if doc.Analysis == nil {
+				continue
+			}
+			for name, modScope := range doc.Analysis.Modules {
+				if _, exists := mods[name]; !exists {
+					mods[name] = modScope
+				}
+			}
+		}
+	}
+	collect(s.docs)
+	collect(s.workspaceDocs)
+	return mods
 }
 
 func (s *DocumentStore) workspaceInterfacesLocked() map[string]*analyzer.InterfaceScope {

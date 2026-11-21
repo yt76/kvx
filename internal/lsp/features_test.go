@@ -1808,3 +1808,108 @@ func TestLSPCrossFileMemberAndPortResolution(t *testing.T) {
 
 	checkDef("5", subURI, 1)
 }
+
+func TestLSPCrossFileImplicitAndWildcardPortConnections(t *testing.T) {
+	root := t.TempDir()
+	rtlDir := filepath.Join(root, "rtl")
+	if err := os.MkdirAll(rtlDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	subPath := filepath.Join(rtlDir, "sub_unit.sv")
+	subSrc := "module sub_unit (\n" +
+		"  input  logic clk,\n" +
+		"  input  logic a,\n" +
+		"  output logic y\n" +
+		");\n" +
+		"  assign y = a;\n" +
+		"endmodule\n"
+	if err := os.WriteFile(subPath, []byte(subSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	topPath := filepath.Join(rtlDir, "top.sv")
+	// `top` connects `.clk` implicitly and uses `.*` while missing `a` in `top`!
+	topSrc := "module top (input logic clk, output logic y);\n" +
+		"  sub_unit u_sub (.clk, .*);\n" +
+		"endmodule\n"
+
+	subURI := filePathToURI(subPath)
+	topURI := filePathToURI(topPath)
+
+	var in, out bytes.Buffer
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"rootUri": filePathToURI(root),
+		},
+	})
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/didOpen",
+		"params": DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        topURI,
+				LanguageID: "systemverilog",
+				Version:    1,
+				Text:       topSrc,
+			},
+		},
+	})
+	// id=2: Go to definition on implicit port `.clk` (line 1, col 20) -> sub_unit.sv line 1
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 1, Character: 20},
+		},
+	})
+	// id=3: Hover on `.*` (line 1, col 25) -> shows wildcard ports
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "textDocument/hover",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 1, Character: 25},
+		},
+	})
+
+	srv := NewServer(&in, &out, nil)
+	if err := srv.Run(); err != nil {
+		t.Fatalf("Server.Run() error: %v", err)
+	}
+
+	outReader := bufio.NewReader(&out)
+	_ = readFramedResponse(t, outReader) // initialize
+
+	// Diagnostics on top.sv must warn that `a` is required by `.*`!
+	_, diagParams := readFramedNotification(t, outReader)
+	if len(diagParams.Diagnostics) != 1 || !strings.Contains(diagParams.Diagnostics[0].Message, `"a"`) {
+		t.Fatalf("expected 1 wildcard missing-signal diagnostic for 'a', got %+v", diagParams.Diagnostics)
+	}
+
+	respDef := readFramedResponse(t, outReader)
+	rawDef, _ := json.Marshal(respDef.Result)
+	var loc Location
+	if err := json.Unmarshal(rawDef, &loc); err != nil {
+		t.Fatalf("unmarshaling Location: %v", err)
+	}
+	if loc.URI != subURI || loc.Range.Start.Line != 1 {
+		t.Errorf("definition(.clk) = %+v, want URI=%s line=1", loc, subURI)
+	}
+
+	respHover := readFramedResponse(t, outReader)
+	rawHover, _ := json.Marshal(respHover.Result)
+	var hover Hover
+	if err := json.Unmarshal(rawHover, &hover); err != nil {
+		t.Fatalf("unmarshaling Hover: %v", err)
+	}
+	if !strings.Contains(hover.Contents.Value, ".* -> sub_unit") {
+		t.Errorf("hover(.*) = %q, want to contain '.* -> sub_unit'", hover.Contents.Value)
+	}
+}

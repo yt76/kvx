@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"strings"
 	"testing"
 
 	"kvx/internal/ast"
@@ -559,5 +560,54 @@ func TestAnalyzeStructAndInterfaceMemberResolution(t *testing.T) {
 	badAn := Analyze(badFile)
 	if len(badAn.Diagnostics) != 2 {
 		t.Fatalf("expected 2 unknown member diagnostics, got %+v", badAn.Diagnostics)
+	}
+}
+
+func TestAnalyzeImplicitAndNamedPortConnections(t *testing.T) {
+	// Valid `.sig` and `.*` connections
+	validSrc := "module sub #(parameter int W = 8) (input logic clk, input logic [W-1:0] a, output logic [W-1:0] y);\n" +
+		"  assign y = a;\n" +
+		"endmodule\n" +
+		"module top (input logic clk, input logic [7:0] a, output logic [7:0] y0, output logic [7:0] y1);\n" +
+		"  sub #(.W(8)) u0 (.clk, .a, .y(y0));\n" +
+		"  sub u1 (.*, .y(y1));\n" +
+		"endmodule\n"
+	file, errs := parser.Parse(validSrc)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 diagnostics for valid .sig / .*, got %+v", an.Diagnostics)
+	}
+
+	// SymbolAt on `.clk` (line 4, col 21) resolves to port `clk` of `sub` at line 0.
+	symClk := an.SymbolAt(ast.Position{Line: 4, Column: 21})
+	if symClk == nil || symClk.Kind != KindPort || symClk.Name != "clk" || symClk.SelectionRange.Start.Line != 0 {
+		t.Errorf("SymbolAt(.clk) = %+v, want KindPort clk at line 0", symClk)
+	}
+
+	// SymbolAt on `.*` (line 5, col 11) resolves to wildcard summary pointing to `sub` at line 0.
+	symWild := an.SymbolAt(ast.Position{Line: 5, Column: 11})
+	if symWild == nil || symWild.SelectionRange.Start.Line != 0 || !strings.Contains(symWild.Signature, "input logic clk") {
+		t.Errorf("SymbolAt(.*) = %+v, want wildcard summary containing 'input logic clk'", symWild)
+	}
+
+	// Invalid cases:
+	// 1. `.*` missing `rst_n` in parent module
+	// 2. `.bad_port` unknown port on `sub`
+	// 3. `#(.BAD_PARAM(1))` unknown parameter on `sub`
+	// 4. duplicate `.clk` connection
+	badSrc := "module sub #(parameter int W = 8) (input logic clk, input logic rst_n, output logic y);\n" +
+		"  assign y = clk & rst_n;\n" +
+		"endmodule\n" +
+		"module top (input logic clk, output logic y);\n" +
+		"  sub #(.BAD_PARAM(1)) u0 (.*, .bad_port(clk), .clk(clk), .clk(clk));\n" +
+		"endmodule\n"
+	badFile, _ := parser.Parse(badSrc)
+	badAn := Analyze(badFile)
+	if len(badAn.Diagnostics) != 4 {
+		t.Fatalf("expected 4 diagnostics (unknown param, unknown port, duplicate port, missing .* signal), got %d: %+v",
+			len(badAn.Diagnostics), badAn.Diagnostics)
 	}
 }

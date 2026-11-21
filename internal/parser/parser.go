@@ -1803,7 +1803,7 @@ func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 		if p.cur().Type == lexer.TokenHash {
 			p.advance() // '#'
 			if p.cur().Type == lexer.TokenLParen {
-				p.parseInstConnections(&paramRefs, &namedParamRefs, mod)
+				p.parseInstConnections(&paramRefs, &namedParamRefs, nil, mod)
 			} else if p.cur().Type == lexer.TokenNumber || p.cur().Type == lexer.TokenIdent {
 				tok := p.advance()
 				if tok.Type == lexer.TokenIdent {
@@ -1828,7 +1828,7 @@ func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 				p.syncToStatementEnd()
 				return
 			}
-			p.parseInstConnections(nil, nil, mod)
+			p.parseInstConnections(nil, nil, nil, mod)
 			if p.cur().Type == lexer.TokenComma {
 				p.advance()
 				continue
@@ -1868,7 +1868,7 @@ func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 		}
 
 		if p.cur().Type == lexer.TokenLParen {
-			p.parseInstConnections(&inst.Refs, &inst.PortRefs, mod)
+			p.parseInstConnections(&inst.Refs, &inst.PortRefs, inst, mod)
 			inst.Range.End = p.prev().Range.End
 		} else if p.cur().Type != lexer.TokenSemicolon && p.cur().Type != lexer.TokenComma {
 			p.addError(instNameTok.Range, fmt.Sprintf("expected '(' for port connections of instance %q", inst.InstanceName))
@@ -1896,8 +1896,8 @@ func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 }
 
 // parseInstConnections parses (.port(expr), ...) or positional (expr, ...) while recording
-// local signal references, named port/parameter references, and member accesses (e.g. `u_bus.master`).
-func (p *Parser) parseInstConnections(refs *[]ast.IdentifierRef, namedRefs *[]ast.IdentifierRef, mod *ast.ModuleDecl) {
+// local signal references, named port/parameter references, implicit `.sig` / `.*`, and member accesses.
+func (p *Parser) parseInstConnections(refs *[]ast.IdentifierRef, namedRefs *[]ast.IdentifierRef, inst *ast.ModuleInst, mod *ast.ModuleDecl) {
 	openTok := p.advance() // '('
 	depth := 1
 	prevWasDot := false
@@ -1913,10 +1913,18 @@ func (p *Parser) parseInstConnections(refs *[]ast.IdentifierRef, namedRefs *[]as
 			continue
 		}
 		if p.cur().Type == lexer.TokenDot && depth == 1 {
-			p.advance() // '.'
+			dotTok := p.advance() // '.'
 			if p.cur().Type == lexer.TokenStar {
 				// SystemVerilog wildcard port connection: .*
-				p.advance()
+				starTok := p.advance()
+				if inst != nil {
+					inst.HasWildcard = true
+					inst.WildcardRange = ast.Range{
+						File:  dotTok.Range.File,
+						Start: dotTok.Range.Start,
+						End:   starTok.Range.End,
+					}
+				}
 			} else if p.cur().Type == lexer.TokenIdent {
 				portTok := p.advance()
 				if namedRefs != nil {
@@ -1929,6 +1937,12 @@ func (p *Parser) parseInstConnections(refs *[]ast.IdentifierRef, namedRefs *[]as
 				// record local signal reference to `sig`.
 				if p.cur().Type != lexer.TokenLParen {
 					p.recordRef(refs, mod, portTok)
+					if inst != nil {
+						inst.ImplicitPortRefs = append(inst.ImplicitPortRefs, ast.IdentifierRef{
+							Name:  portTok.Literal,
+							Range: portTok.Range,
+						})
+					}
 				}
 			}
 			prevWasDot = false

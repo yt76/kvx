@@ -356,6 +356,14 @@ func (s *Server) handleDefinition(msg IncomingMessage) error {
 		}
 	}
 
+	if sym.ModuleName != "" && sym.PackageName == "" && sym.InterfaceName == "" && targetRange.File == "" {
+		if _, existsInSameDoc := doc.Analysis.Modules[sym.ModuleName]; !existsInSameDoc {
+			if modURI, _, found := s.docs.FindModule(sym.ModuleName); found {
+				targetURI = modURI
+			}
+		}
+	}
+
 	if sym.Kind == analyzer.KindInstance && sym.TargetModule != "" {
 		if targetScope, existsInSameDoc := doc.Analysis.Modules[sym.TargetModule]; existsInSameDoc {
 			targetRange = targetScope.Symbol.SelectionRange

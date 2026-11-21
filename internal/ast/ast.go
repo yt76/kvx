@@ -272,8 +272,11 @@ type ModuleInst struct {
 	InstanceNameRange Range
 	Range             Range
 	Refs              []IdentifierRef
-	PortRefs          []IdentifierRef // named port connections (e.g. `clk` in `.clk(clk)`)
+	PortRefs          []IdentifierRef // named port connections (e.g. `clk` in `.clk(clk)` or `.clk`)
+	ImplicitPortRefs  []IdentifierRef // implicit `.sig` connections (subset of PortRefs without `(expr)`)
 	ParamRefs         []IdentifierRef // named parameter overrides (e.g. `WIDTH` in `#(.WIDTH(8))`)
+	HasWildcard       bool            // true when `.*` wildcard port connection is present
+	WildcardRange     Range           // source range of `.*`
 }
 
 func (m *ModuleInst) ItemRange() Range { return m.Range }
