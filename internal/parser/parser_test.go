@@ -1137,3 +1137,67 @@ endmodule
 		t.Errorf("expected 1 module on recovery, got %d", len(badFile.Modules))
 	}
 }
+
+func TestParseSpecifyAndPrimitiveUDP(t *testing.T) {
+	src := `
+primitive udp_dff (q, clk, d);
+    output q;
+    input clk, d;
+    reg q;
+    initial q = 1'b0;
+    table
+        // clk  d  : q : q+
+           (01) 0  : ? : 0;
+           (01) 1  : ? : 1;
+           (0?) ?  : ? : -;
+           ?   (??): ? : -;
+    endtable
+endprimitive
+
+module dff_cell (
+    input  wire clk,
+    input  wire d,
+    output wire q
+);
+    reg notifier;
+    udp_dff u_dff (q, clk, d);
+
+    specify
+        specparam tSU = 0.5, tHD = 0.2;
+        (posedge clk => (q +: d)) = (1.0, 1.2);
+        $setuphold(posedge clk, posedge d, tSU, tHD, notifier);
+    endspecify
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(file.Modules))
+	}
+	if file.Modules[0].Name != "dff_cell" {
+		t.Errorf("module name = %q, want %q", file.Modules[0].Name, "dff_cell")
+	}
+
+	// Missing endspecify and endprimitive report errors and recover
+	badSrc := `
+primitive udp_bad (y, a);
+    output y;
+    input a;
+    table
+        0 : 1;
+    endtable
+module m(input wire a, output wire y);
+    specify
+        (a => y) = 1.0;
+endmodule
+`
+	badFile, badErrs := Parse(badSrc)
+	if len(badErrs) < 2 {
+		t.Fatalf("expected at least 2 errors (missing endprimitive and endspecify), got %d: %v", len(badErrs), badErrs)
+	}
+	if len(badFile.Modules) != 1 {
+		t.Errorf("expected 1 module on recovery, got %d", len(badFile.Modules))
+	}
+}

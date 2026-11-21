@@ -18,8 +18,14 @@ const (
 	TokenString      TokenType = "STRING"       // e.g. "hello"
 
 	// Keywords
-	TokenModule     TokenType = "module"
-	TokenEndmodule  TokenType = "endmodule"
+	TokenModule       TokenType = "module"
+	TokenEndmodule    TokenType = "endmodule"
+	TokenPrimitive    TokenType = "primitive"
+	TokenEndprimitive TokenType = "endprimitive"
+	TokenTable        TokenType = "table"
+	TokenEndtable     TokenType = "endtable"
+	TokenSpecify      TokenType = "specify"
+	TokenEndspecify   TokenType = "endspecify"
 	TokenInput      TokenType = "input"
 	TokenOutput     TokenType = "output"
 	TokenInout      TokenType = "inout"
@@ -116,8 +122,14 @@ const (
 )
 
 var keywords = map[string]TokenType{
-	"module":     TokenModule,
-	"endmodule":  TokenEndmodule,
+	"module":       TokenModule,
+	"endmodule":    TokenEndmodule,
+	"primitive":    TokenPrimitive,
+	"endprimitive": TokenEndprimitive,
+	"table":        TokenTable,
+	"endtable":     TokenEndtable,
+	"specify":      TokenSpecify,
+	"endspecify":   TokenEndspecify,
 	"input":      TokenInput,
 	"output":     TokenOutput,
 	"inout":      TokenInout,

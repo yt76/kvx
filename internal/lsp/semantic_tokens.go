@@ -189,6 +189,9 @@ func classifySemanticToken(tok, prevTok lexer.Token, an *analyzer.Analysis) (uin
 func isKeywordToken(t lexer.TokenType) bool {
 	switch t {
 	case lexer.TokenModule, lexer.TokenEndmodule,
+		lexer.TokenPrimitive, lexer.TokenEndprimitive,
+		lexer.TokenTable, lexer.TokenEndtable,
+		lexer.TokenSpecify, lexer.TokenEndspecify,
 		lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout,
 		lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger,
 		lexer.TokenTri, lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
