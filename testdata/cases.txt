@@ -17,3 +17,4 @@ number_literals.v       0 0
 procedural_control.v    0 0
 gate_primitives.v       0 0
 specify_and_udp.v       0 0
+cell_and_tb_extras.v    0 0

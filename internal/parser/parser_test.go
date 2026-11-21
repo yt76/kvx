@@ -1201,3 +1201,74 @@ endmodule
 		t.Errorf("expected 1 module on recovery, got %d", len(badFile.Modules))
 	}
 }
+
+func TestParseVerilogExtras(t *testing.T) {
+	src := "`begin_keywords \"1364-2005\"\n" +
+		"`unconnected_drive pull0\n" +
+		"`define MAKE_NET(prefix, idx) prefix``_net_``idx\n" +
+		"\n" +
+		"primitive udp_buf (y, a);\n" +
+		"    output y;\n" +
+		"    input a;\n" +
+		"    table\n" +
+		"        0 : 0;\n" +
+		"        1 : 1;\n" +
+		"    endtable\n" +
+		"endprimitive\n" +
+		"\n" +
+		"macromodule cell_inv (y, a, );\n" +
+		"    input a;\n" +
+		"    reg y;\n" +
+		"    output y;\n" +
+		"    always @(*) y = ~a;\n" +
+		"endmodule\n" +
+		"\n" +
+		"module extras_demo #(parameter W = 4) (\n" +
+		"    input  wire            clk,\n" +
+		"    input  wire            rst_n,\n" +
+		"    input  wire            oe,\n" +
+		"    input  uwire [W-1:0]   a,\n" +
+		"    input  uwire [W-1:0]   b,\n" +
+		"    inout  tri   [W-1:0]   io_pin,\n" +
+		"    output reg   [W-1:0]   q,\n" +
+		"    output wire  [W-1:0]   y_xnor,\n" +
+		"    output wire            y_udp\n" +
+		");\n" +
+		"    localparam DEPTH = 2 ** W;\n" +
+		"    tri0   t0_sig;\n" +
+		"    tri1   t1_sig;\n" +
+		"    triand tand_sig;\n" +
+		"    trior  tor_sig;\n" +
+		"    trireg (large) cap_node;\n" +
+		"    wire vectored [W-1:0] `MAKE_NET(my, 0);\n" +
+		"    wire (weak1, weak0) [W-1:0] pull_bus = a;\n" +
+		"\n" +
+		"    assign (strong1, pull0) #1 `MAKE_NET(my, 0) = (a ~^ b) & (a ^~ b);\n" +
+		"    assign y_xnor = `MAKE_NET(my, 0) ^ pull_bus;\n" +
+		"\n" +
+		"    bufif1 (strong1, strong0) #1 (io_pin[0], a[0], oe);\n" +
+		"    udp_buf (y_udp, a[0]);\n" +
+		"\n" +
+		"    always @(rst_n) begin\n" +
+		"        if (!rst_n)\n" +
+		"            assign q = {W{1'b0}};\n" +
+		"        else\n" +
+		"            deassign q;\n" +
+		"    end\n" +
+		"\n" +
+		"    initial begin\n" +
+		"        force y_xnor = {W{1'b0}};\n" +
+		"        #10 release y_xnor;\n" +
+		"    end\n" +
+		"endmodule\n" +
+		"`nounconnected_drive\n" +
+		"`end_keywords\n"
+
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 2 {
+		t.Fatalf("expected 2 modules (macromodule + module), got %d", len(file.Modules))
+	}
+}

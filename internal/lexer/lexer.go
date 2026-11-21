@@ -179,14 +179,26 @@ func (l *Lexer) NextToken() Token {
 		}
 		return l.makeToken(TokenMinus, "-", start)
 	case '*':
+		if l.peek() == '*' {
+			l.advance()
+			return l.makeToken(TokenPower, "**", start)
+		}
 		return l.makeToken(TokenStar, "*", start)
 	case '/':
 		return l.makeToken(TokenSlash, "/", start)
 	case '%':
 		return l.makeToken(TokenPercent, "%", start)
 	case '^':
+		if l.peek() == '~' {
+			l.advance()
+			return l.makeToken(TokenXnor, "^~", start)
+		}
 		return l.makeToken(TokenCaret, "^", start)
 	case '~':
+		if l.peek() == '^' {
+			l.advance()
+			return l.makeToken(TokenXnor, "~^", start)
+		}
 		return l.makeToken(TokenTilde, "~", start)
 	case '=':
 		if l.peek() == '=' {
@@ -360,10 +372,20 @@ func (l *Lexer) scanBlockComment() (Token, bool) {
 func (l *Lexer) scanDirectiveOrMacro() (Token, bool) {
 	start := l.pos()
 	l.advance() // '`'
+	if l.peek() == '`' {
+		l.advance() // second '`' for macro token pasting ``
+		return Token{
+			Type:    TokenPaste,
+			Literal: "``",
+			Range:   ast.Range{Start: start, End: l.pos()},
+		}, true
+	}
 	name := l.readIdent()
 
 	switch name {
-	case "timescale", "define", "include", "ifdef", "ifndef", "elsif", "undef", "default_nettype", "pragma", "line",
+	case "timescale", "define", "include", "ifdef", "ifndef", "elsif", "undef", "undefineall",
+		"default_nettype", "pragma", "line", "begin_keywords", "end_keywords",
+		"unconnected_drive", "nounconnected_drive",
 		"else", "endif", "resetall", "celldefine", "endcelldefine":
 		if l.emitDirectives {
 			return Token{
@@ -372,7 +394,8 @@ func (l *Lexer) scanDirectiveOrMacro() (Token, bool) {
 				Range:   ast.Range{Start: start, End: l.pos()},
 			}, true
 		}
-		if name == "else" || name == "endif" || name == "resetall" || name == "celldefine" || name == "endcelldefine" {
+		if name == "else" || name == "endif" || name == "resetall" || name == "celldefine" || name == "endcelldefine" ||
+			name == "undefineall" || name == "end_keywords" || name == "nounconnected_drive" {
 			return Token{}, false
 		}
 		// Skip remainder of the directive line (respecting backslash continuation).

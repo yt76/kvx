@@ -25,6 +25,7 @@ type Parser struct {
 	pos        int
 	errors     []ParseError
 	fileOrigin map[string]ast.Range
+	primitives map[string]bool
 }
 
 // Parse tokenizes and parses input into an AST SourceFile and a list of syntax errors.
@@ -41,6 +42,7 @@ func ParseWithOptions(input string, opts Options) (*ast.SourceFile, []ParseError
 		tokens:     tokens,
 		errors:     append([]ParseError(nil), pp.errors...),
 		fileOrigin: pp.fileOrigin,
+		primitives: make(map[string]bool),
 	}
 	file := p.parseSourceFile()
 	file.Includes = pp.includes
@@ -67,7 +69,7 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 			p.skipAttributes()
 			continue
 		}
-		if tok.Type == lexer.TokenModule {
+		if tok.Type == lexer.TokenModule || tok.Type == lexer.TokenMacromodule {
 			if mod := p.parseModuleDecl(); mod != nil {
 				file.Modules = append(file.Modules, mod)
 			}
@@ -86,6 +88,7 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 		p.advance()
 		for !p.isEOF() &&
 			p.cur().Type != lexer.TokenModule &&
+			p.cur().Type != lexer.TokenMacromodule &&
 			p.cur().Type != lexer.TokenPrimitive &&
 			p.cur().Type != lexer.TokenParameter &&
 			p.cur().Type != lexer.TokenLocalparam {
@@ -245,6 +248,25 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 		if p.cur().Type == lexer.TokenRParen {
 			break
 		}
+		// Allow empty port slots in non-ANSI port lists: e.g. module m(a, , b);
+		if p.cur().Type == lexer.TokenComma {
+			p.advance()
+			continue
+		}
+		// Allow explicit port expressions in non-ANSI port lists: e.g. module m(.a(x), .b({y, z}));
+		if p.cur().Type == lexer.TokenDot {
+			p.advance() // '.'
+			if p.cur().Type == lexer.TokenIdent {
+				p.advance()
+			}
+			if p.cur().Type == lexer.TokenLParen {
+				p.parseBalancedParens(nil, mod)
+			}
+			if p.cur().Type == lexer.TokenComma {
+				p.advance()
+			}
+			continue
+		}
 		startPos := p.cur().Range.Start
 
 		if isPortDirection(p.cur().Type) {
@@ -256,6 +278,9 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 
 			if isPortNetType(p.cur().Type) {
 				curNetType = p.cur().Literal
+				p.advance()
+			}
+			if p.cur().Type == lexer.TokenScalared || p.cur().Type == lexer.TokenVectored {
 				p.advance()
 			}
 			if p.cur().Type == lexer.TokenSigned {
@@ -271,6 +296,9 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 				curNetType = p.cur().Literal
 				curSigned = false
 				curWidth = nil
+				p.advance()
+			}
+			if p.cur().Type == lexer.TokenScalared || p.cur().Type == lexer.TokenVectored {
 				p.advance()
 			}
 			if p.cur().Type == lexer.TokenSigned {
@@ -356,8 +384,9 @@ func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 		p.advance()
 	case lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout:
 		p.parsePortDeclItem(mod)
-	case lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger, lexer.TokenGenvar,
-		lexer.TokenTri, lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
+	case lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg, lexer.TokenInteger, lexer.TokenGenvar,
+		lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,
+		lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
 		lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime, lexer.TokenEvent:
 		p.parseNetDeclItem(mod)
 	case lexer.TokenParameter, lexer.TokenLocalparam:
@@ -399,6 +428,10 @@ func (p *Parser) parsePortDeclItem(mod *ast.ModuleDecl) {
 
 	if p.cur().Type == lexer.TokenInteger || p.cur().Type == lexer.TokenReal ||
 		p.cur().Type == lexer.TokenTime || p.cur().Type == lexer.TokenRealtime {
+		p.advance()
+	}
+
+	if p.cur().Type == lexer.TokenScalared || p.cur().Type == lexer.TokenVectored {
 		p.advance()
 	}
 
@@ -466,27 +499,38 @@ func (p *Parser) parseNetDeclItem(mod *ast.ModuleDecl) {
 	}
 
 	signed := false
-	if p.cur().Type == lexer.TokenSigned {
-		signed = true
-		p.advance()
-	}
-
 	var width *ast.BitRange
-	if p.cur().Type == lexer.TokenLBracket {
-		width = p.parseBitRange(mod)
-	}
-
-	// Optional net delay: e.g. wire #1 a = b; or wire #(1, 2) a = b;
-	if p.cur().Type == lexer.TokenHash {
-		p.advance()
-		if p.cur().Type == lexer.TokenLParen {
-			p.parseBalancedParens(nil, mod)
-		} else if p.cur().Type == lexer.TokenNumber || p.cur().Type == lexer.TokenIdent {
-			tok := p.advance()
-			if tok.Type == lexer.TokenIdent {
-				p.recordRef(nil, mod, tok)
-			}
+	for {
+		if p.isDriveOrChargeStrength() {
+			p.parseBalancedParens(nil, nil)
+			continue
 		}
+		if p.cur().Type == lexer.TokenScalared || p.cur().Type == lexer.TokenVectored {
+			p.advance()
+			continue
+		}
+		if p.cur().Type == lexer.TokenSigned {
+			signed = true
+			p.advance()
+			continue
+		}
+		if p.cur().Type == lexer.TokenLBracket {
+			width = p.parseBitRange(mod)
+			continue
+		}
+		if p.cur().Type == lexer.TokenHash {
+			p.advance()
+			if p.cur().Type == lexer.TokenLParen {
+				p.parseBalancedParens(nil, mod)
+			} else if p.cur().Type == lexer.TokenNumber || p.cur().Type == lexer.TokenIdent {
+				tok := p.advance()
+				if tok.Type == lexer.TokenIdent {
+					p.recordRef(nil, mod, tok)
+				}
+			}
+			continue
+		}
+		break
 	}
 
 	for !p.isEOF() {
@@ -598,19 +642,27 @@ func (p *Parser) parseAssignStmt(mod *ast.ModuleDecl) {
 		Range: ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
 	}
 
-	// Optional delay: assign #1 y = a; or assign #(1, 2) y = a;
-	if p.cur().Type == lexer.TokenHash {
-		p.advance() // '#'
-		if p.cur().Type == lexer.TokenLParen {
-			p.parseBalancedParens(&stmt.Refs, mod)
-		} else if p.cur().Type == lexer.TokenNumber || p.cur().Type == lexer.TokenIdent {
-			tok := p.advance()
-			if tok.Type == lexer.TokenIdent {
-				p.recordRef(&stmt.Refs, mod, tok)
-			}
-		} else {
-			p.addError(p.cur().Range, "expected delay value after '#' in assign statement")
+	// Optional drive strength `(strong1, pull0)` and/or delay `#1` or `#(1, 2)`
+	for {
+		if p.isDriveOrChargeStrength() {
+			p.parseBalancedParens(nil, nil)
+			continue
 		}
+		if p.cur().Type == lexer.TokenHash {
+			p.advance() // '#'
+			if p.cur().Type == lexer.TokenLParen {
+				p.parseBalancedParens(&stmt.Refs, mod)
+			} else if p.cur().Type == lexer.TokenNumber || p.cur().Type == lexer.TokenIdent {
+				tok := p.advance()
+				if tok.Type == lexer.TokenIdent {
+					p.recordRef(&stmt.Refs, mod, tok)
+				}
+			} else {
+				p.addError(p.cur().Range, "expected delay value after '#' in assign statement")
+			}
+			continue
+		}
+		break
 	}
 
 	for !p.isEOF() {
@@ -952,6 +1004,9 @@ func (p *Parser) parsePrimitiveDecl() {
 	primName := ""
 	if p.cur().Type == lexer.TokenIdent {
 		primName = p.advance().Literal
+		if p.primitives != nil {
+			p.primitives[primName] = true
+		}
 	} else {
 		p.addError(p.cur().Range, "expected primitive name after 'primitive'")
 	}
@@ -1303,6 +1358,50 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 		}
 		p.expectSemicolon("system task call")
 
+	case lexer.TokenAssign, lexer.TokenForce:
+		// Procedural continuous assignment: assign q = d; or force sig = val;
+		kwTok := p.advance()
+		for !p.isEOF() {
+			lhs := p.collectTokensUntil(&block.Refs, mod, lexer.TokenAssignOp, lexer.TokenComma, lexer.TokenSemicolon)
+			if len(lhs) == 0 {
+				p.addError(kwTok.Range, fmt.Sprintf("expected target signal after %q", kwTok.Literal))
+				break
+			}
+			if p.cur().Type == lexer.TokenAssignOp {
+				eqTok := p.advance()
+				rhs := p.collectTokensUntil(&block.Refs, mod, lexer.TokenComma, lexer.TokenSemicolon)
+				if len(rhs) == 0 {
+					p.addError(eqTok.Range, fmt.Sprintf("expected expression after '=' in %s statement", kwTok.Literal))
+				}
+			} else {
+				p.addError(p.cur().Range, fmt.Sprintf("expected '=' in %s statement", kwTok.Literal))
+				break
+			}
+			if p.cur().Type == lexer.TokenComma {
+				p.advance()
+				continue
+			}
+			break
+		}
+		p.expectSemicolon(kwTok.Literal + " statement")
+
+	case lexer.TokenDeassign, lexer.TokenRelease:
+		// Procedural deassign / release: deassign q; or release sig;
+		kwTok := p.advance()
+		for !p.isEOF() {
+			lhs := p.collectTokensUntil(&block.Refs, mod, lexer.TokenComma, lexer.TokenSemicolon)
+			if len(lhs) == 0 {
+				p.addError(kwTok.Range, fmt.Sprintf("expected target signal after %q", kwTok.Literal))
+				break
+			}
+			if p.cur().Type == lexer.TokenComma {
+				p.advance()
+				continue
+			}
+			break
+		}
+		p.expectSemicolon(kwTok.Literal + " statement")
+
 	case lexer.TokenArrow:
 		// Event trigger: -> ev; or -> u_sub.ev;
 		arrowTok := p.advance()
@@ -1358,22 +1457,30 @@ func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 	modNameTok := p.advance() // module type name
 
 	var paramRefs []ast.IdentifierRef
-	// Optional parameter value assignment: #(...) or #VALUE
-	if p.cur().Type == lexer.TokenHash {
-		p.advance() // '#'
-		if p.cur().Type == lexer.TokenLParen {
-			p.parseInstConnections(&paramRefs, mod)
-		} else if p.cur().Type == lexer.TokenNumber || p.cur().Type == lexer.TokenIdent {
-			tok := p.advance()
-			if tok.Type == lexer.TokenIdent {
-				p.recordRef(&paramRefs, mod, tok)
-			}
-		} else {
-			p.addError(p.cur().Range, "expected '(' after '#' in module instantiation")
+	// Optional drive strength `(strong1, pull0)` and/or parameter/delay `#(...)` or `#VALUE`
+	for {
+		if p.isDriveOrChargeStrength() {
+			p.parseBalancedParens(nil, nil)
+			continue
 		}
+		if p.cur().Type == lexer.TokenHash {
+			p.advance() // '#'
+			if p.cur().Type == lexer.TokenLParen {
+				p.parseInstConnections(&paramRefs, mod)
+			} else if p.cur().Type == lexer.TokenNumber || p.cur().Type == lexer.TokenIdent {
+				tok := p.advance()
+				if tok.Type == lexer.TokenIdent {
+					p.recordRef(&paramRefs, mod, tok)
+				}
+			} else {
+				p.addError(p.cur().Range, "expected '(' after '#' in module instantiation")
+			}
+			continue
+		}
+		break
 	}
 
-	if p.cur().Type == lexer.TokenLParen && isGatePrimitive(modNameTok.Literal) {
+	if p.cur().Type == lexer.TokenLParen && (isGatePrimitive(modNameTok.Literal) || p.primitives[modNameTok.Literal]) {
 		for !p.isEOF() {
 			if p.cur().Type != lexer.TokenLParen {
 				p.addError(p.cur().Range, fmt.Sprintf("expected '(' in %s gate instantiation", modNameTok.Literal))
@@ -1744,13 +1851,15 @@ func (p *Parser) syncToStatementEnd() {
 		case lexer.TokenSemicolon:
 			p.advance()
 			return
-		case lexer.TokenEnd, lexer.TokenJoin, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndgenerate, lexer.TokenEndspecify, lexer.TokenEndmodule, lexer.TokenModule, lexer.TokenPrimitive,
+		case lexer.TokenEnd, lexer.TokenJoin, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndgenerate, lexer.TokenEndspecify, lexer.TokenEndmodule, lexer.TokenModule, lexer.TokenMacromodule, lexer.TokenPrimitive,
 			lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout,
-			lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger, lexer.TokenGenvar,
-			lexer.TokenTri, lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
+			lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg, lexer.TokenInteger, lexer.TokenGenvar,
+			lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,
+			lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
 			lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime, lexer.TokenEvent,
 			lexer.TokenParameter, lexer.TokenLocalparam, lexer.TokenDefparam,
-			lexer.TokenAssign, lexer.TokenAlways, lexer.TokenInitial, lexer.TokenFunction, lexer.TokenTask, lexer.TokenGenerate, lexer.TokenSpecify:
+			lexer.TokenAssign, lexer.TokenDeassign, lexer.TokenForce, lexer.TokenRelease,
+			lexer.TokenAlways, lexer.TokenInitial, lexer.TokenFunction, lexer.TokenTask, lexer.TokenGenerate, lexer.TokenSpecify:
 			return
 		default:
 			p.advance()
@@ -1775,10 +1884,28 @@ func isGatePrimitive(name string) bool {
 	}
 }
 
+func (p *Parser) isDriveOrChargeStrength() bool {
+	if p.cur().Type != lexer.TokenLParen {
+		return false
+	}
+	return isStrengthSpec(p.peekN(1).Literal)
+}
+
+func isStrengthSpec(lit string) bool {
+	switch lit {
+	case "supply0", "supply1", "strong0", "strong1", "pull0", "pull1",
+		"weak0", "weak1", "highz0", "highz1", "small", "medium", "large":
+		return true
+	default:
+		return false
+	}
+}
+
 func isPortNetType(t lexer.TokenType) bool {
 	switch t {
-	case lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger,
-		lexer.TokenTri, lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
+	case lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg, lexer.TokenInteger,
+		lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,
+		lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
 		lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime:
 		return true
 	default:
@@ -1788,7 +1915,7 @@ func isPortNetType(t lexer.TokenType) bool {
 
 func isStatementBoundary(t lexer.TokenType) bool {
 	switch t {
-	case lexer.TokenSemicolon, lexer.TokenEnd, lexer.TokenJoin, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndgenerate, lexer.TokenEndspecify, lexer.TokenEndmodule, lexer.TokenModule, lexer.TokenPrimitive,
+	case lexer.TokenSemicolon, lexer.TokenEnd, lexer.TokenJoin, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndgenerate, lexer.TokenEndspecify, lexer.TokenEndmodule, lexer.TokenModule, lexer.TokenMacromodule, lexer.TokenPrimitive,
 		lexer.TokenAlways, lexer.TokenInitial, lexer.TokenAssign, lexer.TokenDefparam, lexer.TokenFunction, lexer.TokenTask, lexer.TokenGenerate, lexer.TokenSpecify:
 		return true
 	default:

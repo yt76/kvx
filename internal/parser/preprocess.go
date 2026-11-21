@@ -366,11 +366,14 @@ func (s *preprocessState) preprocessText(
 				})
 				delete(s.macros, argTok.Literal)
 
-			case "`resetall", "`celldefine", "`endcelldefine":
+			case "`resetall", "`celldefine", "`endcelldefine", "`end_keywords", "`nounconnected_drive":
 				// Standalone directive with no arguments on the line.
 
+			case "`undefineall":
+				s.macros = make(map[string]macroDef)
+
 			default:
-				// Directives such as `timescale, `default_nettype, `pragma, `line: skip the line.
+				// Directives such as `timescale, `default_nettype, `pragma, `line, `begin_keywords, `unconnected_drive: skip the line.
 				i = skipDirectiveLine(raw, i, dirLine)
 			}
 			continue
@@ -618,6 +621,7 @@ func (s *preprocessState) tryExpandMacro(
 			substituted = append(substituted, expanded)
 		}
 
+		substituted = pasteMacroTokens(substituted)
 		nextExpanding := copyExpandingSet(expanding, macroName)
 		res := s.expandTokenSlice(substituted, fileTag, rootIncRange, nextExpanding, depth+1, false)
 		return res, endIdx, true
@@ -628,10 +632,44 @@ func (s *preprocessState) tryExpandMacro(
 		return nil, idx, false
 	}
 
-	substituted := cloneTokensWithRange(def.body, tok.Range)
+	substituted := pasteMacroTokens(cloneTokensWithRange(def.body, tok.Range))
 	nextExpanding := copyExpandingSet(expanding, macroName)
 	res := s.expandTokenSlice(substituted, fileTag, rootIncRange, nextExpanding, depth+1, false)
 	return res, idx, true
+}
+
+// pasteMacroTokens resolves the `` token pasting operator inside an expanded macro body.
+func pasteMacroTokens(tokens []lexer.Token) []lexer.Token {
+	hasPaste := false
+	for _, t := range tokens {
+		if t.Type == lexer.TokenPaste {
+			hasPaste = true
+			break
+		}
+	}
+	if !hasPaste {
+		return tokens
+	}
+
+	out := make([]lexer.Token, 0, len(tokens))
+	for i := 0; i < len(tokens); i++ {
+		if tokens[i].Type == lexer.TokenPaste {
+			if len(out) > 0 && i+1 < len(tokens) {
+				prev := out[len(out)-1]
+				next := tokens[i+1]
+				combinedLit := prev.Literal + next.Literal
+				out[len(out)-1] = lexer.Token{
+					Type:    lexer.LookupIdent(combinedLit),
+					Literal: combinedLit,
+					Range:   prev.Range,
+				}
+				i++ // consume next
+			}
+			continue
+		}
+		out = append(out, tokens[i])
+	}
+	return out
 }
 
 func (s *preprocessState) expandTokenSlice(

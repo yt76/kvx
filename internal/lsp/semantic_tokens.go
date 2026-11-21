@@ -188,16 +188,19 @@ func classifySemanticToken(tok, prevTok lexer.Token, an *analyzer.Analysis) (uin
 
 func isKeywordToken(t lexer.TokenType) bool {
 	switch t {
-	case lexer.TokenModule, lexer.TokenEndmodule,
+	case lexer.TokenModule, lexer.TokenMacromodule, lexer.TokenEndmodule,
 		lexer.TokenPrimitive, lexer.TokenEndprimitive,
 		lexer.TokenTable, lexer.TokenEndtable,
 		lexer.TokenSpecify, lexer.TokenEndspecify,
 		lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout,
-		lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger,
-		lexer.TokenTri, lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
+		lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg, lexer.TokenInteger,
+		lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,
+		lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
+		lexer.TokenScalared, lexer.TokenVectored,
 		lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime, lexer.TokenEvent,
 		lexer.TokenParameter, lexer.TokenLocalparam, lexer.TokenDefparam, lexer.TokenSigned,
-		lexer.TokenAssign, lexer.TokenAlways, lexer.TokenInitial,
+		lexer.TokenAssign, lexer.TokenDeassign, lexer.TokenForce, lexer.TokenRelease,
+		lexer.TokenAlways, lexer.TokenInitial,
 		lexer.TokenPosedge, lexer.TokenNegedge, lexer.TokenOr,
 		lexer.TokenBegin, lexer.TokenEnd,
 		lexer.TokenIf, lexer.TokenElse,
@@ -222,6 +225,7 @@ func isOperatorToken(t lexer.TokenType) bool {
 		lexer.TokenAmp, lexer.TokenPipe, lexer.TokenCaret, lexer.TokenTilde, lexer.TokenBang,
 		lexer.TokenLand, lexer.TokenLor,
 		lexer.TokenShl, lexer.TokenShr, lexer.TokenAshl, lexer.TokenAshr,
+		lexer.TokenPower, lexer.TokenXnor,
 		lexer.TokenQuestion, lexer.TokenAt, lexer.TokenHash, lexer.TokenArrow:
 		return true
 	default:

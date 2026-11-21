@@ -19,6 +19,7 @@ const (
 
 	// Keywords
 	TokenModule       TokenType = "module"
+	TokenMacromodule  TokenType = "macromodule"
 	TokenEndmodule    TokenType = "endmodule"
 	TokenPrimitive    TokenType = "primitive"
 	TokenEndprimitive TokenType = "endprimitive"
@@ -26,27 +27,38 @@ const (
 	TokenEndtable     TokenType = "endtable"
 	TokenSpecify      TokenType = "specify"
 	TokenEndspecify   TokenType = "endspecify"
-	TokenInput      TokenType = "input"
-	TokenOutput     TokenType = "output"
-	TokenInout      TokenType = "inout"
-	TokenWire       TokenType = "wire"
-	TokenReg        TokenType = "reg"
-	TokenInteger    TokenType = "integer"
-	TokenTri        TokenType = "tri"
-	TokenSupply0    TokenType = "supply0"
-	TokenSupply1    TokenType = "supply1"
-	TokenWand       TokenType = "wand"
-	TokenWor        TokenType = "wor"
-	TokenReal       TokenType = "real"
-	TokenTime       TokenType = "time"
-	TokenRealtime   TokenType = "realtime"
-	TokenEvent      TokenType = "event"
-	TokenParameter  TokenType = "parameter"
-	TokenLocalparam TokenType = "localparam"
-	TokenDefparam   TokenType = "defparam"
-	TokenSigned     TokenType = "signed"
-	TokenAssign     TokenType = "assign"
-	TokenAlways     TokenType = "always"
+	TokenInput        TokenType = "input"
+	TokenOutput       TokenType = "output"
+	TokenInout        TokenType = "inout"
+	TokenWire         TokenType = "wire"
+	TokenUwire        TokenType = "uwire"
+	TokenReg          TokenType = "reg"
+	TokenInteger      TokenType = "integer"
+	TokenTri          TokenType = "tri"
+	TokenTri0         TokenType = "tri0"
+	TokenTri1         TokenType = "tri1"
+	TokenTriand       TokenType = "triand"
+	TokenTrior        TokenType = "trior"
+	TokenTrireg       TokenType = "trireg"
+	TokenSupply0      TokenType = "supply0"
+	TokenSupply1      TokenType = "supply1"
+	TokenWand         TokenType = "wand"
+	TokenWor          TokenType = "wor"
+	TokenScalared     TokenType = "scalared"
+	TokenVectored     TokenType = "vectored"
+	TokenReal         TokenType = "real"
+	TokenTime         TokenType = "time"
+	TokenRealtime     TokenType = "realtime"
+	TokenEvent        TokenType = "event"
+	TokenParameter    TokenType = "parameter"
+	TokenLocalparam   TokenType = "localparam"
+	TokenDefparam     TokenType = "defparam"
+	TokenSigned       TokenType = "signed"
+	TokenAssign       TokenType = "assign"
+	TokenDeassign     TokenType = "deassign"
+	TokenForce        TokenType = "force"
+	TokenRelease      TokenType = "release"
+	TokenAlways       TokenType = "always"
 	TokenInitial    TokenType = "initial"
 	TokenPosedge    TokenType = "posedge"
 	TokenNegedge    TokenType = "negedge"
@@ -119,10 +131,14 @@ const (
 	TokenAshl     TokenType = "<<<"
 	TokenAshr     TokenType = ">>>"
 	TokenArrow    TokenType = "->"
+	TokenPower    TokenType = "**"
+	TokenXnor     TokenType = "~^"
+	TokenPaste    TokenType = "``"
 )
 
 var keywords = map[string]TokenType{
 	"module":       TokenModule,
+	"macromodule":  TokenMacromodule,
 	"endmodule":    TokenEndmodule,
 	"primitive":    TokenPrimitive,
 	"endprimitive": TokenEndprimitive,
@@ -130,27 +146,38 @@ var keywords = map[string]TokenType{
 	"endtable":     TokenEndtable,
 	"specify":      TokenSpecify,
 	"endspecify":   TokenEndspecify,
-	"input":      TokenInput,
-	"output":     TokenOutput,
-	"inout":      TokenInout,
-	"wire":       TokenWire,
-	"reg":        TokenReg,
-	"integer":    TokenInteger,
-	"tri":        TokenTri,
-	"supply0":    TokenSupply0,
-	"supply1":    TokenSupply1,
-	"wand":       TokenWand,
-	"wor":        TokenWor,
-	"real":       TokenReal,
-	"time":       TokenTime,
-	"realtime":   TokenRealtime,
-	"event":      TokenEvent,
-	"parameter":  TokenParameter,
-	"localparam": TokenLocalparam,
-	"defparam":   TokenDefparam,
-	"signed":     TokenSigned,
-	"assign":     TokenAssign,
-	"always":     TokenAlways,
+	"input":        TokenInput,
+	"output":       TokenOutput,
+	"inout":        TokenInout,
+	"wire":         TokenWire,
+	"uwire":        TokenUwire,
+	"reg":          TokenReg,
+	"integer":      TokenInteger,
+	"tri":          TokenTri,
+	"tri0":         TokenTri0,
+	"tri1":         TokenTri1,
+	"triand":       TokenTriand,
+	"trior":        TokenTrior,
+	"trireg":       TokenTrireg,
+	"supply0":      TokenSupply0,
+	"supply1":      TokenSupply1,
+	"wand":         TokenWand,
+	"wor":          TokenWor,
+	"scalared":     TokenScalared,
+	"vectored":     TokenVectored,
+	"real":         TokenReal,
+	"time":         TokenTime,
+	"realtime":     TokenRealtime,
+	"event":        TokenEvent,
+	"parameter":    TokenParameter,
+	"localparam":   TokenLocalparam,
+	"defparam":     TokenDefparam,
+	"signed":       TokenSigned,
+	"assign":       TokenAssign,
+	"deassign":     TokenDeassign,
+	"force":        TokenForce,
+	"release":      TokenRelease,
+	"always":       TokenAlways,
 	"initial":    TokenInitial,
 	"posedge":    TokenPosedge,
 	"negedge":    TokenNegedge,

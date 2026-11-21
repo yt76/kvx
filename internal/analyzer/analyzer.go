@@ -169,11 +169,19 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]Sem
 		}
 		if existing, exists := scope.Symbols[sym.Name]; exists {
 			// In non-ANSI Verilog, a port declaration without a net type (e.g., "output [7:0] y;")
-			// may be followed by a net/reg declaration (e.g., "reg [7:0] y;"). Merge them cleanly.
+			// and a net/reg declaration (e.g., "reg [7:0] y;") may appear in either order. Merge them cleanly.
 			if existing.Kind == KindPort && sym.Kind == KindNet &&
 				!strings.Contains(existing.TypeDetail, "wire") &&
 				!strings.Contains(existing.TypeDetail, "reg") {
 				existing.TypeDetail = formatPortDetail(existing.TypeDetail, sym.TypeDetail)
+				existing.Signature = existing.TypeDetail + " " + existing.Name
+				return
+			}
+			if existing.Kind == KindNet && sym.Kind == KindPort &&
+				!strings.Contains(sym.TypeDetail, "wire") &&
+				!strings.Contains(sym.TypeDetail, "reg") {
+				existing.Kind = KindPort
+				existing.TypeDetail = formatPortDetail(sym.TypeDetail, existing.TypeDetail)
 				existing.Signature = existing.TypeDetail + " " + existing.Name
 				return
 			}
