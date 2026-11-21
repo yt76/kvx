@@ -225,9 +225,14 @@ func (s *Server) handleDocumentSymbol(msg IncomingMessage) error {
 		return s.sendResult(msg.ID, []DocumentSymbol{})
 	}
 
-	out := make([]DocumentSymbol, 0, len(doc.Analysis.PackageOrder)+len(doc.Analysis.InterfaceOrder)+len(doc.Analysis.ModuleOrder))
+	out := make([]DocumentSymbol, 0, len(doc.Analysis.PackageOrder)+len(doc.Analysis.ClassOrder)+len(doc.Analysis.InterfaceOrder)+len(doc.Analysis.ModuleOrder))
 	for _, pkgScope := range doc.Analysis.PackageOrder {
 		if ds, ok := toDocumentSymbol(pkgScope.Symbol); ok {
+			out = append(out, ds)
+		}
+	}
+	for _, clsScope := range doc.Analysis.ClassOrder {
+		if ds, ok := toDocumentSymbol(clsScope.Symbol); ok {
 			out = append(out, ds)
 		}
 	}
@@ -352,6 +357,14 @@ func (s *Server) handleDefinition(msg IncomingMessage) error {
 		if _, existsInSameDoc := doc.Analysis.Interfaces[sym.InterfaceName]; !existsInSameDoc {
 			if ifaceURI, found := s.docs.FindInterfaceURI(sym.InterfaceName); found {
 				targetURI = ifaceURI
+			}
+		}
+	}
+
+	if sym.ClassName != "" && sym.PackageName == "" && targetRange.File == "" {
+		if _, existsInSameDoc := doc.Analysis.Classes[sym.ClassName]; !existsInSameDoc {
+			if clsURI, found := s.docs.FindClassURI(sym.ClassName); found {
+				targetURI = clsURI
 			}
 		}
 	}
@@ -501,7 +514,9 @@ func toLSPSymbolKind(k analyzer.SymbolKind) LSPSymbolKind {
 		return LSPSymbolKindModule
 	case analyzer.KindInterface:
 		return LSPSymbolKindInterface
-	case analyzer.KindPort, analyzer.KindModport, analyzer.KindField:
+	case analyzer.KindClass:
+		return LSPSymbolKindClass
+	case analyzer.KindPort, analyzer.KindModport, analyzer.KindField, analyzer.KindConstraint:
 		return LSPSymbolKindField
 	case analyzer.KindNet:
 		return LSPSymbolKindVariable
@@ -524,7 +539,9 @@ func toCompletionKind(k analyzer.SymbolKind) CompletionItemKind {
 		return CompletionKindModule
 	case analyzer.KindInterface:
 		return CompletionKindInterface
-	case analyzer.KindPort, analyzer.KindModport, analyzer.KindField:
+	case analyzer.KindClass:
+		return CompletionKindClass
+	case analyzer.KindPort, analyzer.KindModport, analyzer.KindField, analyzer.KindConstraint:
 		return CompletionKindField
 	case analyzer.KindParam:
 		return CompletionKindConstant

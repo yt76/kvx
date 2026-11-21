@@ -649,3 +649,58 @@ func TestAnalyzeSystemVerilogAssertions(t *testing.T) {
 		t.Errorf("expected undeclared diagnostic for missing_sig in assertion, got %+v", badAn.Diagnostics)
 	}
 }
+
+func TestAnalyzeSystemVerilogClasses(t *testing.T) {
+	src := "class BasePkt;\n" +
+		"  rand logic [7:0] addr;\n" +
+		"  function new(input logic [7:0] a = 8'h00);\n" +
+		"    this.addr = a;\n" +
+		"  endfunction\n" +
+		"endclass\n" +
+		"class ExtPkt extends BasePkt;\n" +
+		"  rand logic [7:0] data;\n" +
+		"  constraint c_valid { addr != 8'hFF; data inside {[8'h00:8'h7F]}; }\n" +
+		"  function logic [7:0] calc();\n" +
+		"    return this.addr ^ this.data;\n" +
+		"  endfunction\n" +
+		"endclass\n" +
+		"module tb(output logic [7:0] out_v);\n" +
+		"  ExtPkt pkt;\n" +
+		"  initial begin\n" +
+		"    pkt = new();\n" +
+		"    pkt.addr = 8'h10;\n" +
+		"    out_v = pkt.calc();\n" +
+		"  end\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for classes, got %+v", an.Diagnostics)
+	}
+
+	// `this.addr` on line 10, col 17 resolves to inherited property `addr` in BasePkt (line 1).
+	symThisAddr := an.SymbolAt(ast.Position{Line: 10, Column: 17})
+	if symThisAddr == nil || symThisAddr.Name != "addr" || symThisAddr.SelectionRange.Start.Line != 1 {
+		t.Errorf("SymbolAt(this.addr) = %+v, want inherited 'addr' at line 1", symThisAddr)
+	}
+
+	// `pkt.calc()` on line 18, col 17 resolves to `calc` method in ExtPkt (line 9).
+	symCalc := an.SymbolAt(ast.Position{Line: 18, Column: 17})
+	if symCalc == nil || symCalc.Kind != KindFunction || symCalc.Name != "calc" || symCalc.SelectionRange.Start.Line != 9 {
+		t.Errorf("SymbolAt(pkt.calc) = %+v, want KindFunction calc at line 9", symCalc)
+	}
+
+	// Member completions on `pkt.` at line 18 must include both inherited `addr` and own `data` / `calc`.
+	members := an.MemberCompletions(ast.Position{Line: 18, Column: 16}, "pkt", nil)
+	memberNames := make(map[string]bool, len(members))
+	for _, m := range members {
+		memberNames[m.Name] = true
+	}
+	if !memberNames["addr"] || !memberNames["data"] || !memberNames["calc"] {
+		t.Errorf("MemberCompletions(pkt.) = %v, want addr, data, calc", memberNames)
+	}
+}

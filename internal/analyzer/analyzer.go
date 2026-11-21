@@ -18,12 +18,14 @@ const (
 	KindNet       SymbolKind = "net"
 	KindParam     SymbolKind = "parameter"
 	KindInstance  SymbolKind = "instance"
-	KindFunction  SymbolKind = "function"
-	KindTask      SymbolKind = "task"
-	KindProperty  SymbolKind = "property"
-	KindType      SymbolKind = "type"
-	KindField     SymbolKind = "field"
-	KindPackage   SymbolKind = "package"
+	KindFunction   SymbolKind = "function"
+	KindTask       SymbolKind = "task"
+	KindProperty   SymbolKind = "property"
+	KindClass      SymbolKind = "class"
+	KindConstraint SymbolKind = "constraint"
+	KindType       SymbolKind = "type"
+	KindField      SymbolKind = "field"
+	KindPackage    SymbolKind = "package"
 )
 
 // Symbol represents a named declaration in a Verilog source file.
@@ -39,6 +41,7 @@ type Symbol struct {
 	ModuleName     string
 	PackageName    string
 	InterfaceName  string
+	ClassName      string
 	Fields         []*Symbol
 	Children       []*Symbol
 }
@@ -81,6 +84,18 @@ type BlockScope struct {
 	Order   []*Symbol
 }
 
+// ClassScope holds the symbol table for a single SystemVerilog class declaration.
+type ClassScope struct {
+	Class      *ast.ClassDecl
+	Symbol     *Symbol
+	Symbols    map[string]*Symbol
+	Order      []*Symbol
+	Functions  []*FunctionScope
+	Tasks      []*TaskScope
+	Properties []*PropertyScope
+	Classes    []*ClassScope
+}
+
 // ModuleScope holds the symbol table for a single module declaration.
 type ModuleScope struct {
 	Module     *ast.ModuleDecl
@@ -90,6 +105,7 @@ type ModuleScope struct {
 	Functions  []*FunctionScope
 	Tasks      []*TaskScope
 	Properties []*PropertyScope
+	Classes    []*ClassScope
 	Blocks     []*BlockScope
 }
 
@@ -102,6 +118,7 @@ type PackageScope struct {
 	Functions  []*FunctionScope
 	Tasks      []*TaskScope
 	Properties []*PropertyScope
+	Classes    []*ClassScope
 }
 
 // InterfaceScope holds the symbol table for a single SystemVerilog interface declaration.
@@ -114,14 +131,16 @@ type InterfaceScope struct {
 	Functions  []*FunctionScope
 	Tasks      []*TaskScope
 	Properties []*PropertyScope
+	Classes    []*ClassScope
 	Blocks     []*BlockScope
 }
 
-// WorkspaceContext provides cross-file modules, packages, and interfaces for semantic analysis.
+// WorkspaceContext provides cross-file modules, packages, interfaces, and classes for semantic analysis.
 type WorkspaceContext struct {
 	Modules    map[string]*ModuleScope
 	Packages   map[string]*PackageScope
 	Interfaces map[string]*InterfaceScope
+	Classes    map[string]*ClassScope
 }
 
 // Analysis holds the symbol tables and semantic diagnostics for a SourceFile.
@@ -136,6 +155,9 @@ type Analysis struct {
 	Packages       map[string]*PackageScope
 	PackageOrder   []*PackageScope
 	AllPackages    map[string]*PackageScope
+	Classes        map[string]*ClassScope
+	ClassOrder     []*ClassScope
+	AllClasses     map[string]*ClassScope
 	GlobalSymbols  map[string]*Symbol
 	GlobalOrder    []*Symbol
 	Diagnostics    []SemanticDiagnostic
@@ -167,6 +189,10 @@ func AnalyzeWithWorkspace(file *ast.SourceFile, ctx WorkspaceContext) *Analysis 
 	for k, v := range ctx.Interfaces {
 		allIfaces[k] = v
 	}
+	allClasses := make(map[string]*ClassScope, len(ctx.Classes))
+	for k, v := range ctx.Classes {
+		allClasses[k] = v
+	}
 	res := &Analysis{
 		File:          file,
 		Modules:       make(map[string]*ModuleScope),
@@ -175,10 +201,18 @@ func AnalyzeWithWorkspace(file *ast.SourceFile, ctx WorkspaceContext) *Analysis 
 		AllInterfaces: allIfaces,
 		Packages:      make(map[string]*PackageScope),
 		AllPackages:   allPkgs,
+		Classes:       make(map[string]*ClassScope),
+		AllClasses:    allClasses,
 		GlobalSymbols: make(map[string]*Symbol),
 	}
 	if file == nil {
 		return res
+	}
+
+	for name, clsScope := range allClasses {
+		if clsScope != nil && clsScope.Symbol != nil {
+			res.GlobalSymbols[name] = clsScope.Symbol
+		}
 	}
 
 	for _, m := range file.Macros {
@@ -303,6 +337,17 @@ func AnalyzeWithWorkspace(file *ast.SourceFile, ctx WorkspaceContext) *Analysis 
 		}
 	}
 
+	for _, cls := range file.Classes {
+		clsScope := analyzeClass(cls, res.GlobalSymbols, res.AllPackages, res.AllInterfaces, fileHasExtWildcard, &res.Diagnostics)
+		res.ClassOrder = append(res.ClassOrder, clsScope)
+		if cls.Name != "" {
+			res.Classes[cls.Name] = clsScope
+			res.AllClasses[cls.Name] = clsScope
+			res.GlobalSymbols[cls.Name] = clsScope.Symbol
+			res.GlobalOrder = append(res.GlobalOrder, clsScope.Symbol)
+		}
+	}
+
 	for _, mod := range file.Modules {
 		scope := analyzeModule(mod, res.GlobalSymbols, res.AllPackages, res.AllInterfaces, fileHasExtWildcard, &res.Diagnostics)
 		res.ModuleOrder = append(res.ModuleOrder, scope)
@@ -405,6 +450,101 @@ func (a *Analysis) validateModuleInstantiations(scope *ModuleScope) {
 	checkItems(scope.Module.Items)
 }
 
+func analyzeClass(cls *ast.ClassDecl, globals map[string]*Symbol, allPkgs map[string]*PackageScope, allIfaces map[string]*InterfaceScope, fileHasExtWildcard bool, diags *[]SemanticDiagnostic) *ClassScope {
+	detail := "class"
+	if cls.Virtual {
+		detail = "virtual class"
+	}
+	if cls.BaseClass != "" {
+		detail += " extends " + cls.BaseClass
+	}
+	sig := detail + " " + cls.Name
+	if cls.BaseClass != "" {
+		sig = "class " + cls.Name + " extends " + cls.BaseClass
+		if cls.Virtual {
+			sig = "virtual " + sig
+		}
+	}
+	clsSym := &Symbol{
+		Name:           cls.Name,
+		Kind:           KindClass,
+		TypeDetail:     detail,
+		Signature:      sig,
+		Range:          cls.Range,
+		SelectionRange: cls.NameRange,
+		ClassName:      cls.Name,
+	}
+
+	// Pre-populate inherited members from BaseClass (if known) into a copy of globals for method bodies,
+	// and also inject `this` and `super` into the class scope.
+	var baseSym *Symbol
+	if cls.BaseClass != "" {
+		if sym, ok := resolveRefInScopes(cls.BaseClass, nil, nil, globals, allPkgs, allIfaces, false); ok && sym != nil {
+			baseSym = sym
+		}
+	}
+
+	classGlobals := make(map[string]*Symbol, len(globals)+16)
+	for k, v := range globals {
+		classGlobals[k] = v
+	}
+	if baseSym != nil {
+		for _, f := range baseSym.Fields {
+			if f.Name != "" {
+				classGlobals[f.Name] = f
+			}
+		}
+	}
+
+	dummyMod := &ast.ModuleDecl{
+		Name:       cls.Name,
+		NameRange:  cls.NameRange,
+		Range:      cls.Range,
+		Params:     cls.Params,
+		Items:      cls.Items,
+		Refs:       cls.Refs,
+		MemberRefs: cls.MemberRefs,
+	}
+
+	// Note: inject `this` and `super` by adding synthetic NetDecls or symbols before checking refs.
+	modScope := analyzeModuleWithClassSelf(dummyMod, clsSym, baseSym, classGlobals, allPkgs, allIfaces, fileHasExtWildcard, diags)
+
+	var allMembers []*Symbol
+	seenMember := make(map[string]bool)
+	for _, sym := range modScope.Order {
+		if sym.Name == "this" || sym.Name == "super" {
+			continue
+		}
+		sym.ClassName = cls.Name
+		seenMember[sym.Name] = true
+		allMembers = append(allMembers, sym)
+	}
+	if baseSym != nil {
+		for _, f := range baseSym.Fields {
+			if f.Name != "" && !seenMember[f.Name] {
+				seenMember[f.Name] = true
+				allMembers = append(allMembers, f)
+				if _, exists := modScope.Symbols[f.Name]; !exists {
+					modScope.Symbols[f.Name] = f
+				}
+			}
+		}
+	}
+	clsSym.Fields = allMembers
+	clsSym.Children = modScope.Symbol.Children
+
+	return &ClassScope{
+		Class:      cls,
+		Symbol:     clsSym,
+		Symbols:    modScope.Symbols,
+		Order:      allMembers,
+		Functions:  modScope.Functions,
+		Tasks:      modScope.Tasks,
+		Properties: modScope.Properties,
+		Classes:    modScope.Classes,
+	}
+}
+
 func analyzeInterface(iface *ast.InterfaceDecl, globals map[string]*Symbol, allPkgs map[string]*PackageScope, allIfaces map[string]*InterfaceScope, fileHasExtWildcard bool, diags *[]SemanticDiagnostic) *InterfaceScope {
 	detail := "interface"
 	if len(iface.Ports) > 0 || len(iface.Modports) > 0 {
@@ -494,10 +634,15 @@ func analyzePackage(pkg *ast.PackageDecl, globals map[string]*Symbol, allPkgs ma
 		Functions:  modScope.Functions,
 		Tasks:      modScope.Tasks,
 		Properties: modScope.Properties,
+		Classes:    modScope.Classes,
 	}
 }
 
 func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[string]*PackageScope, allIfaces map[string]*InterfaceScope, fileHasExtWildcard bool, diags *[]SemanticDiagnostic) *ModuleScope {
+	return analyzeModuleWithClassSelf(mod, nil, nil, globals, allPkgs, allIfaces, fileHasExtWildcard, diags)
+}
+
+func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym *Symbol, globals map[string]*Symbol, allPkgs map[string]*PackageScope, allIfaces map[string]*InterfaceScope, fileHasExtWildcard bool, diags *[]SemanticDiagnostic) *ModuleScope {
 	modSym := &Symbol{
 		Name:           mod.Name,
 		Kind:           KindModule,
@@ -682,6 +827,28 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[
 				addSymbol(propScope.Symbol, inGenerate)
 				scope.Properties = append(scope.Properties, propScope)
 
+			case *ast.ClassDecl:
+				mergedGlobals := make(map[string]*Symbol, len(globals)+len(scope.Symbols))
+				for k, v := range globals {
+					mergedGlobals[k] = v
+				}
+				for k, v := range scope.Symbols {
+					mergedGlobals[k] = v
+				}
+				clsScope := analyzeClass(d, mergedGlobals, allPkgs, allIfaces, fileHasExtWildcard, diags)
+				addSymbol(clsScope.Symbol, inGenerate)
+				scope.Classes = append(scope.Classes, clsScope)
+
+			case *ast.ConstraintDecl:
+				addSymbol(&Symbol{
+					Name:           d.Name,
+					Kind:           KindConstraint,
+					TypeDetail:     "constraint",
+					Signature:      "constraint " + d.Name,
+					Range:          d.Range,
+					SelectionRange: d.NameRange,
+				}, inGenerate)
+
 			case *ast.AssertStmt:
 				if d.Label != "" {
 					detail := d.Kind
@@ -761,6 +928,43 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[
 	}
 
 	collectItems(mod.Items, false)
+
+	if selfClassSym != nil {
+		// Populate selfClassSym.Fields with declared members so `this.member` resolves inside class methods.
+		selfFields := make([]*Symbol, 0, len(scope.Order))
+		selfFields = append(selfFields, scope.Order...)
+		if superClassSym != nil {
+			for _, f := range superClassSym.Fields {
+				if _, exists := scope.Symbols[f.Name]; !exists {
+					selfFields = append(selfFields, f)
+					scope.Symbols[f.Name] = f
+				}
+			}
+		}
+		selfClassSym.Fields = selfFields
+		scope.Symbols["this"] = &Symbol{
+			Name:           "this",
+			Kind:           KindNet,
+			TypeDetail:     selfClassSym.Name,
+			TypeName:       selfClassSym.Name,
+			Signature:      selfClassSym.Signature,
+			Range:          selfClassSym.Range,
+			SelectionRange: selfClassSym.SelectionRange,
+			Fields:         selfFields,
+		}
+		if superClassSym != nil {
+			scope.Symbols["super"] = &Symbol{
+				Name:           "super",
+				Kind:           KindNet,
+				TypeDetail:     superClassSym.Name,
+				TypeName:       superClassSym.Name,
+				Signature:      superClassSym.Signature,
+				Range:          superClassSym.Range,
+				SelectionRange: superClassSym.SelectionRange,
+				Fields:         superClassSym.Fields,
+			}
+		}
+	}
 
 	// Also apply any imports placed inside generate blocks or module items.
 	for _, item := range mod.Items {
@@ -874,13 +1078,17 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[
 			}
 			continue
 		}
-		// Check typed struct/union variable
+		// Check typed struct/union/class variable
 		if baseSym.TypeName != "" {
 			if typeSym, found := resolveRefInScopes(baseSym.TypeName, localSyms, scope.Symbols, globals, allPkgs, allIfaces, false); found && typeSym != nil && len(typeSym.Fields) > 0 {
 				if findFieldByName(typeSym.Fields, mref.MemberName) == nil {
+					kindLabel := "struct"
+					if typeSym.Kind == KindClass {
+						kindLabel = "class"
+					}
 					*diags = append(*diags, SemanticDiagnostic{
 						Range:   mref.Range,
-						Message: fmt.Sprintf("unknown field %q of struct %q", mref.MemberName, typeSym.Name),
+						Message: fmt.Sprintf("unknown field %q of %s %q", mref.MemberName, kindLabel, typeSym.Name),
 						IsError: false,
 					})
 				}
@@ -958,6 +1166,37 @@ func (a *Analysis) ModuleAt(pos ast.Position) *ModuleScope {
 	return nil
 }
 
+// ClassAt returns the ClassScope enclosing pos (top-level, package, module, or interface class), or nil.
+func (a *Analysis) ClassAt(pos ast.Position) *ClassScope {
+	for _, clsScope := range a.ClassOrder {
+		if clsScope.Class.Range.Contains(pos) {
+			return clsScope
+		}
+	}
+	for _, pkgScope := range a.PackageOrder {
+		for _, clsScope := range pkgScope.Classes {
+			if clsScope.Class.Range.Contains(pos) {
+				return clsScope
+			}
+		}
+	}
+	for _, modScope := range a.ModuleOrder {
+		for _, clsScope := range modScope.Classes {
+			if clsScope.Class.Range.Contains(pos) {
+				return clsScope
+			}
+		}
+	}
+	for _, ifaceScope := range a.InterfaceOrder {
+		for _, clsScope := range ifaceScope.Classes {
+			if clsScope.Class.Range.Contains(pos) {
+				return clsScope
+			}
+		}
+	}
+	return nil
+}
+
 // InterfaceAt returns the InterfaceScope enclosing pos, or nil if pos is outside all interfaces.
 func (a *Analysis) InterfaceAt(pos ast.Position) *InterfaceScope {
 	for _, scope := range a.InterfaceOrder {
@@ -1030,6 +1269,63 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 		for _, ref := range pkg.Refs {
 			if ref.Range.Contains(pos) {
 				if sym, ok := resolveRefInScopes(ref.Name, nil, pkgScope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
+					return sym
+				}
+			}
+		}
+	}
+
+	// Check class declarations (top-level or nested in package/module/interface) and their contents.
+	if clsScope := a.ClassAt(pos); clsScope != nil {
+		cls := clsScope.Class
+		if cls.NameRange.Contains(pos) {
+			return clsScope.Symbol
+		}
+		for _, sym := range clsScope.Order {
+			if sym.SelectionRange.Contains(pos) {
+				return sym
+			}
+		}
+		for _, fnScope := range clsScope.Functions {
+			if !fnScope.Decl.Range.Contains(pos) {
+				continue
+			}
+			for _, sym := range fnScope.Order {
+				if sym.SelectionRange.Contains(pos) {
+					return sym
+				}
+			}
+			for _, ref := range fnScope.Decl.Refs {
+				if ref.Range.Contains(pos) {
+					if sym, ok := resolveRefInScopes(ref.Name, fnScope.Symbols, clsScope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
+						return sym
+					}
+				}
+			}
+		}
+		for _, taskScope := range clsScope.Tasks {
+			if !taskScope.Decl.Range.Contains(pos) {
+				continue
+			}
+			for _, sym := range taskScope.Order {
+				if sym.SelectionRange.Contains(pos) {
+					return sym
+				}
+			}
+			for _, ref := range taskScope.Decl.Refs {
+				if ref.Range.Contains(pos) {
+					if sym, ok := resolveRefInScopes(ref.Name, taskScope.Symbols, clsScope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
+						return sym
+					}
+				}
+			}
+		}
+		if sym, _ := a.ResolveMemberAt(pos, nil); sym != nil {
+			return sym
+		}
+		for _, ref := range cls.Refs {
+			if ref.Range.Contains(pos) {
+				if sym, ok := resolveRefInScopes(ref.Name, nil, clsScope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
 					return sym
 				}
 			}
@@ -1315,7 +1611,31 @@ func (a *Analysis) ResolveMemberAt(pos ast.Position, extModuleLookup func(string
 	var mref *ast.MemberRef
 	var localSyms, modSyms map[string]*Symbol
 
-	if scope := a.ModuleAt(pos); scope != nil {
+	if clsScope := a.ClassAt(pos); clsScope != nil {
+		modSyms = clsScope.Symbols
+		for i := range clsScope.Class.MemberRefs {
+			if clsScope.Class.MemberRefs[i].Range.Contains(pos) {
+				mref = &clsScope.Class.MemberRefs[i]
+				break
+			}
+		}
+		if mref != nil {
+			for _, fnScope := range clsScope.Functions {
+				if fnScope.Decl.Range.Contains(pos) {
+					localSyms = fnScope.Symbols
+					break
+				}
+			}
+			if localSyms == nil {
+				for _, taskScope := range clsScope.Tasks {
+					if taskScope.Decl.Range.Contains(pos) {
+						localSyms = taskScope.Symbols
+						break
+					}
+				}
+			}
+		}
+	} else if scope := a.ModuleAt(pos); scope != nil {
 		modSyms = scope.Symbols
 		for i := range scope.Module.MemberRefs {
 			if scope.Module.MemberRefs[i].Range.Contains(pos) {
@@ -1568,7 +1888,23 @@ func (a *Analysis) MemberCompletions(pos ast.Position, baseName string, extModul
 
 	// 2. Resolve baseName in the enclosing scope at pos.
 	var localSyms, modSyms map[string]*Symbol
-	if scope := a.ModuleAt(pos); scope != nil {
+	if clsScope := a.ClassAt(pos); clsScope != nil {
+		modSyms = clsScope.Symbols
+		for _, fnScope := range clsScope.Functions {
+			if fnScope.Decl.Range.Contains(pos) {
+				localSyms = fnScope.Symbols
+				break
+			}
+		}
+		if localSyms == nil {
+			for _, taskScope := range clsScope.Tasks {
+				if taskScope.Decl.Range.Contains(pos) {
+					localSyms = taskScope.Symbols
+					break
+				}
+			}
+		}
+	} else if scope := a.ModuleAt(pos); scope != nil {
 		modSyms = scope.Symbols
 		for _, fnScope := range scope.Functions {
 			if fnScope.Decl.Range.Contains(pos) {
@@ -1692,7 +2028,21 @@ func buildStructFieldSymbols(fields []ast.StructField) []*Symbol {
 // CompletionsAt returns symbols available in scope at pos.
 func (a *Analysis) CompletionsAt(pos ast.Position) []*Symbol {
 	var out []*Symbol
-	if scope := a.ModuleAt(pos); scope != nil {
+	if clsScope := a.ClassAt(pos); clsScope != nil {
+		for _, fnScope := range clsScope.Functions {
+			if fnScope.Decl.Range.Contains(pos) {
+				out = append(out, fnScope.Order...)
+				break
+			}
+		}
+		for _, taskScope := range clsScope.Tasks {
+			if taskScope.Decl.Range.Contains(pos) {
+				out = append(out, taskScope.Order...)
+				break
+			}
+		}
+		out = append(out, clsScope.Order...)
+	} else if scope := a.ModuleAt(pos); scope != nil {
 		for _, fnScope := range scope.Functions {
 			if fnScope.Decl.Range.Contains(pos) {
 				out = append(out, fnScope.Order...)

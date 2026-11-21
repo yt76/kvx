@@ -25,3 +25,4 @@ sv_packages.sv          0 0
 sv_interfaces.sv        0 0
 sv_control_ops.sv       0 0
 sv_assertions.sv        0 0
+sv_classes.sv           0 0

@@ -161,11 +161,11 @@ func classifySemanticToken(tok, prevTok lexer.Token, an *analyzer.Analysis) (uin
 					mods |= semModDeclaration
 				}
 				switch sym.Kind {
-				case analyzer.KindModule, analyzer.KindInterface, analyzer.KindType, analyzer.KindPackage:
+				case analyzer.KindModule, analyzer.KindInterface, analyzer.KindClass, analyzer.KindType, analyzer.KindPackage:
 					return semTokenType, mods, true
 				case analyzer.KindParam:
 					return semTokenParameter, mods | semModReadonly, true
-				case analyzer.KindPort, analyzer.KindModport:
+				case analyzer.KindPort, analyzer.KindModport, analyzer.KindField, analyzer.KindConstraint:
 					if strings.HasPrefix(sym.TypeDetail, "input") {
 						mods |= semModReadonly
 					}
@@ -200,6 +200,9 @@ func isKeywordToken(t lexer.TokenType) bool {
 		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw, lexer.TokenVoid,
 		lexer.TokenConst, lexer.TokenVar, lexer.TokenStatic,
 		lexer.TokenTypedef, lexer.TokenEnum, lexer.TokenStruct, lexer.TokenUnion, lexer.TokenPacked, lexer.TokenTypeKw,
+		lexer.TokenClass, lexer.TokenEndclass, lexer.TokenExtends, lexer.TokenVirtual, lexer.TokenPure, lexer.TokenExtern,
+		lexer.TokenLocal, lexer.TokenProtected, lexer.TokenSuper, lexer.TokenThis, lexer.TokenNew, lexer.TokenNull,
+		lexer.TokenRand, lexer.TokenRandc, lexer.TokenConstraint, lexer.TokenSolve, lexer.TokenBefore, lexer.TokenDist, lexer.TokenSoft,
 		lexer.TokenInteger,
 		lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,
 		lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
@@ -242,7 +245,7 @@ func isOperatorToken(t lexer.TokenType) bool {
 		lexer.TokenAndEq, lexer.TokenOrEq, lexer.TokenXorEq, lexer.TokenShlEq, lexer.TokenShrEq,
 		lexer.TokenQuestion, lexer.TokenAt, lexer.TokenHash, lexer.TokenHashHash,
 		lexer.TokenArrow, lexer.TokenEquiv, lexer.TokenImpliesOverlapping, lexer.TokenImpliesNonOverlapping,
-		lexer.TokenColonColon, lexer.TokenDollar:
+		lexer.TokenColonColon, lexer.TokenColonEq, lexer.TokenColonSlash, lexer.TokenDollar:
 		return true
 	default:
 		return false

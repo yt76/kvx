@@ -194,6 +194,7 @@ type LSPSymbolKind int
 
 const (
 	LSPSymbolKindModule    LSPSymbolKind = 2
+	LSPSymbolKindClass     LSPSymbolKind = 5
 	LSPSymbolKindField     LSPSymbolKind = 8
 	LSPSymbolKindInterface LSPSymbolKind = 11
 	LSPSymbolKindFunction  LSPSymbolKind = 12
@@ -226,6 +227,7 @@ const (
 	CompletionKindFunction  CompletionItemKind = 3
 	CompletionKindField     CompletionItemKind = 5
 	CompletionKindVariable  CompletionItemKind = 6
+	CompletionKindClass     CompletionItemKind = 7
 	CompletionKindInterface CompletionItemKind = 8
 	CompletionKindModule    CompletionItemKind = 9
 	CompletionKindKeyword   CompletionItemKind = 14

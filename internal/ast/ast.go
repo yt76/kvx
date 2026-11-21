@@ -38,6 +38,7 @@ type SourceFile struct {
 	Modules    []*ModuleDecl
 	Interfaces []*InterfaceDecl
 	Packages   []*PackageDecl
+	Classes    []*ClassDecl
 	Imports    []*ImportDecl
 	Includes   []*IncludeDecl
 	Macros     []*MacroDecl
@@ -45,6 +46,34 @@ type SourceFile struct {
 	Typedefs   []*TypedefDecl
 	Refs       []IdentifierRef
 }
+
+// ClassDecl represents a SystemVerilog class declaration ([virtual] class ... endclass).
+type ClassDecl struct {
+	Virtual        bool
+	Name           string
+	NameRange      Range
+	BaseClass      string
+	BaseClassRange Range
+	Params         []*ParamDecl
+	Items          []ModuleItem
+	Range          Range
+	Refs           []IdentifierRef
+	MemberRefs     []MemberRef
+}
+
+func (c *ClassDecl) ItemRange() Range { return c.Range }
+func (c *ClassDecl) moduleItemNode()  {}
+
+// ConstraintDecl represents a SystemVerilog random constraint block inside a class.
+type ConstraintDecl struct {
+	Name      string
+	NameRange Range
+	Range     Range
+	Refs      []IdentifierRef
+}
+
+func (c *ConstraintDecl) ItemRange() Range { return c.Range }
+func (c *ConstraintDecl) moduleItemNode()  {}
 
 // InterfaceDecl represents a SystemVerilog interface declaration (interface ... endinterface).
 type InterfaceDecl struct {

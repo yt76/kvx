@@ -1712,3 +1712,57 @@ endmodule
 		t.Fatalf("expected 3 concurrent assertion items, got %+v", asserts)
 	}
 }
+
+func TestParseSystemVerilogClasses(t *testing.T) {
+	src := `
+virtual class BasePkt;
+    rand logic [7:0] addr;
+    protected int id;
+
+    constraint c_addr {
+        addr inside {[8'h00:8'h7F]};
+    }
+
+    function new(input int i = 0);
+        this.id = i;
+    endfunction
+
+    pure virtual function logic [7:0] checksum();
+endclass : BasePkt
+
+class DerivedPkt extends BasePkt;
+    rand logic [7:0] payload;
+
+    function new(input int i = 1);
+        super.new(i);
+        this.payload = 8'hAA;
+    endfunction
+
+    virtual function logic [7:0] checksum();
+        return this.addr ^ this.payload;
+    endfunction
+endclass : DerivedPkt
+
+module tb;
+    DerivedPkt p;
+    logic [7:0] c;
+    initial begin
+        p = new(7);
+        c = p.checksum();
+    end
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Classes) != 2 {
+		t.Fatalf("expected 2 top-level classes, got %d", len(file.Classes))
+	}
+	if !file.Classes[0].Virtual || file.Classes[0].Name != "BasePkt" {
+		t.Errorf("unexpected class[0]: %+v", file.Classes[0])
+	}
+	if file.Classes[1].Name != "DerivedPkt" || file.Classes[1].BaseClass != "BasePkt" {
+		t.Errorf("unexpected class[1]: %+v", file.Classes[1])
+	}
+}

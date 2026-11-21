@@ -163,6 +163,14 @@ func (l *Lexer) NextToken() Token {
 			l.advance()
 			return l.makeToken(TokenColonColon, "::", start)
 		}
+		if l.peek() == '=' {
+			l.advance()
+			return l.makeToken(TokenColonEq, ":=", start)
+		}
+		if l.peek() == '/' {
+			l.advance()
+			return l.makeToken(TokenColonSlash, ":/", start)
+		}
 		return l.makeToken(TokenColon, ":", start)
 	case ',':
 		return l.makeToken(TokenComma, ",", start)

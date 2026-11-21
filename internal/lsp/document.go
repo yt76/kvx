@@ -107,9 +107,9 @@ func (s *DocumentStore) indexWorkspaceFilesLocked(cfg *config.Config) {
 			Analysis:   analyzer.Analyze(fileAST),
 		}
 	}
-	// Second pass: re-analyze files with all discovered workspace modules, packages, and interfaces for cross-file resolution.
+	// Second pass: re-analyze files with all discovered workspace modules, packages, interfaces, and classes.
 	ctx := s.workspaceContextLocked()
-	if len(ctx.Modules) > 0 || len(ctx.Packages) > 0 || len(ctx.Interfaces) > 0 {
+	if len(ctx.Modules) > 0 || len(ctx.Packages) > 0 || len(ctx.Interfaces) > 0 || len(ctx.Classes) > 0 {
 		for _, doc := range s.workspaceDocs {
 			doc.Analysis = analyzer.AnalyzeWithWorkspace(doc.AST, ctx)
 		}
@@ -121,7 +121,52 @@ func (s *DocumentStore) workspaceContextLocked() analyzer.WorkspaceContext {
 		Modules:    s.workspaceModulesLocked(),
 		Packages:   s.workspacePackagesLocked(),
 		Interfaces: s.workspaceInterfacesLocked(),
+		Classes:    s.workspaceClassesLocked(),
 	}
+}
+
+func (s *DocumentStore) workspaceClassesLocked() map[string]*analyzer.ClassScope {
+	classes := make(map[string]*analyzer.ClassScope)
+	collect := func(m map[string]*Document) {
+		for _, doc := range m {
+			if doc.Analysis == nil {
+				continue
+			}
+			for name, clsScope := range doc.Analysis.Classes {
+				if _, exists := classes[name]; !exists {
+					classes[name] = clsScope
+				}
+			}
+		}
+	}
+	collect(s.docs)
+	collect(s.workspaceDocs)
+	return classes
+}
+
+// FindClassURI returns the document URI declaring clsName across open and indexed workspace files.
+func (s *DocumentStore) FindClassURI(clsName string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for uri, doc := range s.docs {
+		if doc.Analysis != nil {
+			if _, ok := doc.Analysis.Classes[clsName]; ok {
+				return uri, true
+			}
+		}
+	}
+	for uri, doc := range s.workspaceDocs {
+		if _, isOpen := s.docs[uri]; isOpen {
+			continue
+		}
+		if doc.Analysis != nil {
+			if _, ok := doc.Analysis.Classes[clsName]; ok {
+				return uri, true
+			}
+		}
+	}
+	return "", false
 }
 
 func (s *DocumentStore) workspaceModulesLocked() map[string]*analyzer.ModuleScope {

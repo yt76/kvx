@@ -60,6 +60,25 @@ const (
 	TokenUnion        TokenType = "union"
 	TokenPacked       TokenType = "packed"
 	TokenTypeKw       TokenType = "type"
+	TokenClass        TokenType = "class"
+	TokenEndclass     TokenType = "endclass"
+	TokenExtends      TokenType = "extends"
+	TokenVirtual      TokenType = "virtual"
+	TokenPure         TokenType = "pure"
+	TokenExtern       TokenType = "extern"
+	TokenLocal        TokenType = "local"
+	TokenProtected    TokenType = "protected"
+	TokenSuper        TokenType = "super"
+	TokenThis         TokenType = "this"
+	TokenNew          TokenType = "new"
+	TokenNull         TokenType = "null"
+	TokenRand         TokenType = "rand"
+	TokenRandc        TokenType = "randc"
+	TokenConstraint   TokenType = "constraint"
+	TokenSolve        TokenType = "solve"
+	TokenBefore       TokenType = "before"
+	TokenDist         TokenType = "dist"
+	TokenSoft         TokenType = "soft"
 	TokenInteger      TokenType = "integer"
 	TokenTri          TokenType = "tri"
 	TokenTri0         TokenType = "tri0"
@@ -151,6 +170,8 @@ const (
 	TokenSemicolon  TokenType = ";"
 	TokenColon      TokenType = ":"
 	TokenColonColon TokenType = "::"
+	TokenColonEq    TokenType = ":="
+	TokenColonSlash TokenType = ":/"
 	TokenComma      TokenType = ","
 	TokenDot       TokenType = "."
 	TokenHash      TokenType = "#"
@@ -252,6 +273,25 @@ var keywords = map[string]TokenType{
 	"union":        TokenUnion,
 	"packed":       TokenPacked,
 	"type":         TokenTypeKw,
+	"class":        TokenClass,
+	"endclass":     TokenEndclass,
+	"extends":      TokenExtends,
+	"virtual":      TokenVirtual,
+	"pure":         TokenPure,
+	"extern":       TokenExtern,
+	"local":        TokenLocal,
+	"protected":    TokenProtected,
+	"super":        TokenSuper,
+	"this":         TokenThis,
+	"new":          TokenNew,
+	"null":         TokenNull,
+	"rand":         TokenRand,
+	"randc":        TokenRandc,
+	"constraint":   TokenConstraint,
+	"solve":        TokenSolve,
+	"before":       TokenBefore,
+	"dist":         TokenDist,
+	"soft":         TokenSoft,
 	"integer":      TokenInteger,
 	"tri":          TokenTri,
 	"tri0":         TokenTri0,
