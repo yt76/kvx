@@ -18,6 +18,7 @@ const (
 	KindInstance SymbolKind = "instance"
 	KindFunction SymbolKind = "function"
 	KindTask     SymbolKind = "task"
+	KindType     SymbolKind = "type"
 )
 
 // Symbol represents a named declaration in a Verilog source file.
@@ -136,6 +137,46 @@ func Analyze(file *ast.SourceFile) *Analysis {
 		res.GlobalOrder = append(res.GlobalOrder, sym)
 	}
 
+	for _, td := range file.Typedefs {
+		if td.Name != "" {
+			detail := "typedef"
+			sig := "typedef " + td.Name
+			if td.BaseType != "" {
+				detail = "typedef " + td.BaseType
+				sig = "typedef " + td.BaseType + " " + td.Name
+			}
+			sym := &Symbol{
+				Name:           td.Name,
+				Kind:           KindType,
+				TypeDetail:     detail,
+				Signature:      sig,
+				Range:          td.Range,
+				SelectionRange: td.NameRange,
+			}
+			res.GlobalSymbols[td.Name] = sym
+			res.GlobalOrder = append(res.GlobalOrder, sym)
+		}
+		for _, em := range td.EnumMembers {
+			if em.Name == "" {
+				continue
+			}
+			sig := "enum " + em.Name
+			if em.ValueText != "" {
+				sig += " = " + em.ValueText
+			}
+			sym := &Symbol{
+				Name:           em.Name,
+				Kind:           KindParam,
+				TypeDetail:     "enum",
+				Signature:      sig,
+				Range:          em.Range,
+				SelectionRange: em.NameRange,
+			}
+			res.GlobalSymbols[em.Name] = sym
+			res.GlobalOrder = append(res.GlobalOrder, sym)
+		}
+	}
+
 	for _, mod := range file.Modules {
 		scope := analyzeModule(mod, res.GlobalSymbols, &res.Diagnostics)
 		res.ModuleOrder = append(res.ModuleOrder, scope)
@@ -232,6 +273,36 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]Sem
 					SelectionRange: d.NameRange,
 				}, inGenerate)
 
+			case *ast.TypedefDecl:
+				detail := "typedef"
+				sig := "typedef " + d.Name
+				if d.BaseType != "" {
+					detail = "typedef " + d.BaseType
+					sig = "typedef " + d.BaseType + " " + d.Name
+				}
+				addSymbol(&Symbol{
+					Name:           d.Name,
+					Kind:           KindType,
+					TypeDetail:     detail,
+					Signature:      sig,
+					Range:          d.Range,
+					SelectionRange: d.NameRange,
+				}, inGenerate)
+				for _, em := range d.EnumMembers {
+					emSig := "enum " + em.Name
+					if em.ValueText != "" {
+						emSig += " = " + em.ValueText
+					}
+					addSymbol(&Symbol{
+						Name:           em.Name,
+						Kind:           KindParam,
+						TypeDetail:     "enum",
+						Signature:      emSig,
+						Range:          em.Range,
+						SelectionRange: em.NameRange,
+					}, inGenerate)
+				}
+
 			case *ast.NetDecl:
 				detail := formatNetDeclDetail(d)
 				addSymbol(&Symbol{
@@ -242,6 +313,20 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]Sem
 					Range:          d.Range,
 					SelectionRange: d.NameRange,
 				}, inGenerate)
+				for _, em := range d.EnumMembers {
+					emSig := "enum " + em.Name
+					if em.ValueText != "" {
+						emSig += " = " + em.ValueText
+					}
+					addSymbol(&Symbol{
+						Name:           em.Name,
+						Kind:           KindParam,
+						TypeDetail:     "enum",
+						Signature:      emSig,
+						Range:          em.Range,
+						SelectionRange: em.NameRange,
+					}, inGenerate)
+				}
 
 			case *ast.ModuleInst:
 				detail := fmt.Sprintf("instance of %s", d.ModuleName)
@@ -746,6 +831,35 @@ func buildFunctionScope(fn *ast.FunctionDecl, diags *[]SemanticDiagnostic) *Func
 				Range:          d.Range,
 				SelectionRange: d.NameRange,
 			})
+		case *ast.TypedefDecl:
+			tdDetail := "typedef"
+			tdSig := "typedef " + d.Name
+			if d.BaseType != "" {
+				tdDetail = "typedef " + d.BaseType
+				tdSig = "typedef " + d.BaseType + " " + d.Name
+			}
+			addLocal(&Symbol{
+				Name:           d.Name,
+				Kind:           KindType,
+				TypeDetail:     tdDetail,
+				Signature:      tdSig,
+				Range:          d.Range,
+				SelectionRange: d.NameRange,
+			})
+			for _, em := range d.EnumMembers {
+				emSig := "enum " + em.Name
+				if em.ValueText != "" {
+					emSig += " = " + em.ValueText
+				}
+				addLocal(&Symbol{
+					Name:           em.Name,
+					Kind:           KindParam,
+					TypeDetail:     "enum",
+					Signature:      emSig,
+					Range:          em.Range,
+					SelectionRange: em.NameRange,
+				})
+			}
 		case *ast.NetDecl:
 			detail := formatNetDeclDetail(d)
 			addLocal(&Symbol{
@@ -756,6 +870,20 @@ func buildFunctionScope(fn *ast.FunctionDecl, diags *[]SemanticDiagnostic) *Func
 				Range:          d.Range,
 				SelectionRange: d.NameRange,
 			})
+			for _, em := range d.EnumMembers {
+				emSig := "enum " + em.Name
+				if em.ValueText != "" {
+					emSig += " = " + em.ValueText
+				}
+				addLocal(&Symbol{
+					Name:           em.Name,
+					Kind:           KindParam,
+					TypeDetail:     "enum",
+					Signature:      emSig,
+					Range:          em.Range,
+					SelectionRange: em.NameRange,
+				})
+			}
 		}
 	}
 
@@ -869,6 +997,35 @@ func buildTaskScope(task *ast.TaskDecl, diags *[]SemanticDiagnostic) *TaskScope 
 				Range:          d.Range,
 				SelectionRange: d.NameRange,
 			})
+		case *ast.TypedefDecl:
+			tdDetail := "typedef"
+			tdSig := "typedef " + d.Name
+			if d.BaseType != "" {
+				tdDetail = "typedef " + d.BaseType
+				tdSig = "typedef " + d.BaseType + " " + d.Name
+			}
+			addLocal(&Symbol{
+				Name:           d.Name,
+				Kind:           KindType,
+				TypeDetail:     tdDetail,
+				Signature:      tdSig,
+				Range:          d.Range,
+				SelectionRange: d.NameRange,
+			})
+			for _, em := range d.EnumMembers {
+				emSig := "enum " + em.Name
+				if em.ValueText != "" {
+					emSig += " = " + em.ValueText
+				}
+				addLocal(&Symbol{
+					Name:           em.Name,
+					Kind:           KindParam,
+					TypeDetail:     "enum",
+					Signature:      emSig,
+					Range:          em.Range,
+					SelectionRange: em.NameRange,
+				})
+			}
 		case *ast.NetDecl:
 			nDetail := formatNetDeclDetail(d)
 			addLocal(&Symbol{
@@ -879,6 +1036,20 @@ func buildTaskScope(task *ast.TaskDecl, diags *[]SemanticDiagnostic) *TaskScope 
 				Range:          d.Range,
 				SelectionRange: d.NameRange,
 			})
+			for _, em := range d.EnumMembers {
+				emSig := "enum " + em.Name
+				if em.ValueText != "" {
+					emSig += " = " + em.ValueText
+				}
+				addLocal(&Symbol{
+					Name:           em.Name,
+					Kind:           KindParam,
+					TypeDetail:     "enum",
+					Signature:      emSig,
+					Range:          em.Range,
+					SelectionRange: em.NameRange,
+				})
+			}
 		}
 	}
 
@@ -948,6 +1119,35 @@ func buildBlockScope(block *ast.ProceduralBlock, diags *[]SemanticDiagnostic) *B
 				Range:          d.Range,
 				SelectionRange: d.NameRange,
 			})
+		case *ast.TypedefDecl:
+			tdDetail := "typedef"
+			tdSig := "typedef " + d.Name
+			if d.BaseType != "" {
+				tdDetail = "typedef " + d.BaseType
+				tdSig = "typedef " + d.BaseType + " " + d.Name
+			}
+			addLocal(&Symbol{
+				Name:           d.Name,
+				Kind:           KindType,
+				TypeDetail:     tdDetail,
+				Signature:      tdSig,
+				Range:          d.Range,
+				SelectionRange: d.NameRange,
+			})
+			for _, em := range d.EnumMembers {
+				emSig := "enum " + em.Name
+				if em.ValueText != "" {
+					emSig += " = " + em.ValueText
+				}
+				addLocal(&Symbol{
+					Name:           em.Name,
+					Kind:           KindParam,
+					TypeDetail:     "enum",
+					Signature:      emSig,
+					Range:          em.Range,
+					SelectionRange: em.NameRange,
+				})
+			}
 		case *ast.NetDecl:
 			nDetail := formatNetDeclDetail(d)
 			addLocal(&Symbol{
@@ -958,6 +1158,20 @@ func buildBlockScope(block *ast.ProceduralBlock, diags *[]SemanticDiagnostic) *B
 				Range:          d.Range,
 				SelectionRange: d.NameRange,
 			})
+			for _, em := range d.EnumMembers {
+				emSig := "enum " + em.Name
+				if em.ValueText != "" {
+					emSig += " = " + em.ValueText
+				}
+				addLocal(&Symbol{
+					Name:           em.Name,
+					Kind:           KindParam,
+					TypeDetail:     "enum",
+					Signature:      emSig,
+					Range:          em.Range,
+					SelectionRange: em.NameRange,
+				})
+			}
 		}
 	}
 

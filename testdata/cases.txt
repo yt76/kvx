@@ -20,3 +20,4 @@ specify_and_udp.v       0 0
 cell_and_tb_extras.v    0 0
 corner_cases.v          0 0
 sv_core.sv              0 0
+sv_typedefs.sv          0 0

@@ -39,6 +39,7 @@ type SourceFile struct {
 	Includes []*IncludeDecl
 	Macros   []*MacroDecl
 	Params   []*ParamDecl
+	Typedefs []*TypedefDecl
 	Refs     []IdentifierRef
 }
 
@@ -102,14 +103,36 @@ type PortDecl struct {
 func (d *PortDecl) ItemRange() Range { return d.Range }
 func (d *PortDecl) moduleItemNode()  {}
 
-// NetDecl represents a net or variable declaration (wire, reg, integer).
-type NetDecl struct {
-	Kind      string // "wire", "reg", "integer"
-	Signed    bool
-	Width     *BitRange
+// EnumMember represents a named enumerator inside an enum declaration.
+type EnumMember struct {
 	Name      string
 	NameRange Range
+	ValueText string
 	Range     Range
+}
+
+// TypedefDecl represents a SystemVerilog typedef declaration (including enum/struct/union).
+type TypedefDecl struct {
+	Name        string
+	NameRange   Range
+	BaseType    string
+	EnumMembers []EnumMember
+	Range       Range
+	Refs        []IdentifierRef
+}
+
+func (t *TypedefDecl) ItemRange() Range { return t.Range }
+func (t *TypedefDecl) moduleItemNode()  {}
+
+// NetDecl represents a net or variable declaration (wire, reg, integer, logic, user-defined type, etc.).
+type NetDecl struct {
+	Kind        string // "wire", "reg", "integer", "logic", or user-defined type name
+	Signed      bool
+	Width       *BitRange
+	Name        string
+	NameRange   Range
+	EnumMembers []EnumMember
+	Range       Range
 }
 
 func (d *NetDecl) ItemRange() Range { return d.Range }

@@ -161,7 +161,7 @@ func classifySemanticToken(tok, prevTok lexer.Token, an *analyzer.Analysis) (uin
 					mods |= semModDeclaration
 				}
 				switch sym.Kind {
-				case analyzer.KindModule:
+				case analyzer.KindModule, analyzer.KindType:
 					return semTokenType, mods, true
 				case analyzer.KindParam:
 					return semTokenParameter, mods | semModReadonly, true
@@ -196,6 +196,7 @@ func isKeywordToken(t lexer.TokenType) bool {
 		lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout,
 		lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg,
 		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenVoid,
+		lexer.TokenTypedef, lexer.TokenEnum, lexer.TokenStruct, lexer.TokenUnion, lexer.TokenPacked, lexer.TokenTypeKw,
 		lexer.TokenInteger,
 		lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,
 		lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,

@@ -199,6 +199,7 @@ const (
 	LSPSymbolKindVariable LSPSymbolKind = 13
 	LSPSymbolKindConstant LSPSymbolKind = 14
 	LSPSymbolKindObject   LSPSymbolKind = 19
+	LSPSymbolKindStruct   LSPSymbolKind = 23
 )
 
 // DocumentSymbol represents programming constructs like modules, ports, or nets in an outline.
@@ -227,6 +228,7 @@ const (
 	CompletionKindModule   CompletionItemKind = 9
 	CompletionKindKeyword  CompletionItemKind = 14
 	CompletionKindConstant CompletionItemKind = 21
+	CompletionKindStruct   CompletionItemKind = 22
 )
 
 // CompletionItem represents a completion suggestion returned by "textDocument/completion".

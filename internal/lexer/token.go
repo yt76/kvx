@@ -42,6 +42,12 @@ const (
 	TokenInt          TokenType = "int"
 	TokenLongint      TokenType = "longint"
 	TokenVoid         TokenType = "void"
+	TokenTypedef      TokenType = "typedef"
+	TokenEnum         TokenType = "enum"
+	TokenStruct       TokenType = "struct"
+	TokenUnion        TokenType = "union"
+	TokenPacked       TokenType = "packed"
+	TokenTypeKw       TokenType = "type"
 	TokenInteger      TokenType = "integer"
 	TokenTri          TokenType = "tri"
 	TokenTri0         TokenType = "tri0"
@@ -123,6 +129,7 @@ const (
 	TokenHash      TokenType = "#"
 	TokenAt        TokenType = "@"
 	TokenQuestion  TokenType = "?"
+	TokenTick      TokenType = "'"
 
 	// Operators
 	TokenAssignOp TokenType = "="
@@ -193,6 +200,12 @@ var keywords = map[string]TokenType{
 	"int":          TokenInt,
 	"longint":      TokenLongint,
 	"void":         TokenVoid,
+	"typedef":      TokenTypedef,
+	"enum":         TokenEnum,
+	"struct":       TokenStruct,
+	"union":        TokenUnion,
+	"packed":       TokenPacked,
+	"type":         TokenTypeKw,
 	"integer":      TokenInteger,
 	"tri":          TokenTri,
 	"tri0":         TokenTri0,

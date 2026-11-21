@@ -363,3 +363,38 @@ func TestAnalyzeProceduralBlockLocals(t *testing.T) {
 		t.Errorf("expected 1 undeclared diagnostic for missing_sig, got %+v", badAn.Diagnostics)
 	}
 }
+
+func TestAnalyzeSystemVerilogUserDefinedTypes(t *testing.T) {
+	src := "typedef enum logic [1:0] { IDLE, RUN, DONE } state_t;\n" +
+		"typedef struct packed { logic [7:0] addr; logic valid; } pkt_t;\n" +
+		"module fsm(input logic clk, input pkt_t pin, output state_t sout, output pkt_t pout);\n" +
+		"  state_t cur_st;\n" +
+		"  always_ff @(posedge clk) begin\n" +
+		"    if (cur_st == IDLE) cur_st <= RUN;\n" +
+		"    else cur_st <= DONE;\n" +
+		"  end\n" +
+		"  assign sout = state_t'(cur_st);\n" +
+		"  assign pout = '{addr: pin.addr, valid: pin.valid};\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for typedef/enum/struct, got %+v", an.Diagnostics)
+	}
+
+	// Enum member `IDLE` at line 5, col 18 resolves to GlobalSymbol `IDLE` (line 0).
+	symIdle := an.SymbolAt(ast.Position{Line: 5, Column: 18})
+	if symIdle == nil || symIdle.Name != "IDLE" || symIdle.Kind != KindParam || symIdle.SelectionRange.Start.Line != 0 {
+		t.Errorf("SymbolAt(IDLE) = %+v, want enum member IDLE at line 0", symIdle)
+	}
+
+	// Type name `state_t` in `state_t cur_st;` (line 3, col 3) resolves to KindType `state_t` (line 0).
+	symType := an.SymbolAt(ast.Position{Line: 3, Column: 3})
+	if symType == nil || symType.Name != "state_t" || symType.Kind != KindType || symType.SelectionRange.Start.Line != 0 {
+		t.Errorf("SymbolAt(state_t) = %+v, want KindType state_t at line 0", symType)
+	}
+}

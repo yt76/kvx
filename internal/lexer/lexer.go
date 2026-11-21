@@ -170,6 +170,8 @@ func (l *Lexer) NextToken() Token {
 		return l.makeToken(TokenAt, "@", start)
 	case '?':
 		return l.makeToken(TokenQuestion, "?", start)
+	case '\'':
+		return l.makeToken(TokenTick, "'", start)
 	case '+':
 		if l.peek() == '+' {
 			l.advance()
