@@ -1177,3 +1177,62 @@ func TestLSPModuleReferences(t *testing.T) {
 		t.Errorf("id=3: expected declaration in %s line 0, got %+v", subURI, locs3)
 	}
 }
+
+func TestLSPDocumentSymbolSkipsUnnamedIncompleteModule(t *testing.T) {
+	uri := "file:///tmp/incomplete.v"
+	// First module is incomplete without a name (`module (`), second module is valid.
+	src := "module (\n" +
+		"  input wire a\n" +
+		");\n" +
+		"endmodule\n" +
+		"module valid_mod(input wire x, output wire y);\n" +
+		"  assign y = x;\n" +
+		"endmodule\n"
+
+	var in, out bytes.Buffer
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params":  map[string]any{},
+	})
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/didOpen",
+		"params": DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        uri,
+				LanguageID: "verilog",
+				Version:    1,
+				Text:       src,
+			},
+		},
+	})
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "textDocument/documentSymbol",
+		"params": DocumentSymbolParams{
+			TextDocument: TextDocumentIdentifier{URI: uri},
+		},
+	})
+
+	srv := NewServer(&in, &out, nil)
+	if err := srv.Run(); err != nil {
+		t.Fatalf("Server.Run() error: %v", err)
+	}
+
+	outReader := bufio.NewReader(&out)
+	_ = readFramedResponse(t, outReader)        // initialize
+	_, _ = readFramedNotification(t, outReader) // publishDiagnostics
+
+	respSym := readFramedResponse(t, outReader)
+	rawSym, _ := json.Marshal(respSym.Result)
+	var syms []DocumentSymbol
+	if err := json.Unmarshal(rawSym, &syms); err != nil {
+		t.Fatalf("unmarshaling DocumentSymbol[]: %v", err)
+	}
+	if len(syms) != 1 || syms[0].Name != "valid_mod" {
+		t.Fatalf("expected only valid_mod in documentSymbol, got %+v", syms)
+	}
+}

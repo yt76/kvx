@@ -229,7 +229,9 @@ func (s *Server) handleDocumentSymbol(msg IncomingMessage) error {
 
 	out := make([]DocumentSymbol, 0, len(doc.Analysis.ModuleOrder))
 	for _, modScope := range doc.Analysis.ModuleOrder {
-		out = append(out, toDocumentSymbol(modScope.Symbol))
+		if ds, ok := toDocumentSymbol(modScope.Symbol); ok {
+			out = append(out, ds)
+		}
 	}
 	return s.sendResult(msg.ID, out)
 }
@@ -418,7 +420,10 @@ func (s *Server) handleSemanticTokensFull(msg IncomingMessage) error {
 	return s.sendResult(msg.ID, computeSemanticTokens(&doc))
 }
 
-func toDocumentSymbol(sym *analyzer.Symbol) DocumentSymbol {
+func toDocumentSymbol(sym *analyzer.Symbol) (DocumentSymbol, bool) {
+	if sym == nil || sym.Name == "" {
+		return DocumentSymbol{}, false
+	}
 	ds := DocumentSymbol{
 		Name:           sym.Name,
 		Detail:         sym.TypeDetail,
@@ -427,9 +432,11 @@ func toDocumentSymbol(sym *analyzer.Symbol) DocumentSymbol {
 		SelectionRange: toLSPRange(sym.SelectionRange),
 	}
 	for _, child := range sym.Children {
-		ds.Children = append(ds.Children, toDocumentSymbol(child))
+		if childDS, ok := toDocumentSymbol(child); ok {
+			ds.Children = append(ds.Children, childDS)
+		}
 	}
-	return ds
+	return ds, true
 }
 
 func toLSPSymbolKind(k analyzer.SymbolKind) LSPSymbolKind {
