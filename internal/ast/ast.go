@@ -36,12 +36,36 @@ func (r Range) Contains(pos Position) bool {
 // SourceFile represents a parsed Verilog source file.
 type SourceFile struct {
 	Modules  []*ModuleDecl
+	Packages []*PackageDecl
+	Imports  []*ImportDecl
 	Includes []*IncludeDecl
 	Macros   []*MacroDecl
 	Params   []*ParamDecl
 	Typedefs []*TypedefDecl
 	Refs     []IdentifierRef
 }
+
+// PackageDecl represents a SystemVerilog package declaration (package ... endpackage).
+type PackageDecl struct {
+	Name      string
+	NameRange Range
+	Range     Range
+	Params    []*ParamDecl
+	Items     []ModuleItem
+	Refs      []IdentifierRef
+}
+
+// ImportDecl represents a SystemVerilog package import (e.g. import pkg::*; or import pkg::SYM;).
+type ImportDecl struct {
+	PackageName      string
+	PackageNameRange Range
+	SymbolName       string // "*" for wildcard import, or specific symbol name
+	SymbolNameRange  Range
+	Range            Range
+}
+
+func (i *ImportDecl) ItemRange() Range { return i.Range }
+func (i *ImportDecl) moduleItemNode()  {}
 
 // IncludeDecl represents an `include "..." directive.
 type IncludeDecl struct {
@@ -83,6 +107,7 @@ type ModuleDecl struct {
 	Name      string
 	NameRange Range
 	Range     Range
+	Imports   []*ImportDecl
 	Params    []*ParamDecl
 	Ports     []*PortDecl
 	Items     []ModuleItem

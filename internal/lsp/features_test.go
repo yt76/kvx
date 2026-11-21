@@ -1236,3 +1236,113 @@ func TestLSPDocumentSymbolSkipsUnnamedIncompleteModule(t *testing.T) {
 		t.Fatalf("expected only valid_mod in documentSymbol, got %+v", syms)
 	}
 }
+
+func TestLSPCrossFilePackageResolution(t *testing.T) {
+	root := t.TempDir()
+	rtlDir := filepath.Join(root, "rtl")
+	if err := os.MkdirAll(rtlDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgPath := filepath.Join(rtlDir, "defs_pkg.sv")
+	pkgSrc := "package defs_pkg;\n" +
+		"  localparam int DATA_W = 16;\n" +
+		"  typedef enum logic { IDLE, BUSY } state_t;\n" +
+		"endpackage\n"
+	if err := os.WriteFile(pkgPath, []byte(pkgSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	topPath := filepath.Join(rtlDir, "top.sv")
+	topSrc := "module top import defs_pkg::*; (\n" +
+		"  input  logic [DATA_W-1:0] din,\n" +
+		"  output logic [defs_pkg::DATA_W-1:0] dout,\n" +
+		"  output state_t st\n" +
+		");\n" +
+		"  assign dout = din;\n" +
+		"  assign st   = IDLE;\n" +
+		"endmodule\n"
+	if err := os.WriteFile(topPath, []byte(topSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgURI := filePathToURI(pkgPath)
+	topURI := filePathToURI(topPath)
+
+	var in, out bytes.Buffer
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"rootUri": filePathToURI(root),
+		},
+	})
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/didOpen",
+		"params": DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        topURI,
+				LanguageID: "systemverilog",
+				Version:    1,
+				Text:       topSrc,
+			},
+		},
+	})
+	// 1. Go to definition on `defs_pkg::DATA_W` (line 2, col 27) -> defs_pkg.sv line 1
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 2, Character: 27},
+		},
+	})
+	// 2. Go to definition on imported enum member `IDLE` (line 6, col 17) -> defs_pkg.sv line 2
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 6, Character: 17},
+		},
+	})
+
+	srv := NewServer(&in, &out, nil)
+	if err := srv.Run(); err != nil {
+		t.Fatalf("Server.Run() error: %v", err)
+	}
+
+	outReader := bufio.NewReader(&out)
+	_ = readFramedResponse(t, outReader) // initialize
+
+	_, diagParams := readFramedNotification(t, outReader)
+	if len(diagParams.Diagnostics) != 0 {
+		t.Fatalf("expected 0 diagnostics for cross-file package import, got %+v", diagParams.Diagnostics)
+	}
+
+	// Check definition id=2 (DATA_W -> defs_pkg.sv line 1)
+	respDef2 := readFramedResponse(t, outReader)
+	raw2, _ := json.Marshal(respDef2.Result)
+	var loc2 Location
+	if err := json.Unmarshal(raw2, &loc2); err != nil {
+		t.Fatalf("unmarshaling loc2: %v", err)
+	}
+	if loc2.URI != pkgURI || loc2.Range.Start.Line != 1 {
+		t.Errorf("definition(DATA_W) = %+v, want URI=%s line=1", loc2, pkgURI)
+	}
+
+	// Check definition id=3 (IDLE -> defs_pkg.sv line 2)
+	respDef3 := readFramedResponse(t, outReader)
+	raw3, _ := json.Marshal(respDef3.Result)
+	var loc3 Location
+	if err := json.Unmarshal(raw3, &loc3); err != nil {
+		t.Fatalf("unmarshaling loc3: %v", err)
+	}
+	if loc3.URI != pkgURI || loc3.Range.Start.Line != 2 {
+		t.Errorf("definition(IDLE) = %+v, want URI=%s line=2", loc3, pkgURI)
+	}
+}

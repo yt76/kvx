@@ -227,7 +227,12 @@ func (s *Server) handleDocumentSymbol(msg IncomingMessage) error {
 		return s.sendResult(msg.ID, []DocumentSymbol{})
 	}
 
-	out := make([]DocumentSymbol, 0, len(doc.Analysis.ModuleOrder))
+	out := make([]DocumentSymbol, 0, len(doc.Analysis.PackageOrder)+len(doc.Analysis.ModuleOrder))
+	for _, pkgScope := range doc.Analysis.PackageOrder {
+		if ds, ok := toDocumentSymbol(pkgScope.Symbol); ok {
+			out = append(out, ds)
+		}
+	}
 	for _, modScope := range doc.Analysis.ModuleOrder {
 		if ds, ok := toDocumentSymbol(modScope.Symbol); ok {
 			out = append(out, ds)
@@ -288,6 +293,14 @@ func (s *Server) handleDefinition(msg IncomingMessage) error {
 
 	targetURI := doc.URI
 	targetRange := sym.SelectionRange
+
+	if sym.PackageName != "" && targetRange.File == "" {
+		if _, existsInSameDoc := doc.Analysis.Packages[sym.PackageName]; !existsInSameDoc {
+			if pkgURI, found := s.docs.FindPackageURI(sym.PackageName); found {
+				targetURI = pkgURI
+			}
+		}
+	}
 
 	if sym.Kind == analyzer.KindInstance && sym.TargetModule != "" {
 		if targetScope, existsInSameDoc := doc.Analysis.Modules[sym.TargetModule]; existsInSameDoc {
@@ -441,7 +454,7 @@ func toDocumentSymbol(sym *analyzer.Symbol) (DocumentSymbol, bool) {
 
 func toLSPSymbolKind(k analyzer.SymbolKind) LSPSymbolKind {
 	switch k {
-	case analyzer.KindModule:
+	case analyzer.KindModule, analyzer.KindPackage:
 		return LSPSymbolKindModule
 	case analyzer.KindPort:
 		return LSPSymbolKindField
@@ -462,7 +475,7 @@ func toLSPSymbolKind(k analyzer.SymbolKind) LSPSymbolKind {
 
 func toCompletionKind(k analyzer.SymbolKind) CompletionItemKind {
 	switch k {
-	case analyzer.KindModule:
+	case analyzer.KindModule, analyzer.KindPackage:
 		return CompletionKindModule
 	case analyzer.KindPort:
 		return CompletionKindField

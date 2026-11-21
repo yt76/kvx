@@ -19,6 +19,7 @@ const (
 	KindFunction SymbolKind = "function"
 	KindTask     SymbolKind = "task"
 	KindType     SymbolKind = "type"
+	KindPackage  SymbolKind = "package"
 )
 
 // Symbol represents a named declaration in a Verilog source file.
@@ -30,6 +31,7 @@ type Symbol struct {
 	Range          ast.Range
 	SelectionRange ast.Range
 	TargetModule   string
+	PackageName    string
 	Children       []*Symbol
 }
 
@@ -74,11 +76,24 @@ type ModuleScope struct {
 	Blocks    []*BlockScope
 }
 
+// PackageScope holds the symbol table for a single SystemVerilog package declaration.
+type PackageScope struct {
+	Package   *ast.PackageDecl
+	Symbol    *Symbol
+	Symbols   map[string]*Symbol
+	Order     []*Symbol
+	Functions []*FunctionScope
+	Tasks     []*TaskScope
+}
+
 // Analysis holds the symbol tables and semantic diagnostics for a SourceFile.
 type Analysis struct {
 	File          *ast.SourceFile
 	Modules       map[string]*ModuleScope
 	ModuleOrder   []*ModuleScope
+	Packages      map[string]*PackageScope
+	PackageOrder  []*PackageScope
+	AllPackages   map[string]*PackageScope
 	GlobalSymbols map[string]*Symbol
 	GlobalOrder   []*Symbol
 	Diagnostics   []SemanticDiagnostic
@@ -86,9 +101,21 @@ type Analysis struct {
 
 // Analyze builds symbol tables and performs semantic checks on file.
 func Analyze(file *ast.SourceFile) *Analysis {
+	return AnalyzeWithPackages(file, nil)
+}
+
+// AnalyzeWithPackages builds symbol tables and performs semantic checks on file,
+// resolving package imports and `pkg::sym` references against both local and external packages.
+func AnalyzeWithPackages(file *ast.SourceFile, extPackages map[string]*PackageScope) *Analysis {
+	allPkgs := make(map[string]*PackageScope, len(extPackages))
+	for k, v := range extPackages {
+		allPkgs[k] = v
+	}
 	res := &Analysis{
 		File:          file,
 		Modules:       make(map[string]*ModuleScope),
+		Packages:      make(map[string]*PackageScope),
+		AllPackages:   allPkgs,
 		GlobalSymbols: make(map[string]*Symbol),
 	}
 	if file == nil {
@@ -177,8 +204,38 @@ func Analyze(file *ast.SourceFile) *Analysis {
 		}
 	}
 
+	for _, pkg := range file.Packages {
+		pkgScope := analyzePackage(pkg, res.GlobalSymbols, res.AllPackages, &res.Diagnostics)
+		res.PackageOrder = append(res.PackageOrder, pkgScope)
+		if pkg.Name != "" {
+			res.Packages[pkg.Name] = pkgScope
+			res.AllPackages[pkg.Name] = pkgScope
+		}
+	}
+
+	fileHasExtWildcard := false
+	for _, imp := range file.Imports {
+		if pkgScope, ok := res.AllPackages[imp.PackageName]; ok {
+			if imp.SymbolName == "*" {
+				for _, sym := range pkgScope.Order {
+					if sym.Name != "" {
+						if _, exists := res.GlobalSymbols[sym.Name]; !exists {
+							res.GlobalSymbols[sym.Name] = sym
+						}
+					}
+				}
+			} else if sym, ok := pkgScope.Symbols[imp.SymbolName]; ok {
+				if _, exists := res.GlobalSymbols[sym.Name]; !exists {
+					res.GlobalSymbols[sym.Name] = sym
+				}
+			}
+		} else if imp.SymbolName == "*" {
+			fileHasExtWildcard = true
+		}
+	}
+
 	for _, mod := range file.Modules {
-		scope := analyzeModule(mod, res.GlobalSymbols, &res.Diagnostics)
+		scope := analyzeModule(mod, res.GlobalSymbols, res.AllPackages, fileHasExtWildcard, &res.Diagnostics)
 		res.ModuleOrder = append(res.ModuleOrder, scope)
 		if mod.Name != "" {
 			res.Modules[mod.Name] = scope
@@ -188,7 +245,44 @@ func Analyze(file *ast.SourceFile) *Analysis {
 	return res
 }
 
-func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]SemanticDiagnostic) *ModuleScope {
+func analyzePackage(pkg *ast.PackageDecl, globals map[string]*Symbol, allPkgs map[string]*PackageScope, diags *[]SemanticDiagnostic) *PackageScope {
+	pkgSym := &Symbol{
+		Name:           pkg.Name,
+		Kind:           KindPackage,
+		TypeDetail:     "package",
+		Signature:      "package " + pkg.Name,
+		Range:          pkg.Range,
+		SelectionRange: pkg.NameRange,
+		PackageName:    pkg.Name,
+	}
+
+	dummyMod := &ast.ModuleDecl{
+		Name:      pkg.Name,
+		NameRange: pkg.NameRange,
+		Range:     pkg.Range,
+		Params:    pkg.Params,
+		Items:     pkg.Items,
+		Refs:      pkg.Refs,
+	}
+	modScope := analyzeModule(dummyMod, globals, allPkgs, false, diags)
+
+	// Tag all package symbols with PackageName for cross-file resolution.
+	for _, sym := range modScope.Order {
+		sym.PackageName = pkg.Name
+	}
+	pkgSym.Children = modScope.Symbol.Children
+
+	return &PackageScope{
+		Package:   pkg,
+		Symbol:    pkgSym,
+		Symbols:   modScope.Symbols,
+		Order:     modScope.Order,
+		Functions: modScope.Functions,
+		Tasks:     modScope.Tasks,
+	}
+}
+
+func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[string]*PackageScope, fileHasExtWildcard bool, diags *[]SemanticDiagnostic) *ModuleScope {
 	modSym := &Symbol{
 		Name:           mod.Name,
 		Kind:           KindModule,
@@ -387,94 +481,43 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]Sem
 		}
 	}
 
+	hasExtWildcard := fileHasExtWildcard
+	importPackage := func(imp *ast.ImportDecl) {
+		if pkgScope, ok := allPkgs[imp.PackageName]; ok {
+			if imp.SymbolName == "*" {
+				for _, sym := range pkgScope.Order {
+					if sym.Name != "" {
+						if _, exists := scope.Symbols[sym.Name]; !exists {
+							scope.Symbols[sym.Name] = sym
+						}
+					}
+				}
+			} else if sym, ok := pkgScope.Symbols[imp.SymbolName]; ok {
+				if _, exists := scope.Symbols[sym.Name]; !exists {
+					scope.Symbols[sym.Name] = sym
+				}
+			}
+		} else if imp.SymbolName == "*" {
+			hasExtWildcard = true
+		}
+	}
+
+	for _, imp := range mod.Imports {
+		importPackage(imp)
+	}
+
 	collectItems(mod.Items, false)
 
-	// Check identifier references inside functions against local, module, and global scopes.
-	for _, fnScope := range scope.Functions {
-		for _, ref := range fnScope.Decl.Refs {
-			if strings.HasPrefix(ref.Name, "`") {
-				continue
-			}
-			if _, ok := fnScope.Symbols[ref.Name]; ok {
-				continue
-			}
-			if _, ok := scope.Symbols[ref.Name]; ok {
-				continue
-			}
-			if _, ok := globals[ref.Name]; ok {
-				continue
-			}
-			if ref.Range.File == "" {
-				*diags = append(*diags, SemanticDiagnostic{
-					Range:   ref.Range,
-					Message: fmt.Sprintf("undeclared identifier %q", ref.Name),
-					IsError: false,
-				})
-			}
+	// Also apply any imports placed inside generate blocks or module items.
+	for _, item := range mod.Items {
+		if imp, ok := item.(*ast.ImportDecl); ok {
+			importPackage(imp)
 		}
 	}
 
-	// Check identifier references inside tasks against local, module, and global scopes.
-	for _, taskScope := range scope.Tasks {
-		for _, ref := range taskScope.Decl.Refs {
-			if strings.HasPrefix(ref.Name, "`") {
-				continue
-			}
-			if _, ok := taskScope.Symbols[ref.Name]; ok {
-				continue
-			}
-			if _, ok := scope.Symbols[ref.Name]; ok {
-				continue
-			}
-			if _, ok := globals[ref.Name]; ok {
-				continue
-			}
-			if ref.Range.File == "" {
-				*diags = append(*diags, SemanticDiagnostic{
-					Range:   ref.Range,
-					Message: fmt.Sprintf("undeclared identifier %q", ref.Name),
-					IsError: false,
-				})
-			}
-		}
-	}
-
-	// Check identifier references inside procedural blocks against block-local, module, and global scopes.
-	for _, blkScope := range scope.Blocks {
-		for _, ref := range blkScope.Block.Refs {
-			if strings.HasPrefix(ref.Name, "`") {
-				continue
-			}
-			if _, ok := blkScope.Symbols[ref.Name]; ok {
-				continue
-			}
-			if _, ok := scope.Symbols[ref.Name]; ok {
-				continue
-			}
-			if _, ok := globals[ref.Name]; ok {
-				continue
-			}
-			if ref.Range.File == "" {
-				*diags = append(*diags, SemanticDiagnostic{
-					Range:   ref.Range,
-					Message: fmt.Sprintf("undeclared identifier %q", ref.Name),
-					IsError: false,
-				})
-			}
-		}
-	}
-
-	// Check identifier references against the module's symbol table and global symbols.
-	for _, ref := range mod.Refs {
-		if strings.HasPrefix(ref.Name, "`") {
-			// Macro usage (e.g. `DATA_WIDTH) may come from an external `define.
-			continue
-		}
-		if _, ok := scope.Symbols[ref.Name]; ok {
-			continue
-		}
-		if _, ok := globals[ref.Name]; ok {
-			continue
+	checkRef := func(ref ast.IdentifierRef, localSyms map[string]*Symbol) {
+		if _, resolved := resolveRefInScopes(ref.Name, localSyms, scope.Symbols, globals, allPkgs, hasExtWildcard); resolved {
+			return
 		}
 		if ref.Range.File == "" {
 			*diags = append(*diags, SemanticDiagnostic{
@@ -485,7 +528,75 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]Sem
 		}
 	}
 
+	// Check identifier references inside functions against local, module, and global scopes.
+	for _, fnScope := range scope.Functions {
+		for _, ref := range fnScope.Decl.Refs {
+			checkRef(ref, fnScope.Symbols)
+		}
+	}
+
+	// Check identifier references inside tasks against local, module, and global scopes.
+	for _, taskScope := range scope.Tasks {
+		for _, ref := range taskScope.Decl.Refs {
+			checkRef(ref, taskScope.Symbols)
+		}
+	}
+
+	// Check identifier references inside procedural blocks against block-local, module, and global scopes.
+	for _, blkScope := range scope.Blocks {
+		for _, ref := range blkScope.Block.Refs {
+			checkRef(ref, blkScope.Symbols)
+		}
+	}
+
+	// Check identifier references against the module's symbol table and global symbols.
+	for _, ref := range mod.Refs {
+		checkRef(ref, nil)
+	}
+
 	return scope
+}
+
+func resolveRefInScopes(
+	name string,
+	localSyms map[string]*Symbol,
+	modSyms map[string]*Symbol,
+	globals map[string]*Symbol,
+	allPkgs map[string]*PackageScope,
+	hasExtWildcard bool,
+) (*Symbol, bool) {
+	if strings.HasPrefix(name, "`") {
+		return nil, true
+	}
+	if pkgName, symName, hasScope := strings.Cut(name, "::"); hasScope {
+		if pkgScope, ok := allPkgs[pkgName]; ok {
+			if sym, found := pkgScope.Symbols[symName]; found {
+				return sym, true
+			}
+			return nil, false
+		}
+		// External package not loaded in single-file analysis: avoid false-positive warning.
+		return nil, true
+	}
+	if localSyms != nil {
+		if sym, ok := localSyms[name]; ok {
+			return sym, true
+		}
+	}
+	if modSyms != nil {
+		if sym, ok := modSyms[name]; ok {
+			return sym, true
+		}
+	}
+	if globals != nil {
+		if sym, ok := globals[name]; ok {
+			return sym, true
+		}
+	}
+	if hasExtWildcard {
+		return nil, true
+	}
+	return nil, false
 }
 
 // ModuleAt returns the ModuleScope enclosing pos, or nil if pos is outside all modules.
@@ -534,6 +645,36 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 				}
 			}
 		}
+
+		// Check top-level package imports.
+		for _, imp := range a.File.Imports {
+			if sym := a.resolveImportAt(imp, pos); sym != nil {
+				return sym
+			}
+		}
+	}
+
+	// Check package declarations and their contents.
+	for _, pkgScope := range a.PackageOrder {
+		pkg := pkgScope.Package
+		if pkg.NameRange.Contains(pos) {
+			return pkgScope.Symbol
+		}
+		if !pkg.Range.Contains(pos) {
+			continue
+		}
+		for _, sym := range pkgScope.Order {
+			if sym.SelectionRange.Contains(pos) {
+				return sym
+			}
+		}
+		for _, ref := range pkg.Refs {
+			if ref.Range.Contains(pos) {
+				if sym, ok := resolveRefInScopes(ref.Name, nil, pkgScope.Symbols, a.GlobalSymbols, a.AllPackages, false); ok && sym != nil {
+					return sym
+				}
+			}
+		}
 	}
 
 	for _, scope := range a.ModuleOrder {
@@ -543,6 +684,13 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 		}
 		if !mod.Range.Contains(pos) {
 			continue
+		}
+
+		// 0. Check module imports (`import pkg::SYM;`).
+		for _, imp := range mod.Imports {
+			if sym := a.resolveImportAt(imp, pos); sym != nil {
+				return sym
+			}
 		}
 
 		// 1. Check declarations in the module.
@@ -579,13 +727,7 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			}
 			for _, ref := range fnScope.Decl.Refs {
 				if ref.Range.Contains(pos) {
-					if sym, ok := fnScope.Symbols[ref.Name]; ok {
-						return sym
-					}
-					if sym, ok := scope.Symbols[ref.Name]; ok {
-						return sym
-					}
-					if sym, ok := a.GlobalSymbols[ref.Name]; ok {
+					if sym, ok := resolveRefInScopes(ref.Name, fnScope.Symbols, scope.Symbols, a.GlobalSymbols, a.AllPackages, false); ok && sym != nil {
 						return sym
 					}
 				}
@@ -604,13 +746,7 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			}
 			for _, ref := range taskScope.Decl.Refs {
 				if ref.Range.Contains(pos) {
-					if sym, ok := taskScope.Symbols[ref.Name]; ok {
-						return sym
-					}
-					if sym, ok := scope.Symbols[ref.Name]; ok {
-						return sym
-					}
-					if sym, ok := a.GlobalSymbols[ref.Name]; ok {
+					if sym, ok := resolveRefInScopes(ref.Name, taskScope.Symbols, scope.Symbols, a.GlobalSymbols, a.AllPackages, false); ok && sym != nil {
 						return sym
 					}
 				}
@@ -629,13 +765,7 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			}
 			for _, ref := range blkScope.Block.Refs {
 				if ref.Range.Contains(pos) {
-					if sym, ok := blkScope.Symbols[ref.Name]; ok {
-						return sym
-					}
-					if sym, ok := scope.Symbols[ref.Name]; ok {
-						return sym
-					}
-					if sym, ok := a.GlobalSymbols[ref.Name]; ok {
+					if sym, ok := resolveRefInScopes(ref.Name, blkScope.Symbols, scope.Symbols, a.GlobalSymbols, a.AllPackages, false); ok && sym != nil {
 						return sym
 					}
 				}
@@ -645,12 +775,25 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 		// 4. Check identifier references in expressions, assignments, and procedural blocks.
 		for _, ref := range mod.Refs {
 			if ref.Range.Contains(pos) {
-				if sym, ok := scope.Symbols[ref.Name]; ok {
+				if sym, ok := resolveRefInScopes(ref.Name, nil, scope.Symbols, a.GlobalSymbols, a.AllPackages, false); ok && sym != nil {
 					return sym
 				}
-				if sym, ok := a.GlobalSymbols[ref.Name]; ok {
-					return sym
-				}
+			}
+		}
+	}
+	return nil
+}
+
+func (a *Analysis) resolveImportAt(imp *ast.ImportDecl, pos ast.Position) *Symbol {
+	if imp.PackageNameRange.Contains(pos) {
+		if pkgScope, ok := a.AllPackages[imp.PackageName]; ok {
+			return pkgScope.Symbol
+		}
+	}
+	if imp.SymbolName != "" && imp.SymbolName != "*" && imp.SymbolNameRange.Contains(pos) {
+		if pkgScope, ok := a.AllPackages[imp.PackageName]; ok {
+			if sym, found := pkgScope.Symbols[imp.SymbolName]; found {
+				return sym
 			}
 		}
 	}

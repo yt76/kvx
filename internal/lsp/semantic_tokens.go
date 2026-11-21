@@ -161,7 +161,7 @@ func classifySemanticToken(tok, prevTok lexer.Token, an *analyzer.Analysis) (uin
 					mods |= semModDeclaration
 				}
 				switch sym.Kind {
-				case analyzer.KindModule, analyzer.KindType:
+				case analyzer.KindModule, analyzer.KindType, analyzer.KindPackage:
 					return semTokenType, mods, true
 				case analyzer.KindParam:
 					return semTokenParameter, mods | semModReadonly, true
@@ -189,6 +189,7 @@ func classifySemanticToken(tok, prevTok lexer.Token, an *analyzer.Analysis) (uin
 func isKeywordToken(t lexer.TokenType) bool {
 	switch t {
 	case lexer.TokenModule, lexer.TokenMacromodule, lexer.TokenEndmodule,
+		lexer.TokenPackage, lexer.TokenEndpackage, lexer.TokenImport,
 		lexer.TokenPrimitive, lexer.TokenEndprimitive,
 		lexer.TokenTable, lexer.TokenEndtable,
 		lexer.TokenSpecify, lexer.TokenEndspecify,
@@ -235,7 +236,7 @@ func isOperatorToken(t lexer.TokenType) bool {
 		lexer.TokenPlusPlus, lexer.TokenMinusMinus,
 		lexer.TokenPlusEq, lexer.TokenMinusEq, lexer.TokenMulEq, lexer.TokenDivEq, lexer.TokenModEq,
 		lexer.TokenAndEq, lexer.TokenOrEq, lexer.TokenXorEq, lexer.TokenShlEq, lexer.TokenShrEq,
-		lexer.TokenQuestion, lexer.TokenAt, lexer.TokenHash, lexer.TokenArrow:
+		lexer.TokenQuestion, lexer.TokenAt, lexer.TokenHash, lexer.TokenArrow, lexer.TokenColonColon:
 		return true
 	default:
 		return false

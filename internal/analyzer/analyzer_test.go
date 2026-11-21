@@ -398,3 +398,45 @@ func TestAnalyzeSystemVerilogUserDefinedTypes(t *testing.T) {
 		t.Errorf("SymbolAt(state_t) = %+v, want KindType state_t at line 0", symType)
 	}
 }
+
+func TestAnalyzeSystemVerilogPackages(t *testing.T) {
+	src := "package my_pkg;\n" +
+		"  localparam int W = 8;\n" +
+		"  typedef enum logic { S0, S1 } st_t;\n" +
+		"endpackage\n" +
+		"module top import my_pkg::W; (input logic [W-1:0] a, output logic [W-1:0] y, output my_pkg::st_t s);\n" +
+		"  import my_pkg::*;\n" +
+		"  assign y = a + my_pkg::W;\n" +
+		"  assign s = S1;\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics, got %+v", an.Diagnostics)
+	}
+
+	// `my_pkg::W` at line 6, col 25 resolves to `W` at line 1 in my_pkg.
+	symW := an.SymbolAt(ast.Position{Line: 6, Column: 25})
+	if symW == nil || symW.Name != "W" || symW.PackageName != "my_pkg" || symW.SelectionRange.Start.Line != 1 {
+		t.Errorf("SymbolAt(my_pkg::W) = %+v, want W in my_pkg at line 1", symW)
+	}
+
+	// `S1` at line 7, col 13 resolves to enum member S1 at line 2 in my_pkg.
+	symS1 := an.SymbolAt(ast.Position{Line: 7, Column: 13})
+	if symS1 == nil || symS1.Name != "S1" || symS1.PackageName != "my_pkg" || symS1.SelectionRange.Start.Line != 2 {
+		t.Errorf("SymbolAt(S1) = %+v, want S1 in my_pkg at line 2", symS1)
+	}
+
+	// Reference to nonexistent symbol inside a known package must be reported.
+	badSrc := "package p; localparam int A = 1; endpackage\n" +
+		"module m(output logic y); assign y = p::MISSING; endmodule\n"
+	badFile, _ := parser.Parse(badSrc)
+	badAn := Analyze(badFile)
+	if len(badAn.Diagnostics) != 1 || badAn.Diagnostics[0].Message != `undeclared identifier "p::MISSING"` {
+		t.Errorf("expected 1 undeclared diagnostic for p::MISSING, got %+v", badAn.Diagnostics)
+	}
+}

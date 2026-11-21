@@ -107,6 +107,57 @@ func (s *DocumentStore) indexWorkspaceFilesLocked(cfg *config.Config) {
 			Analysis:   analyzer.Analyze(fileAST),
 		}
 	}
+	// Second pass: re-analyze files with all discovered workspace packages for cross-file imports.
+	pkgs := s.workspacePackagesLocked()
+	if len(pkgs) > 0 {
+		for _, doc := range s.workspaceDocs {
+			doc.Analysis = analyzer.AnalyzeWithPackages(doc.AST, pkgs)
+		}
+	}
+}
+
+func (s *DocumentStore) workspacePackagesLocked() map[string]*analyzer.PackageScope {
+	pkgs := make(map[string]*analyzer.PackageScope)
+	collect := func(m map[string]*Document) {
+		for _, doc := range m {
+			if doc.Analysis == nil {
+				continue
+			}
+			for name, pkgScope := range doc.Analysis.Packages {
+				if _, exists := pkgs[name]; !exists {
+					pkgs[name] = pkgScope
+				}
+			}
+		}
+	}
+	collect(s.docs)
+	collect(s.workspaceDocs)
+	return pkgs
+}
+
+// FindPackageURI returns the document URI declaring pkgName across open and indexed workspace files.
+func (s *DocumentStore) FindPackageURI(pkgName string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for uri, doc := range s.docs {
+		if doc.Analysis != nil {
+			if _, ok := doc.Analysis.Packages[pkgName]; ok {
+				return uri, true
+			}
+		}
+	}
+	for uri, doc := range s.workspaceDocs {
+		if _, isOpen := s.docs[uri]; isOpen {
+			continue
+		}
+		if doc.Analysis != nil {
+			if _, ok := doc.Analysis.Packages[pkgName]; ok {
+				return uri, true
+			}
+		}
+	}
+	return "", false
 }
 
 func (s *DocumentStore) addIncludeDirLocked(dir string) {
@@ -146,7 +197,7 @@ func (s *DocumentStore) Open(item TextDocumentItem) *Document {
 		Text:       item.Text,
 		AST:        fileAST,
 		ParseErrs:  parseErrs,
-		Analysis:   analyzer.Analyze(fileAST),
+		Analysis:   analyzer.AnalyzeWithPackages(fileAST, s.workspacePackagesLocked()),
 	}
 	s.docs[item.URI] = doc
 	return doc
@@ -202,7 +253,7 @@ func (s *DocumentStore) Change(id VersionedTextDocumentIdentifier, changes []Tex
 	doc.Text = text
 	doc.AST = fileAST
 	doc.ParseErrs = parseErrs
-	doc.Analysis = analyzer.Analyze(fileAST)
+	doc.Analysis = analyzer.AnalyzeWithPackages(fileAST, s.workspacePackagesLocked())
 	return doc, nil
 }
 

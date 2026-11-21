@@ -21,6 +21,9 @@ const (
 	TokenModule       TokenType = "module"
 	TokenMacromodule  TokenType = "macromodule"
 	TokenEndmodule    TokenType = "endmodule"
+	TokenPackage      TokenType = "package"
+	TokenEndpackage   TokenType = "endpackage"
+	TokenImport       TokenType = "import"
 	TokenPrimitive    TokenType = "primitive"
 	TokenEndprimitive TokenType = "endprimitive"
 	TokenTable        TokenType = "table"
@@ -122,9 +125,10 @@ const (
 	TokenRBracket  TokenType = "]"
 	TokenLBrace    TokenType = "{"
 	TokenRBrace    TokenType = "}"
-	TokenSemicolon TokenType = ";"
-	TokenColon     TokenType = ":"
-	TokenComma     TokenType = ","
+	TokenSemicolon  TokenType = ";"
+	TokenColon      TokenType = ":"
+	TokenColonColon TokenType = "::"
+	TokenComma      TokenType = ","
 	TokenDot       TokenType = "."
 	TokenHash      TokenType = "#"
 	TokenAt        TokenType = "@"
@@ -179,6 +183,9 @@ var keywords = map[string]TokenType{
 	"module":       TokenModule,
 	"macromodule":  TokenMacromodule,
 	"endmodule":    TokenEndmodule,
+	"package":      TokenPackage,
+	"endpackage":   TokenEndpackage,
+	"import":       TokenImport,
 	"primitive":    TokenPrimitive,
 	"endprimitive": TokenEndprimitive,
 	"table":        TokenTable,
