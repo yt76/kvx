@@ -20,6 +20,7 @@ const (
 	KindInstance  SymbolKind = "instance"
 	KindFunction  SymbolKind = "function"
 	KindTask      SymbolKind = "task"
+	KindProperty  SymbolKind = "property"
 	KindType      SymbolKind = "type"
 	KindField     SymbolKind = "field"
 	KindPackage   SymbolKind = "package"
@@ -65,6 +66,14 @@ type TaskScope struct {
 	Order   []*Symbol
 }
 
+// PropertyScope holds the local symbol table for a SystemVerilog property or sequence declaration.
+type PropertyScope struct {
+	Decl    *ast.PropertyDecl
+	Symbol  *Symbol
+	Symbols map[string]*Symbol
+	Order   []*Symbol
+}
+
 // BlockScope holds the local symbol table for a procedural block (always / initial).
 type BlockScope struct {
 	Block   *ast.ProceduralBlock
@@ -74,35 +83,38 @@ type BlockScope struct {
 
 // ModuleScope holds the symbol table for a single module declaration.
 type ModuleScope struct {
-	Module    *ast.ModuleDecl
-	Symbol    *Symbol
-	Symbols   map[string]*Symbol
-	Order     []*Symbol
-	Functions []*FunctionScope
-	Tasks     []*TaskScope
-	Blocks    []*BlockScope
+	Module     *ast.ModuleDecl
+	Symbol     *Symbol
+	Symbols    map[string]*Symbol
+	Order      []*Symbol
+	Functions  []*FunctionScope
+	Tasks      []*TaskScope
+	Properties []*PropertyScope
+	Blocks     []*BlockScope
 }
 
 // PackageScope holds the symbol table for a single SystemVerilog package declaration.
 type PackageScope struct {
-	Package   *ast.PackageDecl
-	Symbol    *Symbol
-	Symbols   map[string]*Symbol
-	Order     []*Symbol
-	Functions []*FunctionScope
-	Tasks     []*TaskScope
+	Package    *ast.PackageDecl
+	Symbol     *Symbol
+	Symbols    map[string]*Symbol
+	Order      []*Symbol
+	Functions  []*FunctionScope
+	Tasks      []*TaskScope
+	Properties []*PropertyScope
 }
 
 // InterfaceScope holds the symbol table for a single SystemVerilog interface declaration.
 type InterfaceScope struct {
-	Interface *ast.InterfaceDecl
-	Symbol    *Symbol
-	Symbols   map[string]*Symbol
-	Order     []*Symbol
-	Modports  map[string]*Symbol
-	Functions []*FunctionScope
-	Tasks     []*TaskScope
-	Blocks    []*BlockScope
+	Interface  *ast.InterfaceDecl
+	Symbol     *Symbol
+	Symbols    map[string]*Symbol
+	Order      []*Symbol
+	Modports   map[string]*Symbol
+	Functions  []*FunctionScope
+	Tasks      []*TaskScope
+	Properties []*PropertyScope
+	Blocks     []*BlockScope
 }
 
 // WorkspaceContext provides cross-file modules, packages, and interfaces for semantic analysis.
@@ -431,14 +443,15 @@ func analyzeInterface(iface *ast.InterfaceDecl, globals map[string]*Symbol, allP
 	ifaceSym.Children = modScope.Symbol.Children
 
 	return &InterfaceScope{
-		Interface: iface,
-		Symbol:    ifaceSym,
-		Symbols:   modScope.Symbols,
-		Order:     modScope.Order,
-		Modports:  modports,
-		Functions: modScope.Functions,
-		Tasks:     modScope.Tasks,
-		Blocks:    modScope.Blocks,
+		Interface:  iface,
+		Symbol:     ifaceSym,
+		Symbols:    modScope.Symbols,
+		Order:      modScope.Order,
+		Modports:   modports,
+		Functions:  modScope.Functions,
+		Tasks:      modScope.Tasks,
+		Properties: modScope.Properties,
+		Blocks:     modScope.Blocks,
 	}
 }
 
@@ -474,12 +487,13 @@ func analyzePackage(pkg *ast.PackageDecl, globals map[string]*Symbol, allPkgs ma
 	pkgSym.Children = modScope.Symbol.Children
 
 	return &PackageScope{
-		Package:   pkg,
-		Symbol:    pkgSym,
-		Symbols:   modScope.Symbols,
-		Order:     modScope.Order,
-		Functions: modScope.Functions,
-		Tasks:     modScope.Tasks,
+		Package:    pkg,
+		Symbol:     pkgSym,
+		Symbols:    modScope.Symbols,
+		Order:      modScope.Order,
+		Functions:  modScope.Functions,
+		Tasks:      modScope.Tasks,
+		Properties: modScope.Properties,
 	}
 }
 
@@ -663,6 +677,27 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[
 				addSymbol(taskScope.Symbol, inGenerate)
 				scope.Tasks = append(scope.Tasks, taskScope)
 
+			case *ast.PropertyDecl:
+				propScope := buildPropertyScope(d, diags)
+				addSymbol(propScope.Symbol, inGenerate)
+				scope.Properties = append(scope.Properties, propScope)
+
+			case *ast.AssertStmt:
+				if d.Label != "" {
+					detail := d.Kind
+					if d.Concurrent {
+						detail += " property"
+					}
+					addSymbol(&Symbol{
+						Name:           d.Label,
+						Kind:           KindInstance,
+						TypeDetail:     detail,
+						Signature:      detail + " " + d.Label,
+						Range:          d.Range,
+						SelectionRange: d.LabelRange,
+					}, inGenerate)
+				}
+
 			case *ast.ProceduralBlock:
 				blkScope := buildBlockScope(d, diags)
 				scope.Blocks = append(scope.Blocks, blkScope)
@@ -758,6 +793,13 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[
 	for _, taskScope := range scope.Tasks {
 		for _, ref := range taskScope.Decl.Refs {
 			checkRef(ref, taskScope.Symbols)
+		}
+	}
+
+	// Check identifier references inside properties/sequences against local, module, and global scopes.
+	for _, propScope := range scope.Properties {
+		for _, ref := range propScope.Decl.Refs {
+			checkRef(ref, propScope.Symbols)
 		}
 	}
 
@@ -1047,6 +1089,23 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 				}
 			}
 		}
+		for _, propScope := range ifaceScope.Properties {
+			if !propScope.Decl.Range.Contains(pos) {
+				continue
+			}
+			for _, sym := range propScope.Order {
+				if sym.SelectionRange.Contains(pos) {
+					return sym
+				}
+			}
+			for _, ref := range propScope.Decl.Refs {
+				if ref.Range.Contains(pos) {
+					if sym, ok := resolveRefInScopes(ref.Name, propScope.Symbols, ifaceScope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
+						return sym
+					}
+				}
+			}
+		}
 		for _, blkScope := range ifaceScope.Blocks {
 			if !blkScope.Block.Range.Contains(pos) {
 				continue
@@ -1180,6 +1239,25 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			for _, ref := range taskScope.Decl.Refs {
 				if ref.Range.Contains(pos) {
 					if sym, ok := resolveRefInScopes(ref.Name, taskScope.Symbols, scope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
+						return sym
+					}
+				}
+			}
+		}
+
+		// 3b2. Check declarations and references inside properties and sequences.
+		for _, propScope := range scope.Properties {
+			if !propScope.Decl.Range.Contains(pos) {
+				continue
+			}
+			for _, sym := range propScope.Order {
+				if sym.SelectionRange.Contains(pos) {
+					return sym
+				}
+			}
+			for _, ref := range propScope.Decl.Refs {
+				if ref.Range.Contains(pos) {
+					if sym, ok := resolveRefInScopes(ref.Name, propScope.Symbols, scope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
 						return sym
 					}
 				}
@@ -2105,6 +2183,95 @@ func formatTaskSignature(task *ast.TaskDecl) string {
 			}
 			b.WriteString(formatPortDeclDetail(p))
 			b.WriteString(" ")
+			b.WriteString(p.Name)
+		}
+		b.WriteString(")")
+	}
+	return b.String()
+}
+
+func buildPropertyScope(prop *ast.PropertyDecl, diags *[]SemanticDiagnostic) *PropertyScope {
+	sig := formatPropertySignature(prop)
+	propSym := &Symbol{
+		Name:           prop.Name,
+		Kind:           KindProperty,
+		TypeDetail:     prop.Kind,
+		Signature:      sig,
+		Range:          prop.Range,
+		SelectionRange: prop.NameRange,
+	}
+
+	ps := &PropertyScope{
+		Decl:    prop,
+		Symbol:  propSym,
+		Symbols: make(map[string]*Symbol),
+	}
+
+	addLocal := func(sym *Symbol) {
+		if sym.Name == "" {
+			return
+		}
+		if _, exists := ps.Symbols[sym.Name]; exists {
+			if sym.SelectionRange.File == "" {
+				*diags = append(*diags, SemanticDiagnostic{
+					Range:   sym.SelectionRange,
+					Message: fmt.Sprintf("duplicate declaration of %q", sym.Name),
+					IsError: false,
+				})
+			}
+			return
+		}
+		ps.Symbols[sym.Name] = sym
+		ps.Order = append(ps.Order, sym)
+		if sym.Range.File == "" {
+			propSym.Children = append(propSym.Children, sym)
+		}
+	}
+
+	for _, p := range prop.Params {
+		pDetail := formatPortDeclDetail(p)
+		addLocal(&Symbol{
+			Name:           p.Name,
+			Kind:           KindPort,
+			TypeDetail:     pDetail,
+			Signature:      pDetail + " " + p.Name,
+			Range:          p.Range,
+			SelectionRange: p.NameRange,
+		})
+	}
+
+	for _, item := range prop.Locals {
+		if d, ok := item.(*ast.NetDecl); ok {
+			nDetail := formatNetDeclDetail(d)
+			addLocal(&Symbol{
+				Name:           d.Name,
+				Kind:           KindNet,
+				TypeDetail:     nDetail,
+				Signature:      nDetail + " " + d.Name,
+				Range:          d.Range,
+				SelectionRange: d.NameRange,
+			})
+		}
+	}
+
+	return ps
+}
+
+func formatPropertySignature(prop *ast.PropertyDecl) string {
+	var b strings.Builder
+	b.WriteString(prop.Kind)
+	b.WriteString(" ")
+	b.WriteString(prop.Name)
+	if len(prop.Params) > 0 {
+		b.WriteString(" (")
+		for i, p := range prop.Params {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			if p.NetType != "" {
+				b.WriteString(p.NetType)
+				b.WriteString(" ")
+			}
 			b.WriteString(p.Name)
 		}
 		b.WriteString(")")

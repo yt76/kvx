@@ -611,3 +611,41 @@ func TestAnalyzeImplicitAndNamedPortConnections(t *testing.T) {
 			len(badAn.Diagnostics), badAn.Diagnostics)
 	}
 }
+
+func TestAnalyzeSystemVerilogAssertions(t *testing.T) {
+	src := "module sva_m (input logic clk, input logic rst_n, input logic req, input logic ack);\n" +
+		"  property p_hs(logic c, logic r, logic a);\n" +
+		"    @(posedge c) disable iff (!rst_n) r |-> ##1 a;\n" +
+		"  endproperty\n" +
+		"  u_hs: assert property (p_hs(clk, req, ack));\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for SVA, got %+v", an.Diagnostics)
+	}
+
+	// `p_hs` in `assert property (p_hs(...))` (line 4, col 26) resolves to KindProperty `p_hs` at line 1.
+	symProp := an.SymbolAt(ast.Position{Line: 4, Column: 26})
+	if symProp == nil || symProp.Kind != KindProperty || symProp.Name != "p_hs" || symProp.SelectionRange.Start.Line != 1 {
+		t.Errorf("SymbolAt(p_hs) = %+v, want KindProperty p_hs at line 1", symProp)
+	}
+
+	// Formal parameter `r` inside `p_hs` body (line 2, col 38) resolves to formal port `r` at line 1.
+	symR := an.SymbolAt(ast.Position{Line: 2, Column: 38})
+	if symR == nil || symR.Name != "r" || symR.SelectionRange.Start.Line != 1 {
+		t.Errorf("SymbolAt(r in property) = %+v, want formal port 'r' at line 1", symR)
+	}
+
+	// Undeclared signal inside an assertion must be diagnosed.
+	badSrc := "module m (input logic clk); assert property (@(posedge clk) missing_sig); endmodule\n"
+	badFile, _ := parser.Parse(badSrc)
+	badAn := Analyze(badFile)
+	if len(badAn.Diagnostics) != 1 || !strings.Contains(badAn.Diagnostics[0].Message, `"missing_sig"`) {
+		t.Errorf("expected undeclared diagnostic for missing_sig in assertion, got %+v", badAn.Diagnostics)
+	}
+}

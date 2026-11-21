@@ -172,7 +172,7 @@ func classifySemanticToken(tok, prevTok lexer.Token, an *analyzer.Analysis) (uin
 					return semTokenProperty, mods, true
 				case analyzer.KindNet, analyzer.KindInstance:
 					return semTokenVariable, mods, true
-				case analyzer.KindFunction, analyzer.KindTask:
+				case analyzer.KindFunction, analyzer.KindTask, analyzer.KindProperty:
 					return semTokenFunction, mods, true
 				}
 			}
@@ -207,7 +207,9 @@ func isKeywordToken(t lexer.TokenType) bool {
 		lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime, lexer.TokenEvent,
 		lexer.TokenParameter, lexer.TokenLocalparam, lexer.TokenDefparam, lexer.TokenSigned, lexer.TokenUnsigned,
 		lexer.TokenAssign, lexer.TokenDeassign, lexer.TokenForce, lexer.TokenRelease,
-		lexer.TokenAlways, lexer.TokenAlwaysComb, lexer.TokenAlwaysFF, lexer.TokenAlwaysLatch, lexer.TokenInitial,
+		lexer.TokenAlways, lexer.TokenAlwaysComb, lexer.TokenAlwaysFF, lexer.TokenAlwaysLatch, lexer.TokenInitial, lexer.TokenFinal,
+		lexer.TokenAssert, lexer.TokenAssume, lexer.TokenCover, lexer.TokenRestrict,
+		lexer.TokenProperty, lexer.TokenEndproperty, lexer.TokenSequence, lexer.TokenEndsequence, lexer.TokenIff,
 		lexer.TokenPosedge, lexer.TokenNegedge, lexer.TokenOr,
 		lexer.TokenBegin, lexer.TokenEnd,
 		lexer.TokenIf, lexer.TokenElse,
@@ -238,7 +240,9 @@ func isOperatorToken(t lexer.TokenType) bool {
 		lexer.TokenPlusPlus, lexer.TokenMinusMinus,
 		lexer.TokenPlusEq, lexer.TokenMinusEq, lexer.TokenMulEq, lexer.TokenDivEq, lexer.TokenModEq,
 		lexer.TokenAndEq, lexer.TokenOrEq, lexer.TokenXorEq, lexer.TokenShlEq, lexer.TokenShrEq,
-		lexer.TokenQuestion, lexer.TokenAt, lexer.TokenHash, lexer.TokenArrow, lexer.TokenColonColon, lexer.TokenDollar:
+		lexer.TokenQuestion, lexer.TokenAt, lexer.TokenHash, lexer.TokenHashHash,
+		lexer.TokenArrow, lexer.TokenEquiv, lexer.TokenImpliesOverlapping, lexer.TokenImpliesNonOverlapping,
+		lexer.TokenColonColon, lexer.TokenDollar:
 		return true
 	default:
 		return false

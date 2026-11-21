@@ -169,6 +169,14 @@ func (l *Lexer) NextToken() Token {
 	case '.':
 		return l.makeToken(TokenDot, ".", start)
 	case '#':
+		if l.peek() == '#' {
+			l.advance()
+			return l.makeToken(TokenHashHash, "##", start)
+		}
+		if (l.peek() == '-' || l.peek() == '=') && l.peekNext() == '#' {
+			op := "#" + string(l.advance()) + string(l.advance())
+			return l.makeToken(TokenHashHash, op, start)
+		}
 		return l.makeToken(TokenHash, "#", start)
 	case '@':
 		return l.makeToken(TokenAt, "@", start)
@@ -269,6 +277,11 @@ func (l *Lexer) NextToken() Token {
 		}
 		return l.makeToken(TokenBang, "!", start)
 	case '<':
+		if l.peek() == '-' && l.peekNext() == '>' {
+			l.advance()
+			l.advance()
+			return l.makeToken(TokenEquiv, "<->", start)
+		}
 		if l.peek() == '=' {
 			l.advance()
 			return l.makeToken(TokenLeq, "<=", start)
@@ -315,6 +328,16 @@ func (l *Lexer) NextToken() Token {
 		}
 		return l.makeToken(TokenAmp, "&", start)
 	case '|':
+		if l.peek() == '-' && l.peekNext() == '>' {
+			l.advance()
+			l.advance()
+			return l.makeToken(TokenImpliesOverlapping, "|->", start)
+		}
+		if l.peek() == '=' && l.peekNext() == '>' {
+			l.advance()
+			l.advance()
+			return l.makeToken(TokenImpliesNonOverlapping, "|=>", start)
+		}
 		if l.peek() == '|' {
 			l.advance()
 			return l.makeToken(TokenLor, "||", start)

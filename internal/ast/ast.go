@@ -324,3 +324,32 @@ type GenerateBlock struct {
 
 func (g *GenerateBlock) ItemRange() Range { return g.Range }
 func (g *GenerateBlock) moduleItemNode()  {}
+
+// PropertyDecl represents a SystemVerilog property or sequence declaration
+// (property ... endproperty or sequence ... endsequence).
+type PropertyDecl struct {
+	Kind      string // "property" or "sequence"
+	Name      string
+	NameRange Range
+	Params    []*PortDecl
+	Locals    []ModuleItem
+	Range     Range
+	Refs      []IdentifierRef
+}
+
+func (p *PropertyDecl) ItemRange() Range { return p.Range }
+func (p *PropertyDecl) moduleItemNode()  {}
+
+// AssertStmt represents an immediate or concurrent SystemVerilog assertion
+// (assert, assume, cover, restrict).
+type AssertStmt struct {
+	Kind       string // "assert", "assume", "cover", "restrict"
+	Concurrent bool   // true for `assert property (...)` or `cover sequence (...)`
+	Label      string
+	LabelRange Range
+	Range      Range
+	Refs       []IdentifierRef
+}
+
+func (a *AssertStmt) ItemRange() Range { return a.Range }
+func (a *AssertStmt) moduleItemNode()  {}

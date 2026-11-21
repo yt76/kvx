@@ -91,6 +91,16 @@ const (
 	TokenAlwaysFF     TokenType = "always_ff"
 	TokenAlwaysLatch  TokenType = "always_latch"
 	TokenInitial      TokenType = "initial"
+	TokenFinal        TokenType = "final"
+	TokenAssert       TokenType = "assert"
+	TokenAssume       TokenType = "assume"
+	TokenCover        TokenType = "cover"
+	TokenRestrict     TokenType = "restrict"
+	TokenProperty     TokenType = "property"
+	TokenEndproperty  TokenType = "endproperty"
+	TokenSequence     TokenType = "sequence"
+	TokenEndsequence  TokenType = "endsequence"
+	TokenIff          TokenType = "iff"
 	TokenPosedge    TokenType = "posedge"
 	TokenNegedge    TokenType = "negedge"
 	TokenOr         TokenType = "or"
@@ -178,6 +188,10 @@ const (
 	TokenAshl       TokenType = "<<<"
 	TokenAshr       TokenType = ">>>"
 	TokenArrow      TokenType = "->"
+	TokenEquiv      TokenType = "<->"
+	TokenImpliesOverlapping    TokenType = "|->"
+	TokenImpliesNonOverlapping TokenType = "|=>"
+	TokenHashHash   TokenType = "##"
 	TokenPower      TokenType = "**"
 	TokenXnor       TokenType = "~^"
 	TokenPaste      TokenType = "``"
@@ -269,6 +283,16 @@ var keywords = map[string]TokenType{
 	"always_ff":    TokenAlwaysFF,
 	"always_latch": TokenAlwaysLatch,
 	"initial":      TokenInitial,
+	"final":        TokenFinal,
+	"assert":       TokenAssert,
+	"assume":       TokenAssume,
+	"cover":        TokenCover,
+	"restrict":     TokenRestrict,
+	"property":     TokenProperty,
+	"endproperty":  TokenEndproperty,
+	"sequence":     TokenSequence,
+	"endsequence":  TokenEndsequence,
+	"iff":          TokenIff,
 	"posedge":    TokenPosedge,
 	"negedge":    TokenNegedge,
 	"or":         TokenOr,

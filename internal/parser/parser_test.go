@@ -1665,3 +1665,50 @@ endmodule
 		t.Fatalf("expected 1 module 'sv_ctrl', got %+v", file.Modules)
 	}
 }
+
+func TestParseSystemVerilogAssertions(t *testing.T) {
+	src := `
+module sva_demo (input logic clk, input logic rst_n, input logic req, input logic ack);
+    sequence s_req(r);
+        r ##1 !r;
+    endsequence : s_req
+
+    property p_req_ack(logic c, logic r, logic a);
+        @(posedge c) disable iff (!rst_n)
+        r |-> ##[1:2] a;
+    endproperty : p_req_ack
+
+    u_chk: assert property (p_req_ack(clk, req, ack)) else $error("fail");
+    assume property (@(posedge clk) req |=> ack);
+    cover sequence (@(posedge clk) s_req(req));
+
+    always_comb begin
+        lbl_imm: assert #0 (req !== 1'bx) else $warning("x");
+        assert final (ack !== 1'bx);
+    end
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(file.Modules))
+	}
+	var props []*ast.PropertyDecl
+	var asserts []*ast.AssertStmt
+	for _, item := range file.Modules[0].Items {
+		switch d := item.(type) {
+		case *ast.PropertyDecl:
+			props = append(props, d)
+		case *ast.AssertStmt:
+			asserts = append(asserts, d)
+		}
+	}
+	if len(props) != 2 || props[0].Kind != "sequence" || props[1].Kind != "property" {
+		t.Fatalf("expected sequence + property declarations, got %+v", props)
+	}
+	if len(asserts) != 3 || asserts[0].Label != "u_chk" || !asserts[0].Concurrent {
+		t.Fatalf("expected 3 concurrent assertion items, got %+v", asserts)
+	}
+}
