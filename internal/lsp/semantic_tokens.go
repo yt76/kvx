@@ -192,6 +192,7 @@ func isKeywordToken(t lexer.TokenType) bool {
 		lexer.TokenPrimitive, lexer.TokenEndprimitive,
 		lexer.TokenTable, lexer.TokenEndtable,
 		lexer.TokenSpecify, lexer.TokenEndspecify,
+		lexer.TokenConfig, lexer.TokenEndconfig,
 		lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout,
 		lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg, lexer.TokenInteger,
 		lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,

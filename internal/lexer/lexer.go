@@ -380,6 +380,9 @@ func (l *Lexer) scanDirectiveOrMacro() (Token, bool) {
 			Range:   ast.Range{Start: start, End: l.pos()},
 		}, true
 	}
+	if l.peek() == '"' {
+		return l.readMacroString(start), true
+	}
 	name := l.readIdent()
 
 	switch name {
@@ -542,6 +545,53 @@ func (l *Lexer) readString(start ast.Position) Token {
 	return Token{
 		Type:    TokenIllegal,
 		Literal: "unterminated string literal",
+		Range:   ast.Range{Start: start, End: l.pos()},
+	}
+}
+
+// readMacroString scans a macro stringification literal `"...`" (including escaped `\`" or \").
+func (l *Lexer) readMacroString(start ast.Position) Token {
+	l.advance() // opening '"' after '`'
+	startOffset := l.offset
+	for l.offset < len(l.input) {
+		ch := l.peek()
+		if ch == '`' && l.peekNext() == '\\' && l.peekAt(2) == '`' && l.peekAt(3) == '"' {
+			l.advance()
+			l.advance()
+			l.advance()
+			l.advance()
+			continue
+		}
+		if ch == '\\' {
+			l.advance()
+			if l.peek() == '`' && l.peekNext() == '"' {
+				l.advance()
+				l.advance()
+				continue
+			}
+			if l.offset < len(l.input) {
+				l.advance()
+			}
+			continue
+		}
+		if ch == '`' && l.peekNext() == '"' {
+			lit := l.input[startOffset:l.offset]
+			l.advance() // '`'
+			l.advance() // '"'
+			return Token{
+				Type:    TokenString,
+				Literal: lit,
+				Range:   ast.Range{Start: start, End: l.pos()},
+			}
+		}
+		if ch == '\n' {
+			break
+		}
+		l.advance()
+	}
+	return Token{
+		Type:    TokenIllegal,
+		Literal: "unterminated macro string literal",
 		Range:   ast.Range{Start: start, End: l.pos()},
 	}
 }

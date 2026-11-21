@@ -309,26 +309,35 @@ func (s *preprocessState) preprocessText(
 				var params []macroParam
 				hasArgs := false
 				curLine := dirLine
+				prevOff := nameTok.Range.End.Offset
 				if i+1 < len(raw) && raw[i+1].Range.Start.Line == curLine &&
 					raw[i+1].Type == lexer.TokenLParen &&
 					raw[i+1].Range.Start.Column == nameTok.Range.End.Column {
 					hasArgs = true
 					i++ // consume '('
-					params, i, curLine = parseMacroParams(raw, i, curLine, fileTag)
+					params, i, curLine = parseMacroParams(input, raw, i, curLine, fileTag)
+					prevOff = raw[i].Range.End.Offset
 				}
 
 				var bodyTokens []lexer.Token
 				var bodyParts []string
 				endPos := nameTok.Range.End
 
-				for i+1 < len(raw) && raw[i+1].Type != lexer.TokenEOF && raw[i+1].Range.Start.Line == curLine {
+				for i+1 < len(raw) && raw[i+1].Type != lexer.TokenEOF {
+					okLine, nextLine := sameDirectiveLine(input, curLine, prevOff, raw[i+1])
+					if !okLine {
+						break
+					}
+					curLine = nextLine
 					i++
 					bt := raw[i]
+					prevOff = bt.Range.End.Offset
 					if bt.Literal == "\\" {
 						// Line continuation to next line.
-						curLine++
+						curLine = bt.Range.End.Line + 1
 						continue
 					}
+					curLine = bt.Range.End.Line
 					bt.Range.File = fileTag
 					bodyTokens = append(bodyTokens, bt)
 					bodyParts = append(bodyParts, bt.Literal)
@@ -399,13 +408,14 @@ func (s *preprocessState) preprocessText(
 	return out
 }
 
-func parseMacroParams(raw []lexer.Token, lparenIdx int, curLine int, fileTag string) ([]macroParam, int, int) {
+func parseMacroParams(input string, raw []lexer.Token, lparenIdx int, curLine int, fileTag string) ([]macroParam, int, int) {
 	var params []macroParam
 	i := lparenIdx
 	depth := 1
 	var currentName string
 	var defaultToks []lexer.Token
 	inDefault := false
+	prevOff := raw[lparenIdx].Range.End.Offset
 
 	flushParam := func() {
 		if currentName != "" {
@@ -422,15 +432,22 @@ func parseMacroParams(raw []lexer.Token, lparenIdx int, curLine int, fileTag str
 
 	for i+1 < len(raw) && depth > 0 {
 		next := raw[i+1]
-		if next.Type == lexer.TokenEOF || next.Range.Start.Line != curLine {
+		if next.Type == lexer.TokenEOF {
 			break
 		}
+		okLine, nextLine := sameDirectiveLine(input, curLine, prevOff, next)
+		if !okLine {
+			break
+		}
+		curLine = nextLine
 		i++
 		tok := raw[i]
+		prevOff = tok.Range.End.Offset
 		if tok.Literal == "\\" {
-			curLine++
+			curLine = tok.Range.End.Line + 1
 			continue
 		}
+		curLine = tok.Range.End.Line
 		tok.Range.File = fileTag
 
 		switch tok.Type {
@@ -629,7 +646,7 @@ func (s *preprocessState) tryExpandMacro(
 
 	// Object-like macro
 	if len(def.body) == 0 {
-		return nil, idx, false
+		return nil, idx, true
 	}
 
 	substituted := pasteMacroTokens(cloneTokensWithRange(def.body, tok.Range))
@@ -761,6 +778,36 @@ func (s *preprocessState) addPreprocessError(rng ast.Range, rootIncRange ast.Ran
 		Range:   rng,
 		Message: msg,
 	})
+}
+
+// sameDirectiveLine reports whether nextTok is on the same logical directive line
+// (either on curLine, or separated only by a multiline /* ... */ comment without any top-level newline).
+func sameDirectiveLine(input string, curLine int, prevOffset int, nextTok lexer.Token) (bool, int) {
+	if nextTok.Range.Start.Line == curLine {
+		return true, curLine
+	}
+	nextOff := nextTok.Range.Start.Offset
+	if prevOffset < 0 || nextOff > len(input) || prevOffset >= nextOff {
+		return false, curLine
+	}
+	between := input[prevOffset:nextOff]
+	inBlockComment := false
+	for j := 0; j < len(between); j++ {
+		if !inBlockComment && j+1 < len(between) && between[j] == '/' && between[j+1] == '*' {
+			inBlockComment = true
+			j++
+			continue
+		}
+		if inBlockComment && j+1 < len(between) && between[j] == '*' && between[j+1] == '/' {
+			inBlockComment = false
+			j++
+			continue
+		}
+		if !inBlockComment && between[j] == '\n' {
+			return false, curLine
+		}
+	}
+	return true, nextTok.Range.Start.Line
 }
 
 func skipDirectiveLine(tokens []lexer.Token, idx int, line int) int {

@@ -1272,3 +1272,60 @@ func TestParseVerilogExtras(t *testing.T) {
 		t.Fatalf("expected 2 modules (macromodule + module), got %d", len(file.Modules))
 	}
 }
+
+func TestParseCornerCases(t *testing.T) {
+	src := "`define EMPTY_MARKER\n" +
+		"`define MULTI_COMMENT_ADD(a, b) /* line1\n" +
+		"   line2 */ ((a) + \\\n" +
+		"   (b))\n" +
+		"`define LOG_VAL(x) $display(`\"value (`\\`\"x`\\`\") = %h`\", x)\n" +
+		"\n" +
+		"config demo_cfg;\n" +
+		"    design rtlLib.corner_demo;\n" +
+		"    default liblist rtlLib;\n" +
+		"endconfig : demo_cfg\n" +
+		"\n" +
+		"module corner_demo (\n" +
+		"    input  wire [3:0] a,\n" +
+		"    input  wire [3:0] b,\n" +
+		"    output wire [3:0] y_gate,\n" +
+		"    output reg  [3:0] y_comb\n" +
+		");\n" +
+		"    `EMPTY_MARKER\n" +
+		"\n" +
+		"    // Unnamed gate primitive array\n" +
+		"    and [3:0] (y_gate, a, b);\n" +
+		"\n" +
+		"    function [3:0] fn_id(input [3:0] v);\n" +
+		"        begin : fn_blk\n" +
+		"            fn_id = v;\n" +
+		"        end : fn_blk\n" +
+		"    endfunction : fn_id\n" +
+		"\n" +
+		"    task tk_log(input [3:0] v);\n" +
+		"        begin : tk_blk\n" +
+		"            `LOG_VAL(v);\n" +
+		"        end : tk_blk\n" +
+		"    endtask : tk_log\n" +
+		"\n" +
+		"    // Wildcard sensitivity list with space before ')'\n" +
+		"    always @(* ) begin : comb_blk\n" +
+		"        `EMPTY_MARKER\n" +
+		"        y_comb = `MULTI_COMMENT_ADD(fn_id(a), b);\n" +
+		"    end : comb_blk\n" +
+		"\n" +
+		"    initial begin : init_blk\n" +
+		"        fork : fk_blk\n" +
+		"            tk_log(a);\n" +
+		"        join : fk_blk\n" +
+		"    end : init_blk\n" +
+		"endmodule : corner_demo\n"
+
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 1 || file.Modules[0].Name != "corner_demo" {
+		t.Fatalf("expected 1 module 'corner_demo', got %+v", file.Modules)
+	}
+}

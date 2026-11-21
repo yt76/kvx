@@ -79,6 +79,10 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 			p.parsePrimitiveDecl()
 			continue
 		}
+		if tok.Type == lexer.TokenConfig {
+			p.parseConfigDecl()
+			continue
+		}
 		if tok.Type == lexer.TokenParameter || tok.Type == lexer.TokenLocalparam {
 			p.parseTopLevelParamDecl(file)
 			continue
@@ -90,6 +94,7 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 			p.cur().Type != lexer.TokenModule &&
 			p.cur().Type != lexer.TokenMacromodule &&
 			p.cur().Type != lexer.TokenPrimitive &&
+			p.cur().Type != lexer.TokenConfig &&
 			p.cur().Type != lexer.TokenParameter &&
 			p.cur().Type != lexer.TokenLocalparam {
 			if p.cur().Type == lexer.TokenIllegal {
@@ -151,7 +156,9 @@ func (p *Parser) parseModuleDecl() *ast.ModuleDecl {
 
 	if p.cur().Type == lexer.TokenEndmodule {
 		endTok := p.advance()
-		mod.Range.End = endTok.Range.End
+		p.consumeOptionalEndLabel()
+		mod.Range.End = p.prev().Range.End
+		_ = endTok
 	} else {
 		p.addError(p.prev().Range, fmt.Sprintf("expected 'endmodule' to close module %q", mod.Name))
 		mod.Range.End = p.prev().Range.End
@@ -856,8 +863,9 @@ func (p *Parser) parseFunctionDecl(mod *ast.ModuleDecl) {
 	}
 
 	if p.cur().Type == lexer.TokenEndfunction {
-		endTok := p.advance()
-		fn.Range.End = endTok.Range.End
+		p.advance()
+		p.consumeOptionalEndLabel()
+		fn.Range.End = p.prev().Range.End
 	} else {
 		p.addError(p.prev().Range, fmt.Sprintf("expected 'endfunction' to close function %q", fn.Name))
 		fn.Range.End = p.prev().Range.End
@@ -933,8 +941,9 @@ func (p *Parser) parseTaskDecl(mod *ast.ModuleDecl) {
 	}
 
 	if p.cur().Type == lexer.TokenEndtask {
-		endTok := p.advance()
-		task.Range.End = endTok.Range.End
+		p.advance()
+		p.consumeOptionalEndLabel()
+		task.Range.End = p.prev().Range.End
 	} else {
 		p.addError(p.prev().Range, fmt.Sprintf("expected 'endtask' to close task %q", task.Name))
 		task.Range.End = p.prev().Range.End
@@ -966,8 +975,9 @@ func (p *Parser) parseGenerateRegion(mod *ast.ModuleDecl) {
 	}
 
 	if p.cur().Type == lexer.TokenEndgenerate {
-		endTok := p.advance()
-		gen.Range.End = endTok.Range.End
+		p.advance()
+		p.consumeOptionalEndLabel()
+		gen.Range.End = p.prev().Range.End
 	} else {
 		p.addError(startTok.Range, "expected 'endgenerate' to close 'generate' block")
 		gen.Range.End = p.prev().Range.End
@@ -1047,8 +1057,39 @@ func (p *Parser) parsePrimitiveDecl() {
 
 	if p.cur().Type == lexer.TokenEndprimitive {
 		p.advance()
+		p.consumeOptionalEndLabel()
 	} else {
 		p.addError(startTok.Range, fmt.Sprintf("expected 'endprimitive' to close primitive %q", primName))
+	}
+}
+
+func (p *Parser) parseConfigDecl() {
+	startTok := p.advance() // consume 'config'
+	cfgName := ""
+	if p.cur().Type == lexer.TokenIdent {
+		cfgName = p.advance().Literal
+	} else {
+		p.addError(p.cur().Range, "expected config name after 'config'")
+	}
+	p.expectSemicolon("config header")
+
+	for !p.isEOF() &&
+		p.cur().Type != lexer.TokenEndconfig &&
+		p.cur().Type != lexer.TokenModule &&
+		p.cur().Type != lexer.TokenMacromodule &&
+		p.cur().Type != lexer.TokenPrimitive &&
+		p.cur().Type != lexer.TokenConfig {
+		if p.cur().Type == lexer.TokenIllegal {
+			p.addError(p.cur().Range, p.cur().Literal)
+		}
+		p.advance()
+	}
+
+	if p.cur().Type == lexer.TokenEndconfig {
+		p.advance()
+		p.consumeOptionalEndLabel()
+	} else {
+		p.addError(startTok.Range, fmt.Sprintf("expected 'endconfig' to close config %q", cfgName))
 	}
 }
 
@@ -1087,6 +1128,7 @@ func (p *Parser) parseGenerateConstruct(mod *ast.ModuleDecl) {
 
 		if p.cur().Type == lexer.TokenEnd {
 			p.advance()
+			p.consumeOptionalEndLabel()
 		} else {
 			p.addError(beginTok.Range, "expected 'end' to close generate 'begin' block")
 		}
@@ -1233,6 +1275,7 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 
 		if p.cur().Type == closeTok {
 			p.advance()
+			p.consumeOptionalEndLabel()
 		} else {
 			p.addError(startTok.Range, fmt.Sprintf("expected '%s' to close '%s' block", closeLit, startTok.Literal))
 		}
@@ -1480,8 +1523,12 @@ func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 		break
 	}
 
-	if p.cur().Type == lexer.TokenLParen && (isGatePrimitive(modNameTok.Literal) || p.primitives[modNameTok.Literal]) {
+	if (p.cur().Type == lexer.TokenLParen || p.cur().Type == lexer.TokenLBracket) &&
+		(isGatePrimitive(modNameTok.Literal) || p.primitives[modNameTok.Literal]) {
 		for !p.isEOF() {
+			if p.cur().Type == lexer.TokenLBracket {
+				_ = p.parseBitRange(mod)
+			}
 			if p.cur().Type != lexer.TokenLParen {
 				p.addError(p.cur().Range, fmt.Sprintf("expected '(' in %s gate instantiation", modNameTok.Literal))
 				p.syncToStatementEnd()
@@ -1952,14 +1999,20 @@ func (p *Parser) isAttrStart() bool {
 	if t0.Range.End.Line != t1.Range.Start.Line || t0.Range.End.Column != t1.Range.Start.Column {
 		return false
 	}
-	// `(*)` is a wildcard sensitivity list, not an attribute instance.
-	t2 := p.peekN(2)
-	if t2.Type == lexer.TokenRParen &&
-		t1.Range.End.Line == t2.Range.Start.Line &&
-		t1.Range.End.Column == t2.Range.Start.Column {
+	// `(*)` or `(* )` is a wildcard sensitivity list, not an attribute instance.
+	if p.peekN(2).Type == lexer.TokenRParen {
 		return false
 	}
 	return true
+}
+
+func (p *Parser) consumeOptionalEndLabel() {
+	if p.cur().Type == lexer.TokenColon {
+		p.advance() // ':'
+		if p.cur().Type == lexer.TokenIdent {
+			p.advance()
+		}
+	}
 }
 
 func (p *Parser) isAttrEnd() bool {
