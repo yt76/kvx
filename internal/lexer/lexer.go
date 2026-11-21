@@ -176,6 +176,8 @@ func (l *Lexer) NextToken() Token {
 		return l.makeToken(TokenQuestion, "?", start)
 	case '\'':
 		return l.makeToken(TokenTick, "'", start)
+	case '$':
+		return l.makeToken(TokenDollar, "$", start)
 	case '+':
 		if l.peek() == '+' {
 			l.advance()
@@ -245,6 +247,10 @@ func (l *Lexer) NextToken() Token {
 				l.advance()
 				return l.makeToken(TokenCaseEq, "===", start)
 			}
+			if l.peek() == '?' {
+				l.advance()
+				return l.makeToken(TokenWildEq, "==?", start)
+			}
 			return l.makeToken(TokenEq, "==", start)
 		}
 		return l.makeToken(TokenAssignOp, "=", start)
@@ -254,6 +260,10 @@ func (l *Lexer) NextToken() Token {
 			if l.peek() == '=' {
 				l.advance()
 				return l.makeToken(TokenCaseNeq, "!==", start)
+			}
+			if l.peek() == '?' {
+				l.advance()
+				return l.makeToken(TokenWildNeq, "!=?", start)
 			}
 			return l.makeToken(TokenNeq, "!=", start)
 		}

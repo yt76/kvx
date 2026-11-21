@@ -483,3 +483,33 @@ func TestAnalyzeSystemVerilogInterfaces(t *testing.T) {
 		t.Errorf("SymbolAt(inst bus_if) = %+v, want KindInterface bus_if at line 0", symInstIf)
 	}
 }
+
+func TestAnalyzeSystemVerilogControlAndModifiers(t *testing.T) {
+	src := "module m (input var logic clk, input var logic [7:0] x, output var logic [7:0] y);\n" +
+		"  const int N = 4;\n" +
+		"  static logic [7:0] arr [0:3];\n" +
+		"  logic [7:0] q [$];\n" +
+		"  always_ff @(posedge clk) begin\n" +
+		"    foreach (arr[idx]) begin\n" +
+		"      if (idx < N && (x inside {[0:7]}) && (x ==? 8'b0000_????))\n" +
+		"        arr[idx] <= {<<{x}};\n" +
+		"    end\n" +
+		"  end\n" +
+		"  assign y = arr[0] ^ q[0];\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics, got %+v", an.Diagnostics)
+	}
+
+	// `idx` referenced on line 6, col 11 resolves to the foreach loop variable declared on line 5.
+	symIdx := an.SymbolAt(ast.Position{Line: 6, Column: 11})
+	if symIdx == nil || symIdx.Name != "idx" || symIdx.SelectionRange.Start.Line != 5 {
+		t.Errorf("SymbolAt(idx) = %+v, want foreach loop variable 'idx' at line 5", symIdx)
+	}
+}

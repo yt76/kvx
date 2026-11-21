@@ -197,7 +197,8 @@ func isKeywordToken(t lexer.TokenType) bool {
 		lexer.TokenConfig, lexer.TokenEndconfig,
 		lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout, lexer.TokenRef,
 		lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg,
-		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenVoid,
+		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw, lexer.TokenVoid,
+		lexer.TokenConst, lexer.TokenVar, lexer.TokenStatic,
 		lexer.TokenTypedef, lexer.TokenEnum, lexer.TokenStruct, lexer.TokenUnion, lexer.TokenPacked, lexer.TokenTypeKw,
 		lexer.TokenInteger,
 		lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,
@@ -212,10 +213,10 @@ func isKeywordToken(t lexer.TokenType) bool {
 		lexer.TokenIf, lexer.TokenElse,
 		lexer.TokenUnique, lexer.TokenUnique0, lexer.TokenPriority,
 		lexer.TokenCase, lexer.TokenCasex, lexer.TokenCasez, lexer.TokenEndcase, lexer.TokenDefault,
-		lexer.TokenFor, lexer.TokenWhile, lexer.TokenDo,
+		lexer.TokenFor, lexer.TokenForeach, lexer.TokenInside, lexer.TokenWhile, lexer.TokenDo,
 		lexer.TokenRepeat, lexer.TokenForever, lexer.TokenWait,
 		lexer.TokenBreak, lexer.TokenContinue, lexer.TokenReturn,
-		lexer.TokenFork, lexer.TokenJoin, lexer.TokenDisable,
+		lexer.TokenFork, lexer.TokenJoin, lexer.TokenJoinAny, lexer.TokenJoinNone, lexer.TokenDisable,
 		lexer.TokenFunction, lexer.TokenEndfunction, lexer.TokenTask, lexer.TokenEndtask, lexer.TokenAutomatic,
 		lexer.TokenGenerate, lexer.TokenEndgenerate, lexer.TokenGenvar:
 		return true
@@ -227,7 +228,7 @@ func isKeywordToken(t lexer.TokenType) bool {
 func isOperatorToken(t lexer.TokenType) bool {
 	switch t {
 	case lexer.TokenAssignOp, lexer.TokenLeq, lexer.TokenGeq,
-		lexer.TokenEq, lexer.TokenNeq, lexer.TokenCaseEq, lexer.TokenCaseNeq,
+		lexer.TokenEq, lexer.TokenNeq, lexer.TokenCaseEq, lexer.TokenCaseNeq, lexer.TokenWildEq, lexer.TokenWildNeq,
 		lexer.TokenLt, lexer.TokenGt,
 		lexer.TokenPlus, lexer.TokenMinus, lexer.TokenStar, lexer.TokenSlash, lexer.TokenPercent,
 		lexer.TokenAmp, lexer.TokenPipe, lexer.TokenCaret, lexer.TokenTilde, lexer.TokenBang,
@@ -237,7 +238,7 @@ func isOperatorToken(t lexer.TokenType) bool {
 		lexer.TokenPlusPlus, lexer.TokenMinusMinus,
 		lexer.TokenPlusEq, lexer.TokenMinusEq, lexer.TokenMulEq, lexer.TokenDivEq, lexer.TokenModEq,
 		lexer.TokenAndEq, lexer.TokenOrEq, lexer.TokenXorEq, lexer.TokenShlEq, lexer.TokenShrEq,
-		lexer.TokenQuestion, lexer.TokenAt, lexer.TokenHash, lexer.TokenArrow, lexer.TokenColonColon:
+		lexer.TokenQuestion, lexer.TokenAt, lexer.TokenHash, lexer.TokenArrow, lexer.TokenColonColon, lexer.TokenDollar:
 		return true
 	default:
 		return false

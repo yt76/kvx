@@ -23,3 +23,4 @@ sv_core.sv              0 0
 sv_typedefs.sv          0 0
 sv_packages.sv          0 0
 sv_interfaces.sv        0 0
+sv_control_ops.sv       0 0

@@ -1616,3 +1616,52 @@ endmodule
 		t.Errorf("unexpected interface port: %+v", p0)
 	}
 }
+
+func TestParseSystemVerilogControlAndModifiers(t *testing.T) {
+	src := `
+module sv_ctrl (
+    input  var logic       clk,
+    input  var logic [7:0] x,
+    output var logic [7:0] y
+);
+    const int LIMIT = 4;
+    static logic [7:0] arr [0:3];
+    logic [7:0] q [$];
+    string name = "demo";
+
+    always_comb begin
+        if (x inside {[8'h00:8'h0F], 8'hFF} || (x ==? 8'b1???_0000) || (x !=? 8'h55))
+            y = {<<{x}};
+        else
+            y = {>>{x}};
+
+        case (x) inside
+            [8'h10:8'h1F]: y = 8'hAA;
+            default:       y = x;
+        endcase
+    end
+
+    always_ff @(posedge clk) begin
+        foreach (arr[i]) begin
+            if (i < LIMIT) arr[i] <= x;
+        end
+    end
+
+    initial begin
+        fork
+            $display("%s", name);
+        join_any
+        fork
+            $display("%0d", q[0]);
+        join_none
+    end
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 1 || file.Modules[0].Name != "sv_ctrl" {
+		t.Fatalf("expected 1 module 'sv_ctrl', got %+v", file.Modules)
+	}
+}

@@ -49,7 +49,11 @@ const (
 	TokenShortint     TokenType = "shortint"
 	TokenInt          TokenType = "int"
 	TokenLongint      TokenType = "longint"
+	TokenStringKw     TokenType = "string"
 	TokenVoid         TokenType = "void"
+	TokenConst        TokenType = "const"
+	TokenVar          TokenType = "var"
+	TokenStatic       TokenType = "static"
 	TokenTypedef      TokenType = "typedef"
 	TokenEnum         TokenType = "enum"
 	TokenStruct       TokenType = "struct"
@@ -103,6 +107,8 @@ const (
 	TokenEndcase      TokenType = "endcase"
 	TokenDefault      TokenType = "default"
 	TokenFor          TokenType = "for"
+	TokenForeach      TokenType = "foreach"
+	TokenInside       TokenType = "inside"
 	TokenWhile        TokenType = "while"
 	TokenDo           TokenType = "do"
 	TokenRepeat       TokenType = "repeat"
@@ -113,6 +119,8 @@ const (
 	TokenReturn       TokenType = "return"
 	TokenFork        TokenType = "fork"
 	TokenJoin        TokenType = "join"
+	TokenJoinAny     TokenType = "join_any"
+	TokenJoinNone    TokenType = "join_none"
 	TokenDisable     TokenType = "disable"
 	TokenFunction    TokenType = "function"
 	TokenEndfunction TokenType = "endfunction"
@@ -139,6 +147,7 @@ const (
 	TokenAt        TokenType = "@"
 	TokenQuestion  TokenType = "?"
 	TokenTick      TokenType = "'"
+	TokenDollar    TokenType = "$"
 
 	// Operators
 	TokenAssignOp TokenType = "="
@@ -148,6 +157,8 @@ const (
 	TokenNeq      TokenType = "!="
 	TokenCaseEq   TokenType = "==="
 	TokenCaseNeq  TokenType = "!=="
+	TokenWildEq   TokenType = "==?"
+	TokenWildNeq  TokenType = "!=?"
 	TokenLt       TokenType = "<"
 	TokenGt       TokenType = ">"
 	TokenPlus     TokenType = "+"
@@ -216,7 +227,11 @@ var keywords = map[string]TokenType{
 	"shortint":     TokenShortint,
 	"int":          TokenInt,
 	"longint":      TokenLongint,
+	"string":       TokenStringKw,
 	"void":         TokenVoid,
+	"const":        TokenConst,
+	"var":          TokenVar,
+	"static":       TokenStatic,
 	"typedef":      TokenTypedef,
 	"enum":         TokenEnum,
 	"struct":       TokenStruct,
@@ -270,6 +285,8 @@ var keywords = map[string]TokenType{
 	"endcase":      TokenEndcase,
 	"default":      TokenDefault,
 	"for":          TokenFor,
+	"foreach":      TokenForeach,
+	"inside":       TokenInside,
 	"while":        TokenWhile,
 	"do":           TokenDo,
 	"repeat":       TokenRepeat,
@@ -280,6 +297,8 @@ var keywords = map[string]TokenType{
 	"return":       TokenReturn,
 	"fork":        TokenFork,
 	"join":        TokenJoin,
+	"join_any":    TokenJoinAny,
+	"join_none":   TokenJoinNone,
 	"disable":     TokenDisable,
 	"function":    TokenFunction,
 	"endfunction": TokenEndfunction,
