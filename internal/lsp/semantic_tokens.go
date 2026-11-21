@@ -191,7 +191,7 @@ func isKeywordToken(t lexer.TokenType) bool {
 	case lexer.TokenModule, lexer.TokenEndmodule,
 		lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout,
 		lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger,
-		lexer.TokenParameter, lexer.TokenLocalparam, lexer.TokenSigned,
+		lexer.TokenParameter, lexer.TokenLocalparam, lexer.TokenDefparam, lexer.TokenSigned,
 		lexer.TokenAssign, lexer.TokenAlways, lexer.TokenInitial,
 		lexer.TokenPosedge, lexer.TokenNegedge, lexer.TokenOr,
 		lexer.TokenBegin, lexer.TokenEnd,

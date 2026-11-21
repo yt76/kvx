@@ -248,3 +248,118 @@ func TestAnalyzeTaskScope(t *testing.T) {
 		t.Errorf("SymbolAt(compute) = %+v, want KindTask 'compute' at line 1", symTask)
 	}
 }
+
+func TestAnalyzeHierarchicalReferences(t *testing.T) {
+	src := "module leaf(input wire a, output wire y);\n" +
+		"  wire deep_sig = a;\n" +
+		"  assign y = deep_sig;\n" +
+		"endmodule\n" +
+		"module sub(input wire a, output wire y);\n" +
+		"  wire internal_sig;\n" +
+		"  leaf u_leaf(.a(a), .y(internal_sig));\n" +
+		"  assign y = internal_sig;\n" +
+		"endmodule\n" +
+		"module top(input wire din, output wire y1, output wire y2, output wire y3);\n" +
+		"  sub u_sub(.a(din), .y(y1));\n" +
+		"  genvar i;\n" +
+		"  generate\n" +
+		"    for (i = 0; i < 1; i = i + 1) begin : g_blk\n" +
+		"      sub u_g(.a(din), .y());\n" +
+		"    end\n" +
+		"  endgenerate\n" +
+		"  assign y2 = u_sub.internal_sig & u_sub.u_leaf.deep_sig;\n" +
+		"  assign y3 = g_blk[0].u_g.internal_sig;\n" +
+		"  initial begin\n" +
+		"    u_sub.reset_task(1'b1);\n" +
+		"    u_sub.internal_sig = 1'b0;\n" +
+		"  end\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for hierarchical references, got %+v", an.Diagnostics)
+	}
+
+	// Root instance `u_sub` in `assign y2 = u_sub.internal_sig` (line 17, col 14) still resolves to u_sub.
+	symRoot := an.SymbolAt(ast.Position{Line: 17, Column: 14})
+	if symRoot == nil || symRoot.Name != "u_sub" || symRoot.Kind != KindInstance {
+		t.Errorf("SymbolAt(u_sub) = %+v, want KindInstance 'u_sub'", symRoot)
+	}
+
+	// Unknown root identifier in hierarchical path must still be reported as undeclared.
+	badSrc := "module top(output wire y);\n" +
+		"  assign y = unknown_inst.sig;\n" +
+		"endmodule\n"
+	badFile, badErrs := parser.Parse(badSrc)
+	if len(badErrs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", badErrs)
+	}
+	badAn := Analyze(badFile)
+	if len(badAn.Diagnostics) != 1 || badAn.Diagnostics[0].Message != `undeclared identifier "unknown_inst"` {
+		t.Errorf("expected 1 undeclared diagnostic for unknown_inst, got %+v", badAn.Diagnostics)
+	}
+}
+
+func TestAnalyzeProceduralBlockLocals(t *testing.T) {
+	src := "module m(input wire clk, input wire [7:0] din, output reg [7:0] y1, output reg [7:0] y2);\n" +
+		"  always @(*) begin : blk1\n" +
+		"    integer i;\n" +
+		"    reg [7:0] tmp;\n" +
+		"    localparam MASK = 8'hFF;\n" +
+		"    tmp = din & MASK;\n" +
+		"    for (i = 0; i < 8; i = i + 1) begin\n" +
+		"      y1[i] = tmp[i];\n" +
+		"    end\n" +
+		"  end\n" +
+		"  always @(posedge clk) begin : blk2\n" +
+		"    integer i;\n" +
+		"    reg [7:0] tmp;\n" +
+		"    tmp = y1;\n" +
+		"    for (i = 0; i < 8; i = i + 1) begin\n" +
+		"      y2[i] <= tmp[i];\n" +
+		"    end\n" +
+		"  end\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for block-local declarations, got %+v", an.Diagnostics)
+	}
+
+	// `tmp` in blk1 (line 7, col 14) resolves to blk1's `reg [7:0] tmp` at line 3.
+	symTmp1 := an.SymbolAt(ast.Position{Line: 7, Column: 14})
+	if symTmp1 == nil || symTmp1.Name != "tmp" || symTmp1.SelectionRange.Start.Line != 3 {
+		t.Errorf("SymbolAt(tmp in blk1) = %+v, want line 3", symTmp1)
+	}
+
+	// `tmp` in blk2 (line 15, col 15) resolves to blk2's `reg [7:0] tmp` at line 12.
+	symTmp2 := an.SymbolAt(ast.Position{Line: 15, Column: 15})
+	if symTmp2 == nil || symTmp2.Name != "tmp" || symTmp2.SelectionRange.Start.Line != 12 {
+		t.Errorf("SymbolAt(tmp in blk2) = %+v, want line 12", symTmp2)
+	}
+
+	// Undeclared identifier inside procedural block must still be reported.
+	badSrc := "module m(output reg y);\n" +
+		"  always @(*) begin : blk\n" +
+		"    reg tmp;\n" +
+		"    tmp = missing_sig;\n" +
+		"    y = tmp;\n" +
+		"  end\n" +
+		"endmodule\n"
+	badFile, badErrs := parser.Parse(badSrc)
+	if len(badErrs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", badErrs)
+	}
+	badAn := Analyze(badFile)
+	if len(badAn.Diagnostics) != 1 || badAn.Diagnostics[0].Message != `undeclared identifier "missing_sig"` {
+		t.Errorf("expected 1 undeclared diagnostic for missing_sig, got %+v", badAn.Diagnostics)
+	}
+}

@@ -138,12 +138,22 @@ type AssignStmt struct {
 func (s *AssignStmt) ItemRange() Range { return s.Range }
 func (s *AssignStmt) moduleItemNode()  {}
 
-// ProceduralBlock represents an always or initial block.
-type ProceduralBlock struct {
-	Kind  string // "always", "initial"
-	Label string
+// DefparamStmt represents a defparam statement (defparam u_sub.P = 16;).
+type DefparamStmt struct {
 	Range Range
 	Refs  []IdentifierRef
+}
+
+func (s *DefparamStmt) ItemRange() Range { return s.Range }
+func (s *DefparamStmt) moduleItemNode()  {}
+
+// ProceduralBlock represents an always or initial block.
+type ProceduralBlock struct {
+	Kind   string // "always", "initial"
+	Label  string
+	Locals []ModuleItem
+	Range  Range
+	Refs   []IdentifierRef
 }
 
 func (b *ProceduralBlock) ItemRange() Range { return b.Range }

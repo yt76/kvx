@@ -28,6 +28,7 @@ const (
 	TokenInteger    TokenType = "integer"
 	TokenParameter  TokenType = "parameter"
 	TokenLocalparam TokenType = "localparam"
+	TokenDefparam   TokenType = "defparam"
 	TokenSigned     TokenType = "signed"
 	TokenAssign     TokenType = "assign"
 	TokenAlways     TokenType = "always"
@@ -109,6 +110,7 @@ var keywords = map[string]TokenType{
 	"integer":    TokenInteger,
 	"parameter":  TokenParameter,
 	"localparam": TokenLocalparam,
+	"defparam":   TokenDefparam,
 	"signed":     TokenSigned,
 	"assign":     TokenAssign,
 	"always":     TokenAlways,

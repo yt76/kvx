@@ -2,9 +2,13 @@
 # Format: <filename> <expected_parser_errors> <expected_analyzer_errors>
 # Lines starting with '#' and empty lines are ignored.
 
-basic.v         0 0
-errors.v        1 1
-module_inst.v   0 0
-func_macro.v    0 0
-attributes.v    0 0
-task.v          0 0
+basic.v                 0 0
+errors.v                1 1
+module_inst.v           0 0
+func_macro.v            0 0
+attributes.v            0 0
+task.v                  0 0
+hierarchical_ref.v      0 0
+block_locals.v          0 0
+defparam.v              0 0
+decl_assign_variants.v  0 0

@@ -284,10 +284,16 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 		nameTok := p.advance()
 		endPos := nameTok.Range.End
 
-		// Optional default/initial value or unpacked array dimension in port list
-		if p.cur().Type == lexer.TokenLBracket {
+		// Optional unpacked array dimensions in port list
+		for p.cur().Type == lexer.TokenLBracket {
 			_ = p.parseBitRange(mod)
 			endPos = p.prev().Range.End
+		}
+
+		// Optional inline initialization: e.g. output reg [7:0] q = 8'h00
+		if p.cur().Type == lexer.TokenAssignOp {
+			p.advance() // '='
+			_, endPos = p.parseExprUntil(mod, lexer.TokenComma, lexer.TokenRParen)
 		}
 
 		if curDir != "" {
@@ -344,6 +350,8 @@ func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 		p.parseNetDeclItem(mod)
 	case lexer.TokenParameter, lexer.TokenLocalparam:
 		p.parseParamDeclItem(mod)
+	case lexer.TokenDefparam:
+		p.parseDefparamStmt(mod)
 	case lexer.TokenAssign:
 		p.parseAssignStmt(mod)
 	case lexer.TokenAlways, lexer.TokenInitial:
@@ -395,6 +403,18 @@ func (p *Parser) parsePortDeclItem(mod *ast.ModuleDecl) {
 		nameTok := p.advance()
 		endPos := nameTok.Range.End
 
+		// Optional unpacked array dimensions: e.g. input [7:0] arr [0:3];
+		for p.cur().Type == lexer.TokenLBracket {
+			_ = p.parseBitRange(mod)
+			endPos = p.prev().Range.End
+		}
+
+		// Optional inline initialization: e.g. output reg [7:0] q = 8'h00;
+		if p.cur().Type == lexer.TokenAssignOp {
+			p.advance() // '='
+			_, endPos = p.parseExprUntil(mod, lexer.TokenComma, lexer.TokenSemicolon)
+		}
+
 		port := &ast.PortDecl{
 			Direction: dir,
 			NetType:   netType,
@@ -430,6 +450,19 @@ func (p *Parser) parseNetDeclItem(mod *ast.ModuleDecl) {
 	var width *ast.BitRange
 	if p.cur().Type == lexer.TokenLBracket {
 		width = p.parseBitRange(mod)
+	}
+
+	// Optional net delay: e.g. wire #1 a = b; or wire #(1, 2) a = b;
+	if p.cur().Type == lexer.TokenHash {
+		p.advance()
+		if p.cur().Type == lexer.TokenLParen {
+			p.parseBalancedParens(nil, mod)
+		} else if p.cur().Type == lexer.TokenNumber || p.cur().Type == lexer.TokenIdent {
+			tok := p.advance()
+			if tok.Type == lexer.TokenIdent {
+				p.recordRef(nil, mod, tok)
+			}
+		}
 	}
 
 	for !p.isEOF() {
@@ -533,23 +566,48 @@ func (p *Parser) parseParamDeclItem(mod *ast.ModuleDecl) {
 func (p *Parser) parseAssignStmt(mod *ast.ModuleDecl) {
 	startTok := p.advance() // consume 'assign'
 	stmt := &ast.AssignStmt{
-		Range: ast.Range{Start: startTok.Range.Start, End: startTok.Range.End},
+		Range: ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
 	}
 
-	// Collect LHS up to '='
-	lhsTokens := p.collectTokensUntil(&stmt.Refs, mod, lexer.TokenAssignOp, lexer.TokenSemicolon)
-	if len(lhsTokens) == 0 {
-		p.addError(startTok.Range, "expected target signal after 'assign'")
-	}
-
-	if p.cur().Type == lexer.TokenAssignOp {
-		eqTok := p.advance() // '='
-		rhsTokens := p.collectTokensUntil(&stmt.Refs, mod, lexer.TokenSemicolon)
-		if len(rhsTokens) == 0 {
-			p.addError(eqTok.Range, "expected expression after '=' in assign statement")
+	// Optional delay: assign #1 y = a; or assign #(1, 2) y = a;
+	if p.cur().Type == lexer.TokenHash {
+		p.advance() // '#'
+		if p.cur().Type == lexer.TokenLParen {
+			p.parseBalancedParens(&stmt.Refs, mod)
+		} else if p.cur().Type == lexer.TokenNumber || p.cur().Type == lexer.TokenIdent {
+			tok := p.advance()
+			if tok.Type == lexer.TokenIdent {
+				p.recordRef(&stmt.Refs, mod, tok)
+			}
+		} else {
+			p.addError(p.cur().Range, "expected delay value after '#' in assign statement")
 		}
-	} else {
-		p.addError(p.cur().Range, "expected '=' in assign statement")
+	}
+
+	for !p.isEOF() {
+		// Collect LHS up to '='
+		lhsTokens := p.collectTokensUntil(&stmt.Refs, mod, lexer.TokenAssignOp, lexer.TokenComma, lexer.TokenSemicolon)
+		if len(lhsTokens) == 0 {
+			p.addError(p.cur().Range, "expected target signal after 'assign'")
+			break
+		}
+
+		if p.cur().Type == lexer.TokenAssignOp {
+			eqTok := p.advance() // '='
+			rhsTokens := p.collectTokensUntil(&stmt.Refs, mod, lexer.TokenComma, lexer.TokenSemicolon)
+			if len(rhsTokens) == 0 {
+				p.addError(eqTok.Range, "expected expression after '=' in assign statement")
+			}
+		} else {
+			p.addError(p.cur().Range, "expected '=' in assign statement")
+			break
+		}
+
+		if p.cur().Type == lexer.TokenComma {
+			p.advance()
+			continue
+		}
+		break
 	}
 
 	if p.cur().Type == lexer.TokenSemicolon {
@@ -563,12 +621,56 @@ func (p *Parser) parseAssignStmt(mod *ast.ModuleDecl) {
 	mod.Items = append(mod.Items, stmt)
 }
 
+func (p *Parser) parseDefparamStmt(mod *ast.ModuleDecl) {
+	startTok := p.advance() // consume 'defparam'
+	stmt := &ast.DefparamStmt{
+		Range: ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
+	}
+
+	for !p.isEOF() {
+		lhsTokens := p.collectTokensUntil(&stmt.Refs, mod, lexer.TokenAssignOp, lexer.TokenComma, lexer.TokenSemicolon)
+		if len(lhsTokens) == 0 {
+			p.addError(p.cur().Range, "expected parameter path in defparam statement")
+			break
+		}
+
+		if p.cur().Type == lexer.TokenAssignOp {
+			eqTok := p.advance() // '='
+			rhsTokens := p.collectTokensUntil(&stmt.Refs, mod, lexer.TokenComma, lexer.TokenSemicolon)
+			if len(rhsTokens) == 0 {
+				p.addError(eqTok.Range, "expected expression after '=' in defparam statement")
+			}
+		} else {
+			p.addError(p.cur().Range, "expected '=' in defparam statement")
+			break
+		}
+
+		if p.cur().Type == lexer.TokenComma {
+			p.advance()
+			continue
+		}
+		break
+	}
+
+	if p.cur().Type == lexer.TokenSemicolon {
+		semi := p.advance()
+		stmt.Range.End = semi.Range.End
+	} else {
+		p.addError(p.prev().Range, "expected ';' after defparam statement")
+		stmt.Range.End = p.prev().Range.End
+	}
+
+	mod.Items = append(mod.Items, stmt)
+}
+
 func (p *Parser) parseProceduralBlock(mod *ast.ModuleDecl) {
 	startTok := p.advance() // 'always' or 'initial'
 	block := &ast.ProceduralBlock{
 		Kind:  startTok.Literal,
-		Range: ast.Range{Start: startTok.Range.Start, End: startTok.Range.End},
+		Range: ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
 	}
+
+	tempMod := &ast.ModuleDecl{}
 
 	// Optional sensitivity list: @(...) or @*
 	if p.cur().Type == lexer.TokenAt {
@@ -576,17 +678,19 @@ func (p *Parser) parseProceduralBlock(mod *ast.ModuleDecl) {
 		if p.cur().Type == lexer.TokenStar {
 			p.advance()
 		} else if p.cur().Type == lexer.TokenLParen {
-			p.parseBalancedParens(&block.Refs, mod)
+			p.parseBalancedParens(nil, tempMod)
 		} else if p.cur().Type == lexer.TokenIdent {
 			tok := p.advance()
-			p.recordRef(&block.Refs, mod, tok)
+			p.recordRef(nil, tempMod, tok)
 		} else {
 			p.addError(p.cur().Range, "expected sensitivity list after '@'")
 		}
 	}
 
-	p.parseStatement(block, mod)
+	p.parseStatement(block, tempMod)
 	block.Range.End = p.prev().Range.End
+	block.Locals = tempMod.Items
+	block.Refs = tempMod.Refs
 	mod.Items = append(mod.Items, block)
 }
 
@@ -930,6 +1034,14 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 	case lexer.TokenSemicolon:
 		p.advance()
 
+	case lexer.TokenReg, lexer.TokenInteger:
+		// Block-local variable declaration (e.g., `begin : blk integer i; reg [7:0] tmp; ... end`)
+		p.parseNetDeclItem(mod)
+
+	case lexer.TokenParameter, lexer.TokenLocalparam:
+		// Block-local parameter/localparam declaration
+		p.parseParamDeclItem(mod)
+
 	case lexer.TokenBegin:
 		beginTok := p.advance() // 'begin'
 		if p.cur().Type == lexer.TokenColon {
@@ -1054,18 +1166,9 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 		p.expectSemicolon("system task call")
 
 	case lexer.TokenIdent:
-		// Task call statement: my_task(a, b); or my_task;
-		if p.peekN(1).Type == lexer.TokenLParen {
-			tok := p.advance()
-			p.recordRef(&block.Refs, mod, tok)
-			p.parseBalancedParens(&block.Refs, mod)
-			p.expectSemicolon("task call")
-			return
-		}
-		if p.peekN(1).Type == lexer.TokenSemicolon {
-			tok := p.advance()
-			p.recordRef(&block.Refs, mod, tok)
-			p.advance() // ';'
+		// Task call statement: my_task(a, b); or my_task; or u_sub.my_task(a, b);
+		if p.isTaskCallStart() {
+			p.parseTaskCallStmt(block, mod)
 			return
 		}
 		fallthrough
@@ -1171,6 +1274,7 @@ func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 func (p *Parser) parseInstConnections(refs *[]ast.IdentifierRef, mod *ast.ModuleDecl) {
 	openTok := p.advance() // '('
 	depth := 1
+	prevWasDot := false
 	for !p.isEOF() && depth > 0 {
 		if p.cur().Type == lexer.TokenSemicolon || p.cur().Type == lexer.TokenEndmodule {
 			break
@@ -1184,6 +1288,7 @@ func (p *Parser) parseInstConnections(refs *[]ast.IdentifierRef, mod *ast.Module
 			if p.cur().Type == lexer.TokenIdent {
 				p.advance() // skip target module's port name
 			}
+			prevWasDot = false
 			continue
 		}
 		tok := p.advance()
@@ -1193,10 +1298,13 @@ func (p *Parser) parseInstConnections(refs *[]ast.IdentifierRef, mod *ast.Module
 		case lexer.TokenRParen:
 			depth--
 		case lexer.TokenIdent:
-			p.recordRef(refs, mod, tok)
+			if !prevWasDot {
+				p.recordRef(refs, mod, tok)
+			}
 		case lexer.TokenIllegal:
 			p.addError(tok.Range, tok.Literal)
 		}
+		prevWasDot = tok.Type == lexer.TokenDot
 	}
 	if depth != 0 {
 		p.addError(openTok.Range, "unclosed '(' in module instantiation")
@@ -1208,6 +1316,7 @@ func (p *Parser) parseBitRange(mod *ast.ModuleDecl) *ast.BitRange {
 	var msbParts []string
 	var lsbParts []string
 	inLSB := false
+	prevWasDot := false
 
 	for !p.isEOF() && p.cur().Type != lexer.TokenRBracket {
 		if p.cur().Type == lexer.TokenSemicolon || p.cur().Type == lexer.TokenEndmodule {
@@ -1216,11 +1325,13 @@ func (p *Parser) parseBitRange(mod *ast.ModuleDecl) *ast.BitRange {
 		tok := p.advance()
 		if tok.Type == lexer.TokenColon {
 			inLSB = true
+			prevWasDot = false
 			continue
 		}
-		if tok.Type == lexer.TokenIdent {
+		if tok.Type == lexer.TokenIdent && !prevWasDot {
 			p.recordRef(nil, mod, tok)
 		}
+		prevWasDot = tok.Type == lexer.TokenDot
 		if inLSB {
 			lsbParts = append(lsbParts, tok.Literal)
 		} else {
@@ -1257,6 +1368,7 @@ func (p *Parser) parseExprUntil(mod *ast.ModuleDecl, stopTokens ...lexer.TokenTy
 	parenDepth := 0
 	bracketDepth := 0
 	braceDepth := 0
+	prevWasDot := false
 
 	for !p.isEOF() {
 		tok := p.cur()
@@ -1300,10 +1412,13 @@ func (p *Parser) parseExprUntil(mod *ast.ModuleDecl, stopTokens ...lexer.TokenTy
 				braceDepth--
 			}
 		case lexer.TokenIdent:
-			p.recordRef(nil, mod, tok)
+			if !prevWasDot {
+				p.recordRef(nil, mod, tok)
+			}
 		case lexer.TokenIllegal:
 			p.addError(tok.Range, tok.Literal)
 		}
+		prevWasDot = tok.Type == lexer.TokenDot
 	}
 
 	return strings.Join(parts, " "), endPos
@@ -1314,6 +1429,7 @@ func (p *Parser) collectTokensUntil(refs *[]ast.IdentifierRef, mod *ast.ModuleDe
 	parenDepth := 0
 	bracketDepth := 0
 	braceDepth := 0
+	prevWasDot := false
 
 	for !p.isEOF() {
 		tok := p.cur()
@@ -1355,10 +1471,13 @@ func (p *Parser) collectTokensUntil(refs *[]ast.IdentifierRef, mod *ast.ModuleDe
 				braceDepth--
 			}
 		case lexer.TokenIdent:
-			p.recordRef(refs, mod, tok)
+			if !prevWasDot {
+				p.recordRef(refs, mod, tok)
+			}
 		case lexer.TokenIllegal:
 			p.addError(tok.Range, tok.Literal)
 		}
+		prevWasDot = tok.Type == lexer.TokenDot
 	}
 
 	return collected
@@ -1371,6 +1490,7 @@ func (p *Parser) parseBalancedParens(refs *[]ast.IdentifierRef, mod *ast.ModuleD
 func (p *Parser) parseBalancedParensOpts(refs *[]ast.IdentifierRef, mod *ast.ModuleDecl, allowSemicolon bool) {
 	openTok := p.advance() // '('
 	depth := 1
+	prevWasDot := false
 	for !p.isEOF() && depth > 0 {
 		if (!allowSemicolon && p.cur().Type == lexer.TokenSemicolon) ||
 			p.cur().Type == lexer.TokenEndmodule ||
@@ -1396,10 +1516,13 @@ func (p *Parser) parseBalancedParensOpts(refs *[]ast.IdentifierRef, mod *ast.Mod
 				})
 			}
 		case lexer.TokenIdent:
-			p.recordRef(refs, mod, tok)
+			if !prevWasDot {
+				p.recordRef(refs, mod, tok)
+			}
 		case lexer.TokenIllegal:
 			p.addError(tok.Range, tok.Literal)
 		}
+		prevWasDot = tok.Type == lexer.TokenDot
 	}
 	if depth != 0 {
 		p.addError(openTok.Range, "unclosed '('")
@@ -1447,7 +1570,7 @@ func (p *Parser) syncToStatementEnd() {
 		case lexer.TokenEnd, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndgenerate, lexer.TokenEndmodule, lexer.TokenModule,
 			lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout,
 			lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger, lexer.TokenGenvar,
-			lexer.TokenParameter, lexer.TokenLocalparam,
+			lexer.TokenParameter, lexer.TokenLocalparam, lexer.TokenDefparam,
 			lexer.TokenAssign, lexer.TokenAlways, lexer.TokenInitial, lexer.TokenFunction, lexer.TokenTask, lexer.TokenGenerate:
 			return
 		default:
@@ -1463,7 +1586,7 @@ func isPortDirection(t lexer.TokenType) bool {
 func isStatementBoundary(t lexer.TokenType) bool {
 	switch t {
 	case lexer.TokenSemicolon, lexer.TokenEnd, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndgenerate, lexer.TokenEndmodule, lexer.TokenModule,
-		lexer.TokenAlways, lexer.TokenInitial, lexer.TokenAssign, lexer.TokenFunction, lexer.TokenTask, lexer.TokenGenerate:
+		lexer.TokenAlways, lexer.TokenInitial, lexer.TokenAssign, lexer.TokenDefparam, lexer.TokenFunction, lexer.TokenTask, lexer.TokenGenerate:
 		return true
 	default:
 		return false
@@ -1543,6 +1666,70 @@ func (p *Parser) parseAttribute() {
 func (p *Parser) skipAttributes() {
 	for p.isAttrStart() {
 		p.parseAttribute()
+	}
+}
+
+// isTaskCallStart checks whether the current TokenIdent begins a task call statement
+// such as `my_task(a, b);`, `my_task;`, or a hierarchical call `u_sub.my_task(a, b);`.
+func (p *Parser) isTaskCallStart() bool {
+	offset := 1
+	for {
+		t := p.peekN(offset)
+		switch t.Type {
+		case lexer.TokenLParen, lexer.TokenSemicolon:
+			return true
+		case lexer.TokenDot:
+			if p.peekN(offset+1).Type != lexer.TokenIdent {
+				return false
+			}
+			offset += 2
+		case lexer.TokenLBracket:
+			// Skip balanced [...] index on hierarchical path segment (e.g. g_blk[0].u_sub.my_task)
+			depth := 1
+			offset++
+			for depth > 0 {
+				bt := p.peekN(offset)
+				if bt.Type == lexer.TokenEOF || bt.Type == lexer.TokenSemicolon {
+					return false
+				}
+				if bt.Type == lexer.TokenLBracket {
+					depth++
+				} else if bt.Type == lexer.TokenRBracket {
+					depth--
+				}
+				offset++
+			}
+		default:
+			return false
+		}
+	}
+}
+
+func (p *Parser) parseTaskCallStmt(block *ast.ProceduralBlock, mod *ast.ModuleDecl) {
+	// Record only the root identifier of a hierarchical task path.
+	rootTok := p.advance()
+	p.recordRef(&block.Refs, mod, rootTok)
+
+	for !p.isEOF() {
+		switch p.cur().Type {
+		case lexer.TokenDot:
+			p.advance() // '.'
+			if p.cur().Type == lexer.TokenIdent {
+				p.advance() // skip hierarchical member name
+			}
+		case lexer.TokenLBracket:
+			_ = p.parseBitRange(mod)
+		case lexer.TokenLParen:
+			p.parseBalancedParens(&block.Refs, mod)
+			p.expectSemicolon("task call")
+			return
+		case lexer.TokenSemicolon:
+			p.advance()
+			return
+		default:
+			p.expectSemicolon("task call")
+			return
+		}
 	}
 }
 

@@ -608,10 +608,17 @@ func TestParseFunctionLikeMacros(t *testing.T) {
 		t.Errorf("module name = %q, want %q", mod.Name, "func_macro_demo")
 	}
 
-	// Verify expanded identifiers (a, b, c, sel, clk, q, sum) appear in module Refs with real source positions.
+	// Verify expanded identifiers (a, b, c, sel, clk, q, sum) appear in module or block Refs with real source positions.
 	refNames := make(map[string]bool)
 	for _, r := range mod.Refs {
 		refNames[r.Name] = true
+	}
+	for _, item := range mod.Items {
+		if blk, ok := item.(*ast.ProceduralBlock); ok {
+			for _, r := range blk.Refs {
+				refNames[r.Name] = true
+			}
+		}
 	}
 	for _, want := range []string{"a", "b", "c", "sel", "clk", "q", "sum"} {
 		if !refNames[want] {
@@ -801,5 +808,158 @@ endmodule
 	}
 	if len(badFile.Modules) != 1 {
 		t.Errorf("expected 1 partial module on recovery, got %d", len(badFile.Modules))
+	}
+}
+
+func TestParseProceduralBlockLocals(t *testing.T) {
+	src := `
+module blk_local_demo (
+    input  wire       clk,
+    input  wire [7:0] din,
+    output reg  [7:0] dout,
+    output reg  [7:0] comb
+);
+    always @(*) begin : blk_comb
+        integer i;
+        reg [7:0] tmp;
+        localparam MASK = 8'hFF;
+        tmp = 8'h00;
+        for (i = 0; i < 8; i = i + 1) begin
+            tmp[i] = din[i] & MASK[i];
+        end
+        comb = tmp;
+    end
+
+    always @(posedge clk) begin : blk_seq
+        integer i;
+        reg [7:0] tmp;
+        tmp = comb;
+        for (i = 0; i < 8; i = i + 1) begin
+            dout[i] <= tmp[i];
+        end
+    end
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(file.Modules))
+	}
+	var blocks []*ast.ProceduralBlock
+	for _, item := range file.Modules[0].Items {
+		if blk, ok := item.(*ast.ProceduralBlock); ok {
+			blocks = append(blocks, blk)
+		}
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("got %d procedural blocks, want 2", len(blocks))
+	}
+	if blocks[0].Label != "blk_comb" || len(blocks[0].Locals) != 3 {
+		t.Errorf("blocks[0] label=%q locals=%d, want blk_comb and 3", blocks[0].Label, len(blocks[0].Locals))
+	}
+	if blocks[1].Label != "blk_seq" || len(blocks[1].Locals) != 2 {
+		t.Errorf("blocks[1] label=%q locals=%d, want blk_seq and 2", blocks[1].Label, len(blocks[1].Locals))
+	}
+}
+
+func TestParseDefparam(t *testing.T) {
+	src := `
+module sub #(parameter WIDTH = 8, parameter DEPTH = 16) (
+    input  wire [WIDTH-1:0] a,
+    output wire [WIDTH-1:0] y
+);
+    assign y = a;
+endmodule
+
+module top #(parameter TOP_W = 16) (
+    input  wire [TOP_W-1:0] din,
+    output wire [TOP_W-1:0] dout
+);
+    sub u_sub (.a(din), .y(dout));
+    defparam u_sub.WIDTH = TOP_W;
+    defparam u_sub.DEPTH = 32, u_sub.WIDTH = TOP_W;
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 2 {
+		t.Fatalf("expected 2 modules, got %d", len(file.Modules))
+	}
+	var defparams []*ast.DefparamStmt
+	for _, item := range file.Modules[1].Items {
+		if dp, ok := item.(*ast.DefparamStmt); ok {
+			defparams = append(defparams, dp)
+		}
+	}
+	if len(defparams) != 2 {
+		t.Fatalf("got %d defparam statements, want 2", len(defparams))
+	}
+
+	// Missing '=' error and recovery
+	badSrc := `
+module m;
+    defparam u_sub.WIDTH;
+    wire x;
+endmodule
+`
+	badFile, badErrs := Parse(badSrc)
+	if len(badErrs) == 0 || !strings.Contains(badErrs[0].Message, "expected '=' in defparam statement") {
+		t.Errorf("expected missing '=' error, got %v", badErrs)
+	}
+	if len(badFile.Modules) != 1 {
+		t.Errorf("expected 1 module on recovery, got %d", len(badFile.Modules))
+	}
+}
+
+func TestParsePortInitAndAssignVariants(t *testing.T) {
+	src := `
+module ansi_init #(
+    parameter INIT_VAL = 8'h00
+) (
+    input  wire       clk,
+    input  wire [7:0] a,
+    input  wire [7:0] b,
+    output reg  [7:0] q = INIT_VAL,
+    output wire [7:0] y1,
+    output wire [7:0] y2,
+    output wire [7:0] y3
+);
+    wire #1 w_dly = a;
+    assign y1 = a, y2 = b;
+    assign #2 {y3} = {w_dly};
+    always @(posedge clk) begin
+        q <= y1 + y2;
+    end
+endmodule
+
+module non_ansi_init (clk, a, b, q, y1, y2);
+    input  wire       clk;
+    input  wire [7:0] a, b;
+    output reg  [7:0] q = 8'hFF;
+    output wire [3:0] y1;
+    output wire [3:0] y2;
+
+    assign #(1, 2) {y1, y2} = {a[3:0], b[3:0]};
+    always @(posedge clk) begin
+        q <= a;
+    end
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 2 {
+		t.Fatalf("expected 2 modules, got %d", len(file.Modules))
+	}
+	if len(file.Modules[0].Ports) != 7 {
+		t.Errorf("ansi_init ports = %d, want 7", len(file.Modules[0].Ports))
+	}
+	if len(file.Modules[1].Ports) != 6 {
+		t.Errorf("non_ansi_init ports = %d, want 6", len(file.Modules[1].Ports))
 	}
 }

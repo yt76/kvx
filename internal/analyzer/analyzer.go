@@ -55,6 +55,13 @@ type TaskScope struct {
 	Order   []*Symbol
 }
 
+// BlockScope holds the local symbol table for a procedural block (always / initial).
+type BlockScope struct {
+	Block   *ast.ProceduralBlock
+	Symbols map[string]*Symbol
+	Order   []*Symbol
+}
+
 // ModuleScope holds the symbol table for a single module declaration.
 type ModuleScope struct {
 	Module    *ast.ModuleDecl
@@ -63,6 +70,7 @@ type ModuleScope struct {
 	Order     []*Symbol
 	Functions []*FunctionScope
 	Tasks     []*TaskScope
+	Blocks    []*BlockScope
 }
 
 // Analysis holds the symbol tables and semantic diagnostics for a SourceFile.
@@ -249,7 +257,35 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]Sem
 				addSymbol(taskScope.Symbol, inGenerate)
 				scope.Tasks = append(scope.Tasks, taskScope)
 
+			case *ast.ProceduralBlock:
+				blkScope := buildBlockScope(d, diags)
+				scope.Blocks = append(scope.Blocks, blkScope)
+				if d.Label != "" {
+					if _, exists := scope.Symbols[d.Label]; !exists {
+						scope.Symbols[d.Label] = &Symbol{
+							Name:           d.Label,
+							Kind:           KindInstance,
+							TypeDetail:     "named block",
+							Signature:      "begin : " + d.Label,
+							Range:          d.Range,
+							SelectionRange: d.Range,
+						}
+					}
+				}
+
 			case *ast.GenerateBlock:
+				if d.Label != "" {
+					if _, exists := scope.Symbols[d.Label]; !exists {
+						scope.Symbols[d.Label] = &Symbol{
+							Name:           d.Label,
+							Kind:           KindInstance,
+							TypeDetail:     "generate block",
+							Signature:      "generate " + d.Label,
+							Range:          d.Range,
+							SelectionRange: d.Range,
+						}
+					}
+				}
 				collectItems(d.Items, true)
 			}
 		}
@@ -289,6 +325,31 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, diags *[]Sem
 				continue
 			}
 			if _, ok := taskScope.Symbols[ref.Name]; ok {
+				continue
+			}
+			if _, ok := scope.Symbols[ref.Name]; ok {
+				continue
+			}
+			if _, ok := globals[ref.Name]; ok {
+				continue
+			}
+			if ref.Range.File == "" {
+				*diags = append(*diags, SemanticDiagnostic{
+					Range:   ref.Range,
+					Message: fmt.Sprintf("undeclared identifier %q", ref.Name),
+					IsError: false,
+				})
+			}
+		}
+	}
+
+	// Check identifier references inside procedural blocks against block-local, module, and global scopes.
+	for _, blkScope := range scope.Blocks {
+		for _, ref := range blkScope.Block.Refs {
+			if strings.HasPrefix(ref.Name, "`") {
+				continue
+			}
+			if _, ok := blkScope.Symbols[ref.Name]; ok {
 				continue
 			}
 			if _, ok := scope.Symbols[ref.Name]; ok {
@@ -460,6 +521,31 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			}
 		}
 
+		// 3c. Check declarations and references inside procedural blocks.
+		for _, blkScope := range scope.Blocks {
+			if !blkScope.Block.Range.Contains(pos) {
+				continue
+			}
+			for _, sym := range blkScope.Order {
+				if sym.SelectionRange.Contains(pos) {
+					return sym
+				}
+			}
+			for _, ref := range blkScope.Block.Refs {
+				if ref.Range.Contains(pos) {
+					if sym, ok := blkScope.Symbols[ref.Name]; ok {
+						return sym
+					}
+					if sym, ok := scope.Symbols[ref.Name]; ok {
+						return sym
+					}
+					if sym, ok := a.GlobalSymbols[ref.Name]; ok {
+						return sym
+					}
+				}
+			}
+		}
+
 		// 4. Check identifier references in expressions, assignments, and procedural blocks.
 		for _, ref := range mod.Refs {
 			if ref.Range.Contains(pos) {
@@ -488,6 +574,12 @@ func (a *Analysis) CompletionsAt(pos ast.Position) []*Symbol {
 		for _, taskScope := range scope.Tasks {
 			if taskScope.Decl.Range.Contains(pos) {
 				out = append(out, taskScope.Order...)
+				break
+			}
+		}
+		for _, blkScope := range scope.Blocks {
+			if blkScope.Block.Range.Contains(pos) {
+				out = append(out, blkScope.Order...)
 				break
 			}
 		}
@@ -803,6 +895,62 @@ func formatTaskSignature(task *ast.TaskDecl) string {
 		b.WriteString(")")
 	}
 	return b.String()
+}
+
+func buildBlockScope(block *ast.ProceduralBlock, diags *[]SemanticDiagnostic) *BlockScope {
+	bs := &BlockScope{
+		Block:   block,
+		Symbols: make(map[string]*Symbol),
+	}
+
+	addLocal := func(sym *Symbol) {
+		if sym.Name == "" {
+			return
+		}
+		if _, exists := bs.Symbols[sym.Name]; exists {
+			if sym.SelectionRange.File == "" {
+				*diags = append(*diags, SemanticDiagnostic{
+					Range:   sym.SelectionRange,
+					Message: fmt.Sprintf("duplicate declaration of %q", sym.Name),
+					IsError: false,
+				})
+			}
+			return
+		}
+		bs.Symbols[sym.Name] = sym
+		bs.Order = append(bs.Order, sym)
+	}
+
+	for _, item := range block.Locals {
+		switch d := item.(type) {
+		case *ast.ParamDecl:
+			pDetail := formatParamDetail(d)
+			s := pDetail + " " + d.Name
+			if d.ValueText != "" {
+				s += " = " + d.ValueText
+			}
+			addLocal(&Symbol{
+				Name:           d.Name,
+				Kind:           KindParam,
+				TypeDetail:     pDetail,
+				Signature:      s,
+				Range:          d.Range,
+				SelectionRange: d.NameRange,
+			})
+		case *ast.NetDecl:
+			nDetail := formatNetDeclDetail(d)
+			addLocal(&Symbol{
+				Name:           d.Name,
+				Kind:           KindNet,
+				TypeDetail:     nDetail,
+				Signature:      nDetail + " " + d.Name,
+				Range:          d.Range,
+				SelectionRange: d.NameRange,
+			})
+		}
+	}
+
+	return bs
 }
 
 func findModuleInstAt(items []ast.ModuleItem, pos ast.Position) *ast.ModuleInst {
