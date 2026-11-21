@@ -172,14 +172,23 @@ type EnumMember struct {
 	Range     Range
 }
 
+// StructField represents a named member field inside a struct or union declaration.
+type StructField struct {
+	TypeDetail string
+	Name       string
+	NameRange  Range
+	Range      Range
+}
+
 // TypedefDecl represents a SystemVerilog typedef declaration (including enum/struct/union).
 type TypedefDecl struct {
-	Name        string
-	NameRange   Range
-	BaseType    string
-	EnumMembers []EnumMember
-	Range       Range
-	Refs        []IdentifierRef
+	Name         string
+	NameRange    Range
+	BaseType     string
+	EnumMembers  []EnumMember
+	StructFields []StructField
+	Range        Range
+	Refs         []IdentifierRef
 }
 
 func (t *TypedefDecl) ItemRange() Range { return t.Range }
@@ -187,13 +196,14 @@ func (t *TypedefDecl) moduleItemNode()  {}
 
 // NetDecl represents a net or variable declaration (wire, reg, integer, logic, user-defined type, etc.).
 type NetDecl struct {
-	Kind        string // "wire", "reg", "integer", "logic", or user-defined type name
-	Signed      bool
-	Width       *BitRange
-	Name        string
-	NameRange   Range
-	EnumMembers []EnumMember
-	Range       Range
+	Kind         string // "wire", "reg", "integer", "logic", or user-defined type name
+	Signed       bool
+	Width        *BitRange
+	Name         string
+	NameRange    Range
+	EnumMembers  []EnumMember
+	StructFields []StructField
+	Range        Range
 }
 
 func (d *NetDecl) ItemRange() Range { return d.Range }

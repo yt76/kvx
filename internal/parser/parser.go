@@ -3117,7 +3117,7 @@ func (p *Parser) parseTypedefDecl(mod *ast.ModuleDecl, file *ast.SourceFile) {
 			baseParts = append(baseParts, p.advance().Literal)
 		}
 		if p.cur().Type == lexer.TokenLBrace {
-			p.parseStructBody()
+			td.StructFields = p.parseStructBody()
 		} else {
 			p.addError(p.cur().Range, fmt.Sprintf("expected '{' in %s typedef", baseParts[0]))
 		}
@@ -3176,6 +3176,7 @@ func (p *Parser) parseEnumOrStructVarDecl(mod *ast.ModuleDecl) {
 	startTok := p.advance() // enum / struct / union
 	kind := startTok.Literal
 	var enumMembers []ast.EnumMember
+	var structFields []ast.StructField
 
 	if startTok.Type == lexer.TokenEnum {
 		if isPortNetType(p.cur().Type) || isParamTypeKeyword(p.cur().Type) {
@@ -3203,7 +3204,7 @@ func (p *Parser) parseEnumOrStructVarDecl(mod *ast.ModuleDecl) {
 			p.advance()
 		}
 		if p.cur().Type == lexer.TokenLBrace {
-			p.parseStructBody()
+			structFields = p.parseStructBody()
 		} else {
 			p.addError(p.cur().Range, fmt.Sprintf("expected '{' in %s declaration", kind))
 		}
@@ -3230,10 +3231,11 @@ func (p *Parser) parseEnumOrStructVarDecl(mod *ast.ModuleDecl) {
 
 		if mod != nil {
 			decl := &ast.NetDecl{
-				Kind:      kind,
-				Name:      nameTok.Literal,
-				NameRange: nameTok.Range,
-				Range:     ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: endPos},
+				Kind:         kind,
+				Name:         nameTok.Literal,
+				NameRange:    nameTok.Range,
+				StructFields: structFields,
+				Range:        ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: endPos},
 			}
 			if first {
 				decl.EnumMembers = enumMembers
@@ -3297,26 +3299,160 @@ func (p *Parser) parseEnumBody(mod *ast.ModuleDecl) []ast.EnumMember {
 	return members
 }
 
-func (p *Parser) parseStructBody() {
+func (p *Parser) parseStructBody() []ast.StructField {
 	openTok := p.advance() // '{'
-	depth := 1
-	for !p.isEOF() && depth > 0 {
-		if p.cur().Type == lexer.TokenEndmodule {
-			break
+	var fields []ast.StructField
+
+	for !p.isEOF() && p.cur().Type != lexer.TokenRBrace && p.cur().Type != lexer.TokenEndmodule {
+		if p.cur().Type == lexer.TokenSemicolon {
+			p.advance()
+			continue
 		}
-		tok := p.advance()
-		switch tok.Type {
-		case lexer.TokenLBrace:
-			depth++
-		case lexer.TokenRBrace:
-			depth--
-		case lexer.TokenIllegal:
-			p.addError(tok.Range, tok.Literal)
+		// Collect tokens of a single struct member declaration up to ';' (respecting nested braces/brackets).
+		memberStart := p.cur().Range
+		var toks []lexer.Token
+		braceDepth := 0
+		for !p.isEOF() {
+			if braceDepth == 0 && (p.cur().Type == lexer.TokenSemicolon || p.cur().Type == lexer.TokenRBrace || p.cur().Type == lexer.TokenEndmodule) {
+				break
+			}
+			tok := p.advance()
+			if tok.Type == lexer.TokenLBrace {
+				braceDepth++
+			} else if tok.Type == lexer.TokenRBrace && braceDepth > 0 {
+				braceDepth--
+			} else if tok.Type == lexer.TokenIllegal {
+				p.addError(tok.Range, tok.Literal)
+			}
+			toks = append(toks, tok)
+		}
+		if p.cur().Type == lexer.TokenSemicolon {
+			p.advance()
+		}
+		if len(toks) >= 2 {
+			fields = append(fields, extractStructFields(toks, memberStart)...)
 		}
 	}
-	if depth != 0 {
+
+	if p.cur().Type == lexer.TokenRBrace {
+		p.advance()
+	} else {
 		p.addError(openTok.Range, "expected '}' to close struct/union body")
 	}
+	return fields
+}
+
+func extractStructFields(toks []lexer.Token, startRange ast.Range) []ast.StructField {
+	// Skip top-level brace/bracket contents when finding field names at the end of a member declaration.
+	// Find where the type specification ends and the comma-separated field name list begins.
+	// Example: `logic [7:0] addr, data [0:3]` -> type="logic [7:0]", names=["addr", "data"].
+	var out []ast.StructField
+	// Walk backwards over top-level tokens to locate field names (separated by commas, optionally followed by `[...]` or `= expr`).
+	// For simplicity and reliability, split top-level tokens into segments around `,` after the first field name.
+	// First, find the index of the first field name: scan forward past type keywords, `pkg::type`, nested `{...}`, `signed`/`unsigned`, and packed `[...]`.
+	i := 0
+	n := len(toks)
+	// Skip leading type tokens
+	if i < n && (toks[i].Type == lexer.TokenStruct || toks[i].Type == lexer.TokenUnion || toks[i].Type == lexer.TokenEnum) {
+		i++
+		if i < n && toks[i].Type == lexer.TokenPacked {
+			i++
+		}
+		if i < n && (toks[i].Type == lexer.TokenSigned || toks[i].Type == lexer.TokenUnsigned) {
+			i++
+		}
+		if i < n && toks[i].Type == lexer.TokenLBrace {
+			depth := 1
+			i++
+			for i < n && depth > 0 {
+				if toks[i].Type == lexer.TokenLBrace {
+					depth++
+				} else if toks[i].Type == lexer.TokenRBrace {
+					depth--
+				}
+				i++
+			}
+		}
+	} else if i < n {
+		// Built-in type keyword or user-defined type (`type_t` or `pkg::type_t`)
+		i++
+		if i+1 < n && toks[i].Type == lexer.TokenColonColon && toks[i+1].Type == lexer.TokenIdent {
+			i += 2
+		}
+		if i < n && (toks[i].Type == lexer.TokenSigned || toks[i].Type == lexer.TokenUnsigned) {
+			i++
+		}
+	}
+	// Skip packed dimensions `[...]` belonging to the type
+	for i < n && toks[i].Type == lexer.TokenLBracket {
+		depth := 1
+		i++
+		for i < n && depth > 0 {
+			if toks[i].Type == lexer.TokenLBracket {
+				depth++
+			} else if toks[i].Type == lexer.TokenRBracket {
+				depth--
+			}
+			i++
+		}
+	}
+	if i >= n {
+		return nil
+	}
+
+	var typeParts []string
+	for j := 0; j < i; j++ {
+		if toks[j].Type == lexer.TokenLBrace {
+			typeParts = append(typeParts, "{...}")
+			depth := 1
+			j++
+			for j < i && depth > 0 {
+				if toks[j].Type == lexer.TokenLBrace {
+					depth++
+				} else if toks[j].Type == lexer.TokenRBrace {
+					depth--
+				}
+				j++
+			}
+			j--
+			continue
+		}
+		typeParts = append(typeParts, toks[j].Literal)
+	}
+	typeDetail := strings.Join(typeParts, " ")
+
+	for i < n {
+		if toks[i].Type == lexer.TokenIdent {
+			nameTok := toks[i]
+			out = append(out, ast.StructField{
+				TypeDetail: typeDetail,
+				Name:       nameTok.Literal,
+				NameRange:  nameTok.Range,
+				Range:      ast.Range{File: startRange.File, Start: startRange.Start, End: nameTok.Range.End},
+			})
+			i++
+			// Skip optional unpacked dimensions `[...]` and optional default `= expr` up to `,`
+			depth := 0
+			for i < n {
+				if depth == 0 && toks[i].Type == lexer.TokenComma {
+					i++
+					break
+				}
+				switch toks[i].Type {
+				case lexer.TokenLBracket, lexer.TokenLParen, lexer.TokenLBrace:
+					depth++
+				case lexer.TokenRBracket, lexer.TokenRParen, lexer.TokenRBrace:
+					if depth > 0 {
+						depth--
+					}
+				}
+				i++
+			}
+			continue
+		}
+		i++
+	}
+	return out
 }
 
 func (p *Parser) isAttrEnd() bool {

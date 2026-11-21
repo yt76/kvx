@@ -368,6 +368,60 @@ func (s *DocumentStore) parseOptionsLocked(uri string) parser.Options {
 	}
 }
 
+// FindModuleScope searches open documents and indexed workspace files for a ModuleScope by name.
+func (s *DocumentStore) FindModuleScope(moduleName string) (*analyzer.ModuleScope, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, doc := range s.docs {
+		if doc.Analysis == nil {
+			continue
+		}
+		if scope, ok := doc.Analysis.Modules[moduleName]; ok {
+			return scope, true
+		}
+	}
+	for uri, doc := range s.workspaceDocs {
+		if _, isOpen := s.docs[uri]; isOpen {
+			continue
+		}
+		if doc.Analysis == nil {
+			continue
+		}
+		if scope, ok := doc.Analysis.Modules[moduleName]; ok {
+			return scope, true
+		}
+	}
+	return nil, false
+}
+
+// FindInterfaceScope searches open documents and indexed workspace files for an InterfaceScope by name.
+func (s *DocumentStore) FindInterfaceScope(ifaceName string) (*analyzer.InterfaceScope, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, doc := range s.docs {
+		if doc.Analysis == nil {
+			continue
+		}
+		if scope, ok := doc.Analysis.Interfaces[ifaceName]; ok {
+			return scope, true
+		}
+	}
+	for uri, doc := range s.workspaceDocs {
+		if _, isOpen := s.docs[uri]; isOpen {
+			continue
+		}
+		if doc.Analysis == nil {
+			continue
+		}
+		if scope, ok := doc.Analysis.Interfaces[ifaceName]; ok {
+			return scope, true
+		}
+	}
+	return nil, false
+}
+
 // FindModule searches open documents and indexed workspace files for a module declaration by name.
 func (s *DocumentStore) FindModule(moduleName string) (string, *analyzer.Symbol, bool) {
 	s.mu.RLock()

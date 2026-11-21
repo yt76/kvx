@@ -21,6 +21,7 @@ const (
 	KindFunction  SymbolKind = "function"
 	KindTask      SymbolKind = "task"
 	KindType      SymbolKind = "type"
+	KindField     SymbolKind = "field"
 	KindPackage   SymbolKind = "package"
 )
 
@@ -29,12 +30,14 @@ type Symbol struct {
 	Name           string
 	Kind           SymbolKind
 	TypeDetail     string
+	TypeName       string
 	Signature      string
 	Range          ast.Range
 	SelectionRange ast.Range
 	TargetModule   string
 	PackageName    string
 	InterfaceName  string
+	Fields         []*Symbol
 	Children       []*Symbol
 }
 
@@ -215,6 +218,7 @@ func AnalyzeWithWorkspace(file *ast.SourceFile, ctx WorkspaceContext) *Analysis 
 				Signature:      sig,
 				Range:          td.Range,
 				SelectionRange: td.NameRange,
+				Fields:         buildStructFieldSymbols(td.StructFields),
 			}
 			res.GlobalSymbols[td.Name] = sym
 			res.GlobalOrder = append(res.GlobalOrder, sym)
@@ -455,6 +459,7 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[
 					Name:           d.Name,
 					Kind:           KindPort,
 					TypeDetail:     detail,
+					TypeName:       d.NetType,
 					Signature:      detail + " " + d.Name,
 					Range:          d.Range,
 					SelectionRange: d.NameRange,
@@ -485,6 +490,7 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[
 					Signature:      sig,
 					Range:          d.Range,
 					SelectionRange: d.NameRange,
+					Fields:         buildStructFieldSymbols(d.StructFields),
 				}, inGenerate)
 				for _, em := range d.EnumMembers {
 					emSig := "enum " + em.Name
@@ -507,9 +513,11 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[
 					Name:           d.Name,
 					Kind:           KindNet,
 					TypeDetail:     detail,
+					TypeName:       d.Kind,
 					Signature:      detail + " " + d.Name,
 					Range:          d.Range,
 					SelectionRange: d.NameRange,
+					Fields:         buildStructFieldSymbols(d.StructFields),
 				}, inGenerate)
 				for _, em := range d.EnumMembers {
 					emSig := "enum " + em.Name
@@ -1034,6 +1042,164 @@ func (a *Analysis) resolveImportAt(imp *ast.ImportDecl, pos ast.Position) *Symbo
 		}
 	}
 	return nil
+}
+
+// PackageCompletions returns all symbols declared in pkgName (local or workspace package).
+func (a *Analysis) PackageCompletions(pkgName string) []*Symbol {
+	if a == nil || pkgName == "" {
+		return nil
+	}
+	if pkgScope, ok := a.AllPackages[pkgName]; ok {
+		return pkgScope.Order
+	}
+	return nil
+}
+
+// MemberCompletions returns member symbols accessible via `baseName.` at pos:
+//   - modports when baseName is an interface type (`axi_if.`)
+//   - interface signals/functions/tasks/modports when baseName is an interface port or instance (`bus.`, `u_axi.`)
+//   - module ports/params/signals when baseName is a module instance (`u_sub.`)
+//   - struct/union fields when baseName is a struct/union variable (`pkt.`)
+func (a *Analysis) MemberCompletions(pos ast.Position, baseName string, extModuleLookup func(string) *ModuleScope) []*Symbol {
+	if a == nil || baseName == "" {
+		return nil
+	}
+
+	// 1. Direct interface type name (`axi_if.` in a module port list) -> suggest modports.
+	if ifaceScope, ok := a.AllInterfaces[baseName]; ok {
+		var modports []*Symbol
+		for _, sym := range ifaceScope.Order {
+			if sym.Kind == KindModport {
+				modports = append(modports, sym)
+			}
+		}
+		if len(modports) > 0 {
+			return modports
+		}
+		return ifaceScope.Order
+	}
+
+	// 2. Resolve baseName in the enclosing scope at pos.
+	var localSyms, modSyms map[string]*Symbol
+	if scope := a.ModuleAt(pos); scope != nil {
+		modSyms = scope.Symbols
+		for _, fnScope := range scope.Functions {
+			if fnScope.Decl.Range.Contains(pos) {
+				localSyms = fnScope.Symbols
+				break
+			}
+		}
+		if localSyms == nil {
+			for _, taskScope := range scope.Tasks {
+				if taskScope.Decl.Range.Contains(pos) {
+					localSyms = taskScope.Symbols
+					break
+				}
+			}
+		}
+		if localSyms == nil {
+			for _, blkScope := range scope.Blocks {
+				if blkScope.Block.Range.Contains(pos) {
+					localSyms = blkScope.Symbols
+					break
+				}
+			}
+		}
+	} else if ifaceScope := a.InterfaceAt(pos); ifaceScope != nil {
+		modSyms = ifaceScope.Symbols
+	}
+
+	sym, ok := resolveRefInScopes(baseName, localSyms, modSyms, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false)
+	if !ok || sym == nil {
+		return nil
+	}
+
+	// 2a. Inline struct/union variable.
+	if len(sym.Fields) > 0 {
+		return sym.Fields
+	}
+
+	// 2b. Interface port or module/interface instance.
+	if sym.TargetModule != "" {
+		if ifaceScope, found := a.AllInterfaces[sym.TargetModule]; found {
+			return ifaceScope.Order
+		}
+		if modScope, found := a.Modules[sym.TargetModule]; found {
+			return modScope.Order
+		}
+		if extModuleLookup != nil {
+			if modScope := extModuleLookup(sym.TargetModule); modScope != nil {
+				return modScope.Order
+			}
+		}
+	}
+
+	// 2c. Typed variable or port (`pkt_t pkt;`, `pkg::pkt_t pkt;`, or `axi_if u_if;`).
+	if sym.TypeName != "" {
+		if ifaceScope, found := a.AllInterfaces[sym.TypeName]; found {
+			return ifaceScope.Order
+		}
+		if typeSym, found := resolveRefInScopes(sym.TypeName, localSyms, modSyms, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); found && typeSym != nil && len(typeSym.Fields) > 0 {
+			return typeSym.Fields
+		}
+	}
+
+	return nil
+}
+
+// InstantiationAt returns the ModuleInst enclosing pos, if any.
+func (a *Analysis) InstantiationAt(pos ast.Position) *ast.ModuleInst {
+	if a == nil {
+		return nil
+	}
+	var findInItems func(items []ast.ModuleItem) *ast.ModuleInst
+	findInItems = func(items []ast.ModuleItem) *ast.ModuleInst {
+		for _, item := range items {
+			switch d := item.(type) {
+			case *ast.ModuleInst:
+				if d.Range.Contains(pos) {
+					return d
+				}
+			case *ast.GenerateBlock:
+				if found := findInItems(d.Items); found != nil {
+					return found
+				}
+			}
+		}
+		return nil
+	}
+	if scope := a.ModuleAt(pos); scope != nil && scope.Module != nil {
+		return findInItems(scope.Module.Items)
+	}
+	if ifaceScope := a.InterfaceAt(pos); ifaceScope != nil && ifaceScope.Interface != nil {
+		return findInItems(ifaceScope.Interface.Items)
+	}
+	return nil
+}
+
+func buildStructFieldSymbols(fields []ast.StructField) []*Symbol {
+	if len(fields) == 0 {
+		return nil
+	}
+	out := make([]*Symbol, 0, len(fields))
+	for _, f := range fields {
+		if f.Name == "" {
+			continue
+		}
+		sig := f.Name
+		if f.TypeDetail != "" {
+			sig = f.TypeDetail + " " + f.Name
+		}
+		out = append(out, &Symbol{
+			Name:           f.Name,
+			Kind:           KindField,
+			TypeDetail:     f.TypeDetail,
+			Signature:      sig,
+			Range:          f.Range,
+			SelectionRange: f.NameRange,
+		})
+	}
+	return out
 }
 
 // CompletionsAt returns symbols available in scope at pos.

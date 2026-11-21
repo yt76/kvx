@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"sort"
 
 	"kvx/internal/analyzer"
 	"kvx/internal/ast"
-	"kvx/internal/lexer"
 )
 
 const (
@@ -408,62 +406,14 @@ func (s *Server) handleCompletion(msg IncomingMessage) error {
 		return s.sendError(msg.ID, CodeInvalidParams, fmt.Sprintf("invalid completion params: %v", err))
 	}
 
-	var items []CompletionItem
-	seen := make(map[string]bool)
-
-	if doc, ok := s.docs.Get(params.TextDocument.URI); ok && doc.Analysis != nil {
-		pos := ast.Position{Line: params.Position.Line, Column: params.Position.Character}
-		for _, sym := range doc.Analysis.CompletionsAt(pos) {
-			if sym.Name == "" || seen[sym.Name] {
-				continue
-			}
-			seen[sym.Name] = true
-			items = append(items, CompletionItem{
-				Label:  sym.Name,
-				Kind:   toCompletionKind(sym.Kind),
-				Detail: sym.TypeDetail,
-			})
-		}
+	var docPtr *Document
+	if doc, ok := s.docs.Get(params.TextDocument.URI); ok {
+		docPtr = &doc
 	}
-
-	for _, sym := range s.docs.WorkspaceModules() {
-		if sym.Name == "" || seen[sym.Name] {
-			continue
-		}
-		seen[sym.Name] = true
-		items = append(items, CompletionItem{
-			Label:  sym.Name,
-			Kind:   toCompletionKind(sym.Kind),
-			Detail: sym.TypeDetail,
-		})
+	items := computeCompletions(docPtr, s.docs, params.Position)
+	if items == nil {
+		items = []CompletionItem{}
 	}
-
-	for _, sym := range s.docs.WorkspaceInterfaces() {
-		if sym.Name == "" || seen[sym.Name] {
-			continue
-		}
-		seen[sym.Name] = true
-		items = append(items, CompletionItem{
-			Label:  sym.Name,
-			Kind:   toCompletionKind(sym.Kind),
-			Detail: sym.TypeDetail,
-		})
-	}
-
-	kwList := lexer.Keywords()
-	sort.Strings(kwList)
-	for _, kw := range kwList {
-		if seen[kw] {
-			continue
-		}
-		seen[kw] = true
-		items = append(items, CompletionItem{
-			Label:  kw,
-			Kind:   CompletionKindKeyword,
-			Detail: "keyword",
-		})
-	}
-
 	return s.sendResult(msg.ID, items)
 }
 
@@ -506,7 +456,7 @@ func toLSPSymbolKind(k analyzer.SymbolKind) LSPSymbolKind {
 		return LSPSymbolKindModule
 	case analyzer.KindInterface:
 		return LSPSymbolKindInterface
-	case analyzer.KindPort, analyzer.KindModport:
+	case analyzer.KindPort, analyzer.KindModport, analyzer.KindField:
 		return LSPSymbolKindField
 	case analyzer.KindNet:
 		return LSPSymbolKindVariable
@@ -529,7 +479,7 @@ func toCompletionKind(k analyzer.SymbolKind) CompletionItemKind {
 		return CompletionKindModule
 	case analyzer.KindInterface:
 		return CompletionKindInterface
-	case analyzer.KindPort, analyzer.KindModport:
+	case analyzer.KindPort, analyzer.KindModport, analyzer.KindField:
 		return CompletionKindField
 	case analyzer.KindParam:
 		return CompletionKindConstant
@@ -591,7 +541,9 @@ func (s *Server) handleInitialize(msg IncomingMessage) error {
 			DefinitionProvider:     true,
 			ReferencesProvider:     true,
 			DocumentSymbolProvider: true,
-			CompletionProvider:     &CompletionOptions{},
+			CompletionProvider: &CompletionOptions{
+				TriggerCharacters: []string{".", ":"},
+			},
 			SemanticTokensProvider: &SemanticTokensOptions{
 				Legend: defaultSemanticTokensLegend,
 				Full:   true,

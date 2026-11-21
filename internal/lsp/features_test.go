@@ -1473,3 +1473,182 @@ func TestLSPCrossFileInterfaceResolution(t *testing.T) {
 		t.Errorf("hover(master) = %q, want to contain 'modport master'", hover.Contents.Value)
 	}
 }
+
+func TestLSPContextAwareCompletion(t *testing.T) {
+	root := t.TempDir()
+	rtlDir := filepath.Join(root, "rtl")
+	if err := os.MkdirAll(rtlDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgPath := filepath.Join(rtlDir, "defs_pkg.sv")
+	pkgSrc := "package defs_pkg;\n" +
+		"  localparam int DATA_W = 16;\n" +
+		"  typedef struct packed {\n" +
+		"    logic [7:0] addr;\n" +
+		"    logic       valid;\n" +
+		"  } pkt_t;\n" +
+		"endpackage\n"
+	if err := os.WriteFile(pkgPath, []byte(pkgSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ifPath := filepath.Join(rtlDir, "bus_if.sv")
+	ifSrc := "interface bus_if (input logic clk);\n" +
+		"  logic valid;\n" +
+		"  logic ready;\n" +
+		"  modport master (input clk, ready, output valid);\n" +
+		"  modport slave  (input clk, valid, output ready);\n" +
+		"endinterface\n"
+	if err := os.WriteFile(ifPath, []byte(ifSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	subPath := filepath.Join(rtlDir, "sub_unit.sv")
+	subSrc := "module sub_unit #(parameter int WIDTH = 8) (input logic a, output logic y);\n" +
+		"  assign y = a;\n" +
+		"endmodule\n"
+	if err := os.WriteFile(subPath, []byte(subSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	topPath := filepath.Join(rtlDir, "top.sv")
+	topURI := filePathToURI(topPath)
+	// Lines:
+	// 0: module top (bus_if.master bus, input logic clk);
+	// 1:   defs_pkg::pkt_t pkt;
+	// 2:   logic x;
+	// 3:   assign x = defs_pkg::
+	// 4:   assign x = bus.
+	// 5:   assign x = pkt.
+	// 6:   sub_unit #(.
+	// 7:   ) u_sub (.
+	// 8:   );
+	// 9: endmodule
+	topSrc := "module top (bus_if.master bus, input logic clk);\n" +
+		"  defs_pkg::pkt_t pkt;\n" +
+		"  logic x;\n" +
+		"  assign x = defs_pkg::\n" +
+		"  assign x = bus.\n" +
+		"  assign x = pkt.\n" +
+		"  sub_unit #(.\n" +
+		"  ) u_sub (.\n" +
+		"  );\n" +
+		"endmodule\n"
+
+	var in, out bytes.Buffer
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"rootUri": filePathToURI(root),
+		},
+	})
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/didOpen",
+		"params": DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        topURI,
+				LanguageID: "systemverilog",
+				Version:    1,
+				Text:       topSrc,
+			},
+		},
+	})
+
+	requests := []struct {
+		id  int
+		pos Position
+	}{
+		{2, Position{Line: 3, Character: 23}}, // defs_pkg::
+		{3, Position{Line: 0, Character: 19}}, // bus_if. (modport completion)
+		{4, Position{Line: 4, Character: 17}}, // bus. (interface members)
+		{5, Position{Line: 5, Character: 17}}, // pkt. (struct fields)
+		{6, Position{Line: 6, Character: 14}}, // sub_unit #(. (param completion)
+		{7, Position{Line: 7, Character: 12}}, // ) u_sub (. (port completion)
+	}
+	for _, r := range requests {
+		writeFramedJSON(t, &in, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      r.id,
+			"method":  "textDocument/completion",
+			"params": CompletionParams{
+				TextDocument: TextDocumentIdentifier{URI: topURI},
+				Position:     r.pos,
+			},
+		})
+	}
+
+	srv := NewServer(&in, &out, nil)
+	if err := srv.Run(); err != nil {
+		t.Fatalf("Server.Run() error: %v", err)
+	}
+
+	outReader := bufio.NewReader(&out)
+	respInit := readFramedResponse(t, outReader)
+	rawInit, _ := json.Marshal(respInit.Result)
+	var initRes InitializeResult
+	if err := json.Unmarshal(rawInit, &initRes); err != nil {
+		t.Fatalf("unmarshaling InitializeResult: %v", err)
+	}
+	if initRes.Capabilities.CompletionProvider == nil || len(initRes.Capabilities.CompletionProvider.TriggerCharacters) < 2 {
+		t.Fatalf("expected triggerCharacters ['.', ':'], got %+v", initRes.Capabilities.CompletionProvider)
+	}
+
+	_, _ = readFramedNotification(t, outReader) // publishDiagnostics
+
+	readLabels := func(wantID string) map[string]bool {
+		resp := readFramedResponse(t, outReader)
+		if string(resp.ID) != wantID {
+			t.Fatalf("got response ID=%s, want %s", string(resp.ID), wantID)
+		}
+		raw, _ := json.Marshal(resp.Result)
+		var items []CompletionItem
+		if err := json.Unmarshal(raw, &items); err != nil {
+			t.Fatalf("unmarshaling completions (id=%s): %v", wantID, err)
+		}
+		m := make(map[string]bool, len(items))
+		for _, it := range items {
+			m[it.Label] = true
+		}
+		return m
+	}
+
+	// id=2: defs_pkg:: -> DATA_W, pkt_t (no keywords like "module")
+	lbl2 := readLabels("2")
+	if !lbl2["DATA_W"] || !lbl2["pkt_t"] || lbl2["module"] {
+		t.Errorf("defs_pkg:: completions = %v, want DATA_W and pkt_t only", lbl2)
+	}
+
+	// id=3: bus_if. -> master, slave
+	lbl3 := readLabels("3")
+	if !lbl3["master"] || !lbl3["slave"] || lbl3["module"] {
+		t.Errorf("bus_if. completions = %v, want master and slave", lbl3)
+	}
+
+	// id=4: bus. -> valid, ready, clk
+	lbl4 := readLabels("4")
+	if !lbl4["valid"] || !lbl4["ready"] || !lbl4["clk"] || lbl4["module"] {
+		t.Errorf("bus. completions = %v, want interface members valid/ready/clk", lbl4)
+	}
+
+	// id=5: pkt. -> addr, valid
+	lbl5 := readLabels("5")
+	if !lbl5["addr"] || !lbl5["valid"] || lbl5["module"] {
+		t.Errorf("pkt. completions = %v, want struct fields addr and valid", lbl5)
+	}
+
+	// id=6: sub_unit #(. -> WIDTH
+	lbl6 := readLabels("6")
+	if !lbl6["WIDTH"] || lbl6["a"] || lbl6["module"] {
+		t.Errorf("sub_unit #(. completions = %v, want WIDTH", lbl6)
+	}
+
+	// id=7: u_sub (. -> a, y
+	lbl7 := readLabels("7")
+	if !lbl7["a"] || !lbl7["y"] || lbl7["WIDTH"] || lbl7["module"] {
+		t.Errorf("u_sub (. completions = %v, want ports a and y", lbl7)
+	}
+}
