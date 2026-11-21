@@ -1652,3 +1652,159 @@ func TestLSPContextAwareCompletion(t *testing.T) {
 		t.Errorf("u_sub (. completions = %v, want ports a and y", lbl7)
 	}
 }
+
+func TestLSPCrossFileMemberAndPortResolution(t *testing.T) {
+	root := t.TempDir()
+	rtlDir := filepath.Join(root, "rtl")
+	if err := os.MkdirAll(rtlDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgPath := filepath.Join(rtlDir, "defs_pkg.sv")
+	pkgSrc := "package defs_pkg;\n" +
+		"  typedef struct packed {\n" +
+		"    logic [7:0] addr;\n" +
+		"    logic       valid;\n" +
+		"  } pkt_t;\n" +
+		"endpackage\n"
+	if err := os.WriteFile(pkgPath, []byte(pkgSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ifPath := filepath.Join(rtlDir, "bus_if.sv")
+	ifSrc := "interface bus_if (input logic clk);\n" +
+		"  logic valid;\n" +
+		"  modport master (input clk, output valid);\n" +
+		"endinterface\n"
+	if err := os.WriteFile(ifPath, []byte(ifSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	subPath := filepath.Join(rtlDir, "sub_unit.sv")
+	subSrc := "module sub_unit (\n" +
+		"  input  logic a,\n" +
+		"  output logic y\n" +
+		");\n" +
+		"  assign y = a;\n" +
+		"endmodule\n"
+	if err := os.WriteFile(subPath, []byte(subSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	topPath := filepath.Join(rtlDir, "top.sv")
+	topSrc := "module top (bus_if.master bus, input defs_pkg::pkt_t pkt, output logic [7:0] out_a, output logic out_y);\n" +
+		"  assign bus.valid = pkt.valid;\n" +
+		"  assign out_a = pkt.addr;\n" +
+		"  sub_unit u_sub (.a(pkt.valid), .y(out_y));\n" +
+		"endmodule\n"
+
+	pkgURI := filePathToURI(pkgPath)
+	ifURI := filePathToURI(ifPath)
+	subURI := filePathToURI(subPath)
+	topURI := filePathToURI(topPath)
+
+	var in, out bytes.Buffer
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"rootUri": filePathToURI(root),
+		},
+	})
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "textDocument/didOpen",
+		"params": DidOpenTextDocumentParams{
+			TextDocument: TextDocumentItem{
+				URI:        topURI,
+				LanguageID: "systemverilog",
+				Version:    1,
+				Text:       topSrc,
+			},
+		},
+	})
+	// id=2: Go to definition on `valid` in `bus.valid` (line 1, col 14) -> bus_if.sv line 1
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 1, Character: 14},
+		},
+	})
+	// id=3: Go to definition on `addr` in `pkt.addr` (line 2, col 22) -> defs_pkg.sv line 2
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 2, Character: 22},
+		},
+	})
+	// id=4: Hover on `addr` in `pkt.addr` (line 2, col 22) -> contains "addr"
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      4,
+		"method":  "textDocument/hover",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 2, Character: 22},
+		},
+	})
+	// id=5: Go to definition on named port `.a` in `sub_unit u_sub (.a(...))` (line 3, col 19) -> sub_unit.sv line 1
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      5,
+		"method":  "textDocument/definition",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 3, Character: 19},
+		},
+	})
+
+	srv := NewServer(&in, &out, nil)
+	if err := srv.Run(); err != nil {
+		t.Fatalf("Server.Run() error: %v", err)
+	}
+
+	outReader := bufio.NewReader(&out)
+	_ = readFramedResponse(t, outReader) // initialize
+
+	_, diagParams := readFramedNotification(t, outReader)
+	if len(diagParams.Diagnostics) != 0 {
+		t.Fatalf("expected 0 diagnostics, got %+v", diagParams.Diagnostics)
+	}
+
+	checkDef := func(wantID, wantURI string, wantLine int) {
+		resp := readFramedResponse(t, outReader)
+		if string(resp.ID) != wantID {
+			t.Fatalf("got ID=%s, want %s", string(resp.ID), wantID)
+		}
+		raw, _ := json.Marshal(resp.Result)
+		var loc Location
+		if err := json.Unmarshal(raw, &loc); err != nil {
+			t.Fatalf("unmarshaling Location (id=%s): %v", wantID, err)
+		}
+		if loc.URI != wantURI || loc.Range.Start.Line != wantLine {
+			t.Errorf("definition (id=%s) = %+v, want URI=%s line=%d", wantID, loc, wantURI, wantLine)
+		}
+	}
+
+	checkDef("2", ifURI, 1)
+	checkDef("3", pkgURI, 2)
+
+	respHover := readFramedResponse(t, outReader)
+	rawHover, _ := json.Marshal(respHover.Result)
+	var hover Hover
+	if err := json.Unmarshal(rawHover, &hover); err != nil {
+		t.Fatalf("unmarshaling Hover: %v", err)
+	}
+	if !strings.Contains(hover.Contents.Value, "addr") {
+		t.Errorf("hover(pkt.addr) = %q, want to contain 'addr'", hover.Contents.Value)
+	}
+
+	checkDef("5", subURI, 1)
+}

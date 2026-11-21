@@ -310,14 +310,15 @@ func analyzeInterface(iface *ast.InterfaceDecl, globals map[string]*Symbol, allP
 	}
 
 	dummyMod := &ast.ModuleDecl{
-		Name:      iface.Name,
-		NameRange: iface.NameRange,
-		Range:     iface.Range,
-		Imports:   iface.Imports,
-		Params:    iface.Params,
-		Ports:     iface.Ports,
-		Items:     iface.Items,
-		Refs:      iface.Refs,
+		Name:       iface.Name,
+		NameRange:  iface.NameRange,
+		Range:      iface.Range,
+		Imports:    iface.Imports,
+		Params:     iface.Params,
+		Ports:      iface.Ports,
+		Items:      iface.Items,
+		Refs:       iface.Refs,
+		MemberRefs: iface.MemberRefs,
 	}
 	modScope := analyzeModule(dummyMod, globals, allPkgs, allIfaces, fileHasExtWildcard, diags)
 
@@ -354,18 +355,22 @@ func analyzePackage(pkg *ast.PackageDecl, globals map[string]*Symbol, allPkgs ma
 	}
 
 	dummyMod := &ast.ModuleDecl{
-		Name:      pkg.Name,
-		NameRange: pkg.NameRange,
-		Range:     pkg.Range,
-		Params:    pkg.Params,
-		Items:     pkg.Items,
-		Refs:      pkg.Refs,
+		Name:       pkg.Name,
+		NameRange:  pkg.NameRange,
+		Range:      pkg.Range,
+		Params:     pkg.Params,
+		Items:      pkg.Items,
+		Refs:       pkg.Refs,
+		MemberRefs: pkg.MemberRefs,
 	}
 	modScope := analyzeModule(dummyMod, globals, allPkgs, allIfaces, false, diags)
 
-	// Tag all package symbols with PackageName for cross-file resolution.
+	// Tag all package symbols (and their struct fields) with PackageName for cross-file resolution.
 	for _, sym := range modScope.Order {
 		sym.PackageName = pkg.Name
+		for _, f := range sym.Fields {
+			f.PackageName = pkg.Name
+		}
 	}
 	pkgSym.Children = modScope.Symbol.Children
 
@@ -666,7 +671,89 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[
 		checkRef(ref, nil)
 	}
 
+	// Validate member accesses against known structs and interfaces.
+	for _, mref := range mod.MemberRefs {
+		if mref.Range.File != "" {
+			continue
+		}
+		var localSyms map[string]*Symbol
+		pos := mref.Range.Start
+		for _, fnScope := range scope.Functions {
+			if fnScope.Decl.Range.Contains(pos) {
+				localSyms = fnScope.Symbols
+				break
+			}
+		}
+		if localSyms == nil {
+			for _, taskScope := range scope.Tasks {
+				if taskScope.Decl.Range.Contains(pos) {
+					localSyms = taskScope.Symbols
+					break
+				}
+			}
+		}
+		if localSyms == nil {
+			for _, blkScope := range scope.Blocks {
+				if blkScope.Block.Range.Contains(pos) {
+					localSyms = blkScope.Symbols
+					break
+				}
+			}
+		}
+		baseSym, ok := resolveRefInScopes(mref.BaseName, localSyms, scope.Symbols, globals, allPkgs, allIfaces, false)
+		if !ok || baseSym == nil {
+			continue
+		}
+		// Check inline struct/union fields
+		if len(baseSym.Fields) > 0 {
+			if findFieldByName(baseSym.Fields, mref.MemberName) == nil {
+				*diags = append(*diags, SemanticDiagnostic{
+					Range:   mref.Range,
+					Message: fmt.Sprintf("unknown field %q of %q", mref.MemberName, mref.BaseName),
+					IsError: false,
+				})
+			}
+			continue
+		}
+		// Check known interface members (signals, modports, functions, tasks, params)
+		ifaceName := baseSym.TargetModule
+		if ifaceName == "" {
+			ifaceName = baseSym.TypeName
+		}
+		if ifaceScope, isIface := allIfaces[ifaceName]; isIface {
+			if _, exists := ifaceScope.Symbols[mref.MemberName]; !exists {
+				*diags = append(*diags, SemanticDiagnostic{
+					Range:   mref.Range,
+					Message: fmt.Sprintf("unknown member %q of interface %q", mref.MemberName, ifaceName),
+					IsError: false,
+				})
+			}
+			continue
+		}
+		// Check typed struct/union variable
+		if baseSym.TypeName != "" {
+			if typeSym, found := resolveRefInScopes(baseSym.TypeName, localSyms, scope.Symbols, globals, allPkgs, allIfaces, false); found && typeSym != nil && len(typeSym.Fields) > 0 {
+				if findFieldByName(typeSym.Fields, mref.MemberName) == nil {
+					*diags = append(*diags, SemanticDiagnostic{
+						Range:   mref.Range,
+						Message: fmt.Sprintf("unknown field %q of struct %q", mref.MemberName, typeSym.Name),
+						IsError: false,
+					})
+				}
+			}
+		}
+	}
+
 	return scope
+}
+
+func findFieldByName(fields []*Symbol, name string) *Symbol {
+	for _, f := range fields {
+		if f.Name == name {
+			return f
+		}
+	}
+	return nil
 }
 
 func resolveRefInScopes(
@@ -1025,7 +1112,175 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			}
 		}
 	}
+
+	if sym, _ := a.ResolveMemberAt(pos, nil); sym != nil {
+		return sym
+	}
+	if sym, _ := a.ResolveInstPortAt(pos, nil); sym != nil {
+		return sym
+	}
 	return nil
+}
+
+// ResolveMemberAt resolves a dot-qualified member reference (`bus.valid`, `pkt.addr`, `u_sub.y`) at pos.
+// It returns the resolved member symbol and, if the member belongs to a module (potentially external), that module name.
+func (a *Analysis) ResolveMemberAt(pos ast.Position, extModuleLookup func(string) *ModuleScope) (*Symbol, string) {
+	if a == nil {
+		return nil, ""
+	}
+	var mref *ast.MemberRef
+	var localSyms, modSyms map[string]*Symbol
+
+	if scope := a.ModuleAt(pos); scope != nil {
+		modSyms = scope.Symbols
+		for i := range scope.Module.MemberRefs {
+			if scope.Module.MemberRefs[i].Range.Contains(pos) {
+				mref = &scope.Module.MemberRefs[i]
+				break
+			}
+		}
+		if mref != nil {
+			for _, fnScope := range scope.Functions {
+				if fnScope.Decl.Range.Contains(pos) {
+					localSyms = fnScope.Symbols
+					break
+				}
+			}
+			if localSyms == nil {
+				for _, taskScope := range scope.Tasks {
+					if taskScope.Decl.Range.Contains(pos) {
+						localSyms = taskScope.Symbols
+						break
+					}
+				}
+			}
+			if localSyms == nil {
+				for _, blkScope := range scope.Blocks {
+					if blkScope.Block.Range.Contains(pos) {
+						localSyms = blkScope.Symbols
+						break
+					}
+				}
+			}
+		}
+	} else if ifaceScope := a.InterfaceAt(pos); ifaceScope != nil {
+		modSyms = ifaceScope.Symbols
+		for i := range ifaceScope.Interface.MemberRefs {
+			if ifaceScope.Interface.MemberRefs[i].Range.Contains(pos) {
+				mref = &ifaceScope.Interface.MemberRefs[i]
+				break
+			}
+		}
+	} else {
+		for _, pkgScope := range a.PackageOrder {
+			if !pkgScope.Package.Range.Contains(pos) {
+				continue
+			}
+			modSyms = pkgScope.Symbols
+			for i := range pkgScope.Package.MemberRefs {
+				if pkgScope.Package.MemberRefs[i].Range.Contains(pos) {
+					mref = &pkgScope.Package.MemberRefs[i]
+					break
+				}
+			}
+			break
+		}
+	}
+
+	if mref == nil {
+		return nil, ""
+	}
+
+	baseSym, ok := resolveRefInScopes(mref.BaseName, localSyms, modSyms, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false)
+	if !ok || baseSym == nil {
+		return nil, ""
+	}
+
+	if len(baseSym.Fields) > 0 {
+		if f := findFieldByName(baseSym.Fields, mref.MemberName); f != nil {
+			return f, ""
+		}
+	}
+
+	if baseSym.TargetModule != "" {
+		if ifaceScope, found := a.AllInterfaces[baseSym.TargetModule]; found {
+			if sym, exists := ifaceScope.Symbols[mref.MemberName]; exists {
+				return sym, ""
+			}
+		}
+		if modScope, found := a.Modules[baseSym.TargetModule]; found {
+			if sym, exists := modScope.Symbols[mref.MemberName]; exists {
+				return sym, ""
+			}
+		}
+		if extModuleLookup != nil {
+			if modScope := extModuleLookup(baseSym.TargetModule); modScope != nil {
+				if sym, exists := modScope.Symbols[mref.MemberName]; exists {
+					return sym, baseSym.TargetModule
+				}
+			}
+		}
+	}
+
+	if baseSym.TypeName != "" {
+		if ifaceScope, found := a.AllInterfaces[baseSym.TypeName]; found {
+			if sym, exists := ifaceScope.Symbols[mref.MemberName]; exists {
+				return sym, ""
+			}
+		}
+		if typeSym, found := resolveRefInScopes(baseSym.TypeName, localSyms, modSyms, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); found && typeSym != nil && len(typeSym.Fields) > 0 {
+			if f := findFieldByName(typeSym.Fields, mref.MemberName); f != nil {
+				return f, ""
+			}
+		}
+	}
+
+	return nil, ""
+}
+
+// ResolveInstPortAt resolves a named port or parameter connection (e.g. `.a(din)` or `#(.WIDTH(8))`) at pos.
+func (a *Analysis) ResolveInstPortAt(pos ast.Position, extModuleLookup func(string) *ModuleScope) (*Symbol, string) {
+	inst := a.InstantiationAt(pos)
+	if inst == nil {
+		return nil, ""
+	}
+	targetName := ""
+	for _, pref := range inst.PortRefs {
+		if pref.Range.Contains(pos) {
+			targetName = pref.Name
+			break
+		}
+	}
+	if targetName == "" {
+		for _, pref := range inst.ParamRefs {
+			if pref.Range.Contains(pos) {
+				targetName = pref.Name
+				break
+			}
+		}
+	}
+	if targetName == "" {
+		return nil, ""
+	}
+
+	if ifaceScope, found := a.AllInterfaces[inst.ModuleName]; found {
+		if sym, exists := ifaceScope.Symbols[targetName]; exists {
+			return sym, ""
+		}
+	}
+	if modScope, found := a.Modules[inst.ModuleName]; found {
+		if sym, exists := modScope.Symbols[targetName]; exists {
+			return sym, ""
+		}
+	}
+	if extModuleLookup != nil {
+		if modScope := extModuleLookup(inst.ModuleName); modScope != nil {
+			if sym, exists := modScope.Symbols[targetName]; exists {
+				return sym, inst.ModuleName
+			}
+		}
+	}
+	return nil, ""
 }
 
 func (a *Analysis) resolveImportAt(imp *ast.ImportDecl, pos ast.Position) *Symbol {

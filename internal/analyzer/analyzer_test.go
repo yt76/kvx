@@ -513,3 +513,51 @@ func TestAnalyzeSystemVerilogControlAndModifiers(t *testing.T) {
 		t.Errorf("SymbolAt(idx) = %+v, want foreach loop variable 'idx' at line 5", symIdx)
 	}
 }
+
+func TestAnalyzeStructAndInterfaceMemberResolution(t *testing.T) {
+	src := "typedef struct packed {\n" +
+		"  logic [7:0] addr;\n" +
+		"  logic       valid;\n" +
+		"} pkt_t;\n" +
+		"interface bus_if (input logic clk);\n" +
+		"  logic valid;\n" +
+		"  modport master (input clk, output valid);\n" +
+		"endinterface\n" +
+		"module m (bus_if.master bus, input pkt_t pkt, output logic [7:0] a);\n" +
+		"  assign bus.valid = pkt.valid;\n" +
+		"  assign a = pkt.addr;\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics, got %+v", an.Diagnostics)
+	}
+
+	// `valid` in `bus.valid` (line 9, col 14) resolves to `logic valid` in bus_if (line 5).
+	symBusValid := an.SymbolAt(ast.Position{Line: 9, Column: 14})
+	if symBusValid == nil || symBusValid.Name != "valid" || symBusValid.InterfaceName != "bus_if" || symBusValid.SelectionRange.Start.Line != 5 {
+		t.Errorf("SymbolAt(bus.valid) = %+v, want valid in bus_if at line 5", symBusValid)
+	}
+
+	// `addr` in `pkt.addr` (line 10, col 18) resolves to KindField `addr` in pkt_t (line 1).
+	symAddr := an.SymbolAt(ast.Position{Line: 10, Column: 18})
+	if symAddr == nil || symAddr.Kind != KindField || symAddr.Name != "addr" || symAddr.SelectionRange.Start.Line != 1 {
+		t.Errorf("SymbolAt(pkt.addr) = %+v, want KindField addr at line 1", symAddr)
+	}
+
+	// Invalid struct field and invalid interface member must produce warnings.
+	badSrc := "typedef struct packed { logic a; } s_t;\n" +
+		"interface bi; logic v; endinterface\n" +
+		"module top (bi b, input s_t s, output logic y);\n" +
+		"  assign y = s.nope & b.missing;\n" +
+		"endmodule\n"
+	badFile, _ := parser.Parse(badSrc)
+	badAn := Analyze(badFile)
+	if len(badAn.Diagnostics) != 2 {
+		t.Fatalf("expected 2 unknown member diagnostics, got %+v", badAn.Diagnostics)
+	}
+}

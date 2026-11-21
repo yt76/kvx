@@ -48,15 +48,16 @@ type SourceFile struct {
 
 // InterfaceDecl represents a SystemVerilog interface declaration (interface ... endinterface).
 type InterfaceDecl struct {
-	Name      string
-	NameRange Range
-	Range     Range
-	Imports   []*ImportDecl
-	Params    []*ParamDecl
-	Ports     []*PortDecl
-	Modports  []*ModportDecl
-	Items     []ModuleItem
-	Refs      []IdentifierRef
+	Name       string
+	NameRange  Range
+	Range      Range
+	Imports    []*ImportDecl
+	Params     []*ParamDecl
+	Ports      []*PortDecl
+	Modports   []*ModportDecl
+	Items      []ModuleItem
+	Refs       []IdentifierRef
+	MemberRefs []MemberRef
 }
 
 // ModportDecl represents a modport declaration inside a SystemVerilog interface.
@@ -79,12 +80,13 @@ type ModportPort struct {
 
 // PackageDecl represents a SystemVerilog package declaration (package ... endpackage).
 type PackageDecl struct {
-	Name      string
-	NameRange Range
-	Range     Range
-	Params    []*ParamDecl
-	Items     []ModuleItem
-	Refs      []IdentifierRef
+	Name       string
+	NameRange  Range
+	Range      Range
+	Params     []*ParamDecl
+	Items      []ModuleItem
+	Refs       []IdentifierRef
+	MemberRefs []MemberRef
 }
 
 // ImportDecl represents a SystemVerilog package import (e.g. import pkg::*; or import pkg::SYM;).
@@ -134,16 +136,24 @@ type IdentifierRef struct {
 	Range Range
 }
 
+// MemberRef records a dot-qualified member access such as `bus.valid`, `pkt.addr`, or `u_sub.y`.
+type MemberRef struct {
+	BaseName   string
+	MemberName string
+	Range      Range // source range of MemberName
+}
+
 // ModuleDecl represents a Verilog module declaration (module ... endmodule).
 type ModuleDecl struct {
-	Name      string
-	NameRange Range
-	Range     Range
-	Imports   []*ImportDecl
-	Params    []*ParamDecl
-	Ports     []*PortDecl
-	Items     []ModuleItem
-	Refs      []IdentifierRef
+	Name       string
+	NameRange  Range
+	Range      Range
+	Imports    []*ImportDecl
+	Params     []*ParamDecl
+	Ports      []*PortDecl
+	Items      []ModuleItem
+	Refs       []IdentifierRef
+	MemberRefs []MemberRef
 }
 
 // PortDecl represents a module or interface port declaration (input, output, inout, ref, or interface port).
@@ -262,6 +272,8 @@ type ModuleInst struct {
 	InstanceNameRange Range
 	Range             Range
 	Refs              []IdentifierRef
+	PortRefs          []IdentifierRef // named port connections (e.g. `clk` in `.clk(clk)`)
+	ParamRefs         []IdentifierRef // named parameter overrides (e.g. `WIDTH` in `#(.WIDTH(8))`)
 }
 
 func (m *ModuleInst) ItemRange() Range { return m.Range }

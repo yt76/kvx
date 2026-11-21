@@ -258,6 +258,19 @@ func (s *Server) handleHover(msg IncomingMessage) error {
 	pos := ast.Position{Line: params.Position.Line, Column: params.Position.Character}
 	sym := doc.Analysis.SymbolAt(pos)
 	if sym == nil {
+		extLookup := func(modName string) *analyzer.ModuleScope {
+			if scope, found := s.docs.FindModuleScope(modName); found {
+				return scope
+			}
+			return nil
+		}
+		if mSym, _ := doc.Analysis.ResolveMemberAt(pos, extLookup); mSym != nil {
+			sym = mSym
+		} else if pSym, _ := doc.Analysis.ResolveInstPortAt(pos, extLookup); pSym != nil {
+			sym = pSym
+		}
+	}
+	if sym == nil {
 		return s.sendResult(msg.ID, nil)
 	}
 
@@ -296,12 +309,36 @@ func (s *Server) handleDefinition(msg IncomingMessage) error {
 
 	pos := ast.Position{Line: params.Position.Line, Column: params.Position.Character}
 	sym := doc.Analysis.SymbolAt(pos)
+	extOwnerMod := ""
+	if sym == nil {
+		extLookup := func(modName string) *analyzer.ModuleScope {
+			if scope, found := s.docs.FindModuleScope(modName); found {
+				return scope
+			}
+			return nil
+		}
+		if mSym, owner := doc.Analysis.ResolveMemberAt(pos, extLookup); mSym != nil {
+			sym = mSym
+			extOwnerMod = owner
+		} else if pSym, owner := doc.Analysis.ResolveInstPortAt(pos, extLookup); pSym != nil {
+			sym = pSym
+			extOwnerMod = owner
+		}
+	}
 	if sym == nil {
 		return s.sendResult(msg.ID, nil)
 	}
 
 	targetURI := doc.URI
 	targetRange := sym.SelectionRange
+
+	if extOwnerMod != "" && targetRange.File == "" {
+		if extURI, _, found := s.docs.FindModule(extOwnerMod); found {
+			targetURI = extURI
+		} else if extURI, _, found := s.docs.FindInterface(extOwnerMod); found {
+			targetURI = extURI
+		}
+	}
 
 	if sym.PackageName != "" && targetRange.File == "" {
 		if _, existsInSameDoc := doc.Analysis.Packages[sym.PackageName]; !existsInSameDoc {

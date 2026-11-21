@@ -962,6 +962,7 @@ func (p *Parser) parseProceduralBlock(mod *ast.ModuleDecl) {
 	block.Range.End = p.prev().Range.End
 	block.Locals = tempMod.Items
 	block.Refs = tempMod.Refs
+	mod.MemberRefs = append(mod.MemberRefs, tempMod.MemberRefs...)
 	mod.Items = append(mod.Items, block)
 }
 
@@ -1078,6 +1079,7 @@ func (p *Parser) parseFunctionDecl(mod *ast.ModuleDecl) {
 		}
 	}
 	fn.Refs = tempMod.Refs
+	mod.MemberRefs = append(mod.MemberRefs, tempMod.MemberRefs...)
 	mod.Items = append(mod.Items, fn)
 }
 
@@ -1167,6 +1169,7 @@ func (p *Parser) parseTaskDecl(mod *ast.ModuleDecl) {
 		}
 	}
 	task.Refs = tempMod.Refs
+	mod.MemberRefs = append(mod.MemberRefs, tempMod.MemberRefs...)
 	mod.Items = append(mod.Items, task)
 }
 
@@ -1197,6 +1200,7 @@ func (p *Parser) parseGenerateRegion(mod *ast.ModuleDecl) {
 	gen.Items = subMod.Items
 	gen.Refs = subMod.Refs
 	mod.Refs = append(mod.Refs, subMod.Refs...)
+	mod.MemberRefs = append(mod.MemberRefs, subMod.MemberRefs...)
 	mod.Items = append(mod.Items, gen)
 }
 
@@ -1429,6 +1433,7 @@ func (p *Parser) parseGenerateConstruct(mod *ast.ModuleDecl) {
 	gen.Items = subMod.Items
 	gen.Refs = append(gen.Refs, subMod.Refs...)
 	mod.Refs = append(mod.Refs, gen.Refs...)
+	mod.MemberRefs = append(mod.MemberRefs, subMod.MemberRefs...)
 	mod.Items = append(mod.Items, gen)
 }
 
@@ -1788,6 +1793,7 @@ func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 	modNameTok := p.advance() // module type name
 
 	var paramRefs []ast.IdentifierRef
+	var namedParamRefs []ast.IdentifierRef
 	// Optional drive strength `(strong1, pull0)` and/or parameter/delay `#(...)` or `#VALUE`
 	for {
 		if p.isDriveOrChargeStrength() {
@@ -1797,7 +1803,7 @@ func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 		if p.cur().Type == lexer.TokenHash {
 			p.advance() // '#'
 			if p.cur().Type == lexer.TokenLParen {
-				p.parseInstConnections(&paramRefs, mod)
+				p.parseInstConnections(&paramRefs, &namedParamRefs, mod)
 			} else if p.cur().Type == lexer.TokenNumber || p.cur().Type == lexer.TokenIdent {
 				tok := p.advance()
 				if tok.Type == lexer.TokenIdent {
@@ -1822,7 +1828,7 @@ func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 				p.syncToStatementEnd()
 				return
 			}
-			p.parseInstConnections(nil, mod)
+			p.parseInstConnections(nil, nil, mod)
 			if p.cur().Type == lexer.TokenComma {
 				p.advance()
 				continue
@@ -1853,6 +1859,7 @@ func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 			InstanceNameRange: instNameTok.Range,
 			Range:             ast.Range{File: modNameTok.Range.File, Start: modNameTok.Range.Start, End: instNameTok.Range.End},
 			Refs:              append([]ast.IdentifierRef(nil), paramRefs...),
+			ParamRefs:         append([]ast.IdentifierRef(nil), namedParamRefs...),
 		}
 
 		// Optional instance array range: e.g. sub_mod u_sub [3:0] (...);
@@ -1861,7 +1868,7 @@ func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 		}
 
 		if p.cur().Type == lexer.TokenLParen {
-			p.parseInstConnections(&inst.Refs, mod)
+			p.parseInstConnections(&inst.Refs, &inst.PortRefs, mod)
 			inst.Range.End = p.prev().Range.End
 		} else if p.cur().Type != lexer.TokenSemicolon && p.cur().Type != lexer.TokenComma {
 			p.addError(instNameTok.Range, fmt.Sprintf("expected '(' for port connections of instance %q", inst.InstanceName))
@@ -1888,13 +1895,15 @@ func (p *Parser) parseModuleInstOrUnknown(mod *ast.ModuleDecl) {
 	}
 }
 
-// parseInstConnections parses (.port(expr), ...) or positional (expr, ...) while only recording
-// local signal references (skipping the `.portName` identifier itself since that belongs to the instantiated module).
-func (p *Parser) parseInstConnections(refs *[]ast.IdentifierRef, mod *ast.ModuleDecl) {
+// parseInstConnections parses (.port(expr), ...) or positional (expr, ...) while recording
+// local signal references, named port/parameter references, and member accesses (e.g. `u_bus.master`).
+func (p *Parser) parseInstConnections(refs *[]ast.IdentifierRef, namedRefs *[]ast.IdentifierRef, mod *ast.ModuleDecl) {
 	openTok := p.advance() // '('
 	depth := 1
 	prevWasDot := false
 	scopedPrefix := ""
+	lastBase := ""
+	bracketDepth := 0
 	for !p.isEOF() && depth > 0 {
 		if p.cur().Type == lexer.TokenSemicolon || p.cur().Type == lexer.TokenEndmodule {
 			break
@@ -1910,6 +1919,12 @@ func (p *Parser) parseInstConnections(refs *[]ast.IdentifierRef, mod *ast.Module
 				p.advance()
 			} else if p.cur().Type == lexer.TokenIdent {
 				portTok := p.advance()
+				if namedRefs != nil {
+					*namedRefs = append(*namedRefs, ast.IdentifierRef{
+						Name:  portTok.Literal,
+						Range: portTok.Range,
+					})
+				}
 				// SystemVerilog implicit named port connection `.sig` (no '(' follows):
 				// record local signal reference to `sig`.
 				if p.cur().Type != lexer.TokenLParen {
@@ -1918,6 +1933,7 @@ func (p *Parser) parseInstConnections(refs *[]ast.IdentifierRef, mod *ast.Module
 			}
 			prevWasDot = false
 			scopedPrefix = ""
+			lastBase = ""
 			continue
 		}
 		tok := p.advance()
@@ -1925,29 +1941,55 @@ func (p *Parser) parseInstConnections(refs *[]ast.IdentifierRef, mod *ast.Module
 		case lexer.TokenLParen:
 			depth++
 			scopedPrefix = ""
+			lastBase = ""
 		case lexer.TokenRParen:
 			depth--
 			scopedPrefix = ""
+			lastBase = ""
+		case lexer.TokenLBracket:
+			bracketDepth++
+			scopedPrefix = ""
+		case lexer.TokenRBracket:
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+			scopedPrefix = ""
+		case lexer.TokenDot:
+			scopedPrefix = ""
 		case lexer.TokenColonColon:
 			// keep scopedPrefix for next ident
+			lastBase = ""
 		case lexer.TokenIdent:
 			if !prevWasDot {
 				if p.cur().Type == lexer.TokenColonColon {
 					scopedPrefix = tok.Literal
+					lastBase = ""
 				} else if scopedPrefix != "" {
 					p.recordScopedRef(refs, mod, scopedPrefix+"::"+tok.Literal, tok.Range)
 					scopedPrefix = ""
+					lastBase = ""
 				} else {
 					p.recordRef(refs, mod, tok)
+					if bracketDepth == 0 {
+						lastBase = tok.Literal
+					}
 				}
 			} else {
+				if lastBase != "" && bracketDepth == 0 {
+					p.recordMemberRef(mod, lastBase, tok)
+				}
 				scopedPrefix = ""
+				lastBase = ""
 			}
 		case lexer.TokenIllegal:
 			p.addError(tok.Range, tok.Literal)
 			scopedPrefix = ""
+			lastBase = ""
 		default:
 			scopedPrefix = ""
+			if bracketDepth == 0 {
+				lastBase = ""
+			}
 		}
 		prevWasDot = tok.Type == lexer.TokenDot
 	}
@@ -2122,6 +2164,7 @@ func (p *Parser) collectTokensUntil(refs *[]ast.IdentifierRef, mod *ast.ModuleDe
 	prevWasDot := false
 	prevWasTick := false
 	scopedPrefix := ""
+	lastBase := ""
 
 	for !p.isEOF() {
 		tok := p.cur()
@@ -2147,11 +2190,13 @@ func (p *Parser) collectTokensUntil(refs *[]ast.IdentifierRef, mod *ast.ModuleDe
 		case lexer.TokenLParen:
 			parenDepth++
 			scopedPrefix = ""
+			lastBase = ""
 		case lexer.TokenRParen:
 			if parenDepth > 0 {
 				parenDepth--
 			}
 			scopedPrefix = ""
+			lastBase = ""
 		case lexer.TokenLBracket:
 			bracketDepth++
 			scopedPrefix = ""
@@ -2166,6 +2211,7 @@ func (p *Parser) collectTokensUntil(refs *[]ast.IdentifierRef, mod *ast.ModuleDe
 				patternDepth++
 			}
 			scopedPrefix = ""
+			lastBase = ""
 		case lexer.TokenRBrace:
 			if braceDepth > 0 {
 				braceDepth--
@@ -2174,26 +2220,43 @@ func (p *Parser) collectTokensUntil(refs *[]ast.IdentifierRef, mod *ast.ModuleDe
 				patternDepth--
 			}
 			scopedPrefix = ""
+			lastBase = ""
+		case lexer.TokenDot:
+			scopedPrefix = ""
 		case lexer.TokenColonColon:
 			// keep scopedPrefix
+			lastBase = ""
 		case lexer.TokenIdent:
 			if !prevWasDot && !(patternDepth > 0 && p.cur().Type == lexer.TokenColon) {
 				if p.cur().Type == lexer.TokenColonColon {
 					scopedPrefix = tok.Literal
+					lastBase = ""
 				} else if scopedPrefix != "" {
 					p.recordScopedRef(refs, mod, scopedPrefix+"::"+tok.Literal, tok.Range)
 					scopedPrefix = ""
+					lastBase = ""
 				} else {
 					p.recordRef(refs, mod, tok)
+					if bracketDepth == 0 {
+						lastBase = tok.Literal
+					}
 				}
 			} else {
+				if prevWasDot && lastBase != "" && bracketDepth == 0 {
+					p.recordMemberRef(mod, lastBase, tok)
+				}
 				scopedPrefix = ""
+				lastBase = ""
 			}
 		case lexer.TokenIllegal:
 			p.addError(tok.Range, tok.Literal)
 			scopedPrefix = ""
+			lastBase = ""
 		default:
 			scopedPrefix = ""
+			if bracketDepth == 0 {
+				lastBase = ""
+			}
 		}
 		prevWasDot = tok.Type == lexer.TokenDot
 		prevWasTick = tok.Type == lexer.TokenTick
@@ -2211,6 +2274,8 @@ func (p *Parser) parseBalancedParensOpts(refs *[]ast.IdentifierRef, mod *ast.Mod
 	depth := 1
 	prevWasDot := false
 	scopedPrefix := ""
+	lastBase := ""
+	bracketDepth := 0
 	for !p.isEOF() && depth > 0 {
 		if (!allowSemicolon && p.cur().Type == lexer.TokenSemicolon) ||
 			p.cur().Type == lexer.TokenEndmodule ||
@@ -2224,12 +2289,25 @@ func (p *Parser) parseBalancedParensOpts(refs *[]ast.IdentifierRef, mod *ast.Mod
 		case lexer.TokenLParen:
 			depth++
 			scopedPrefix = ""
+			lastBase = ""
 		case lexer.TokenRParen:
 			depth--
+			scopedPrefix = ""
+			lastBase = ""
+		case lexer.TokenLBracket:
+			bracketDepth++
+			scopedPrefix = ""
+		case lexer.TokenRBracket:
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+			scopedPrefix = ""
+		case lexer.TokenDot:
 			scopedPrefix = ""
 		case lexer.TokenGenvar, lexer.TokenInteger,
 			lexer.TokenInt, lexer.TokenByte, lexer.TokenShortint, lexer.TokenLongint, lexer.TokenLogic, lexer.TokenBit:
 			scopedPrefix = ""
+			lastBase = ""
 			if allowSemicolon && mod != nil && p.cur().Type == lexer.TokenIdent {
 				nameTok := p.advance()
 				mod.Items = append(mod.Items, &ast.NetDecl{
@@ -2241,24 +2319,38 @@ func (p *Parser) parseBalancedParensOpts(refs *[]ast.IdentifierRef, mod *ast.Mod
 			}
 		case lexer.TokenColonColon:
 			// keep scopedPrefix
+			lastBase = ""
 		case lexer.TokenIdent:
 			if !prevWasDot {
 				if p.cur().Type == lexer.TokenColonColon {
 					scopedPrefix = tok.Literal
+					lastBase = ""
 				} else if scopedPrefix != "" {
 					p.recordScopedRef(refs, mod, scopedPrefix+"::"+tok.Literal, tok.Range)
 					scopedPrefix = ""
+					lastBase = ""
 				} else {
 					p.recordRef(refs, mod, tok)
+					if bracketDepth == 0 {
+						lastBase = tok.Literal
+					}
 				}
 			} else {
+				if lastBase != "" && bracketDepth == 0 {
+					p.recordMemberRef(mod, lastBase, tok)
+				}
 				scopedPrefix = ""
+				lastBase = ""
 			}
 		case lexer.TokenIllegal:
 			p.addError(tok.Range, tok.Literal)
 			scopedPrefix = ""
+			lastBase = ""
 		default:
 			scopedPrefix = ""
+			if bracketDepth == 0 {
+				lastBase = ""
+			}
 		}
 		prevWasDot = tok.Type == lexer.TokenDot
 	}
@@ -2282,6 +2374,17 @@ func (p *Parser) recordScopedRef(itemRefs *[]ast.IdentifierRef, mod *ast.ModuleD
 	if mod != nil {
 		mod.Refs = append(mod.Refs, ref)
 	}
+}
+
+func (p *Parser) recordMemberRef(mod *ast.ModuleDecl, baseName string, memberTok lexer.Token) {
+	if mod == nil || baseName == "" || memberTok.Literal == "" {
+		return
+	}
+	mod.MemberRefs = append(mod.MemberRefs, ast.MemberRef{
+		BaseName:   baseName,
+		MemberName: memberTok.Literal,
+		Range:      memberTok.Range,
+	})
 }
 
 func (p *Parser) expectSemicolon(context string) {
@@ -2816,6 +2919,7 @@ func (p *Parser) parseInterfaceDecl() *ast.InterfaceDecl {
 	iface.Ports = dummyMod.Ports
 	iface.Items = dummyMod.Items
 	iface.Refs = dummyMod.Refs
+	iface.MemberRefs = dummyMod.MemberRefs
 	for _, item := range dummyMod.Items {
 		if mp, ok := item.(*ast.ModportDecl); ok {
 			iface.Modports = append(iface.Modports, mp)
@@ -2996,6 +3100,7 @@ func (p *Parser) parsePackageDecl() *ast.PackageDecl {
 	pkg.Params = dummyMod.Params
 	pkg.Items = dummyMod.Items
 	pkg.Refs = dummyMod.Refs
+	pkg.MemberRefs = dummyMod.MemberRefs
 	return pkg
 }
 
@@ -3532,13 +3637,18 @@ func (p *Parser) parseTaskCallStmt(block *ast.ProceduralBlock, mod *ast.ModuleDe
 	// Record only the root identifier of a hierarchical task path.
 	rootTok := p.advance()
 	p.recordRef(&block.Refs, mod, rootTok)
+	recordedMember := false
 
 	for !p.isEOF() {
 		switch p.cur().Type {
 		case lexer.TokenDot:
 			p.advance() // '.'
 			if p.cur().Type == lexer.TokenIdent {
-				p.advance() // skip hierarchical member name
+				memberTok := p.advance()
+				if !recordedMember {
+					p.recordMemberRef(mod, rootTok.Literal, memberTok)
+					recordedMember = true
+				}
 			}
 		case lexer.TokenLBracket:
 			_ = p.parseBitRange(mod)
