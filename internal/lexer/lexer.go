@@ -171,11 +171,27 @@ func (l *Lexer) NextToken() Token {
 	case '?':
 		return l.makeToken(TokenQuestion, "?", start)
 	case '+':
+		if l.peek() == '+' {
+			l.advance()
+			return l.makeToken(TokenPlusPlus, "++", start)
+		}
+		if l.peek() == '=' {
+			l.advance()
+			return l.makeToken(TokenPlusEq, "+=", start)
+		}
 		return l.makeToken(TokenPlus, "+", start)
 	case '-':
 		if l.peek() == '>' {
 			l.advance()
 			return l.makeToken(TokenArrow, "->", start)
+		}
+		if l.peek() == '-' {
+			l.advance()
+			return l.makeToken(TokenMinusMinus, "--", start)
+		}
+		if l.peek() == '=' {
+			l.advance()
+			return l.makeToken(TokenMinusEq, "-=", start)
 		}
 		return l.makeToken(TokenMinus, "-", start)
 	case '*':
@@ -183,15 +199,31 @@ func (l *Lexer) NextToken() Token {
 			l.advance()
 			return l.makeToken(TokenPower, "**", start)
 		}
+		if l.peek() == '=' {
+			l.advance()
+			return l.makeToken(TokenMulEq, "*=", start)
+		}
 		return l.makeToken(TokenStar, "*", start)
 	case '/':
+		if l.peek() == '=' {
+			l.advance()
+			return l.makeToken(TokenDivEq, "/=", start)
+		}
 		return l.makeToken(TokenSlash, "/", start)
 	case '%':
+		if l.peek() == '=' {
+			l.advance()
+			return l.makeToken(TokenModEq, "%=", start)
+		}
 		return l.makeToken(TokenPercent, "%", start)
 	case '^':
 		if l.peek() == '~' {
 			l.advance()
 			return l.makeToken(TokenXnor, "^~", start)
+		}
+		if l.peek() == '=' {
+			l.advance()
+			return l.makeToken(TokenXorEq, "^=", start)
 		}
 		return l.makeToken(TokenCaret, "^", start)
 	case '~':
@@ -231,6 +263,10 @@ func (l *Lexer) NextToken() Token {
 				l.advance()
 				return l.makeToken(TokenAshl, "<<<", start)
 			}
+			if l.peek() == '=' {
+				l.advance()
+				return l.makeToken(TokenShlEq, "<<=", start)
+			}
 			return l.makeToken(TokenShl, "<<", start)
 		}
 		return l.makeToken(TokenLt, "<", start)
@@ -245,6 +281,10 @@ func (l *Lexer) NextToken() Token {
 				l.advance()
 				return l.makeToken(TokenAshr, ">>>", start)
 			}
+			if l.peek() == '=' {
+				l.advance()
+				return l.makeToken(TokenShrEq, ">>=", start)
+			}
 			return l.makeToken(TokenShr, ">>", start)
 		}
 		return l.makeToken(TokenGt, ">", start)
@@ -253,11 +293,19 @@ func (l *Lexer) NextToken() Token {
 			l.advance()
 			return l.makeToken(TokenLand, "&&", start)
 		}
+		if l.peek() == '=' {
+			l.advance()
+			return l.makeToken(TokenAndEq, "&=", start)
+		}
 		return l.makeToken(TokenAmp, "&", start)
 	case '|':
 		if l.peek() == '|' {
 			l.advance()
 			return l.makeToken(TokenLor, "||", start)
+		}
+		if l.peek() == '=' {
+			l.advance()
+			return l.makeToken(TokenOrEq, "|=", start)
 		}
 		return l.makeToken(TokenPipe, "|", start)
 	default:

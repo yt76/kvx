@@ -201,6 +201,36 @@ func TestLexerEdgeCases(t *testing.T) {
 			wantType: TokenCaseNeq,
 			wantLit:  "!==",
 		},
+		{
+			name:     "increment operator",
+			input:    "++",
+			wantType: TokenPlusPlus,
+			wantLit:  "++",
+		},
+		{
+			name:     "compound add assign",
+			input:    "+=",
+			wantType: TokenPlusEq,
+			wantLit:  "+=",
+		},
+		{
+			name:     "compound shift left assign",
+			input:    "<<=",
+			wantType: TokenShlEq,
+			wantLit:  "<<=",
+		},
+		{
+			name:     "SystemVerilog logic keyword",
+			input:    "logic",
+			wantType: TokenLogic,
+			wantLit:  "logic",
+		},
+		{
+			name:     "SystemVerilog always_ff keyword",
+			input:    "always_ff",
+			wantType: TokenAlwaysFF,
+			wantLit:  "always_ff",
+		},
 	}
 
 	for _, tc := range tests {

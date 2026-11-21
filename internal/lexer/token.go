@@ -35,6 +35,13 @@ const (
 	TokenWire         TokenType = "wire"
 	TokenUwire        TokenType = "uwire"
 	TokenReg          TokenType = "reg"
+	TokenLogic        TokenType = "logic"
+	TokenBit          TokenType = "bit"
+	TokenByte         TokenType = "byte"
+	TokenShortint     TokenType = "shortint"
+	TokenInt          TokenType = "int"
+	TokenLongint      TokenType = "longint"
+	TokenVoid         TokenType = "void"
 	TokenInteger      TokenType = "integer"
 	TokenTri          TokenType = "tri"
 	TokenTri0         TokenType = "tri0"
@@ -56,29 +63,40 @@ const (
 	TokenLocalparam   TokenType = "localparam"
 	TokenDefparam     TokenType = "defparam"
 	TokenSigned       TokenType = "signed"
+	TokenUnsigned     TokenType = "unsigned"
 	TokenAssign       TokenType = "assign"
 	TokenDeassign     TokenType = "deassign"
 	TokenForce        TokenType = "force"
 	TokenRelease      TokenType = "release"
 	TokenAlways       TokenType = "always"
-	TokenInitial    TokenType = "initial"
+	TokenAlwaysComb   TokenType = "always_comb"
+	TokenAlwaysFF     TokenType = "always_ff"
+	TokenAlwaysLatch  TokenType = "always_latch"
+	TokenInitial      TokenType = "initial"
 	TokenPosedge    TokenType = "posedge"
 	TokenNegedge    TokenType = "negedge"
 	TokenOr         TokenType = "or"
 	TokenBegin      TokenType = "begin"
 	TokenEnd        TokenType = "end"
-	TokenIf         TokenType = "if"
-	TokenElse       TokenType = "else"
-	TokenCase       TokenType = "case"
-	TokenCasex      TokenType = "casex"
-	TokenCasez      TokenType = "casez"
-	TokenEndcase    TokenType = "endcase"
-	TokenDefault    TokenType = "default"
-	TokenFor         TokenType = "for"
-	TokenWhile       TokenType = "while"
-	TokenRepeat      TokenType = "repeat"
-	TokenForever     TokenType = "forever"
-	TokenWait        TokenType = "wait"
+	TokenIf           TokenType = "if"
+	TokenElse         TokenType = "else"
+	TokenUnique       TokenType = "unique"
+	TokenUnique0      TokenType = "unique0"
+	TokenPriority     TokenType = "priority"
+	TokenCase         TokenType = "case"
+	TokenCasex        TokenType = "casex"
+	TokenCasez        TokenType = "casez"
+	TokenEndcase      TokenType = "endcase"
+	TokenDefault      TokenType = "default"
+	TokenFor          TokenType = "for"
+	TokenWhile        TokenType = "while"
+	TokenDo           TokenType = "do"
+	TokenRepeat       TokenType = "repeat"
+	TokenForever      TokenType = "forever"
+	TokenWait         TokenType = "wait"
+	TokenBreak        TokenType = "break"
+	TokenContinue     TokenType = "continue"
+	TokenReturn       TokenType = "return"
 	TokenFork        TokenType = "fork"
 	TokenJoin        TokenType = "join"
 	TokenDisable     TokenType = "disable"
@@ -130,12 +148,24 @@ const (
 	TokenLor      TokenType = "||"
 	TokenShl      TokenType = "<<"
 	TokenShr      TokenType = ">>"
-	TokenAshl     TokenType = "<<<"
-	TokenAshr     TokenType = ">>>"
-	TokenArrow    TokenType = "->"
-	TokenPower    TokenType = "**"
-	TokenXnor     TokenType = "~^"
-	TokenPaste    TokenType = "``"
+	TokenAshl       TokenType = "<<<"
+	TokenAshr       TokenType = ">>>"
+	TokenArrow      TokenType = "->"
+	TokenPower      TokenType = "**"
+	TokenXnor       TokenType = "~^"
+	TokenPaste      TokenType = "``"
+	TokenPlusPlus   TokenType = "++"
+	TokenMinusMinus TokenType = "--"
+	TokenPlusEq     TokenType = "+="
+	TokenMinusEq    TokenType = "-="
+	TokenMulEq      TokenType = "*="
+	TokenDivEq      TokenType = "/="
+	TokenModEq      TokenType = "%="
+	TokenAndEq      TokenType = "&="
+	TokenOrEq       TokenType = "|="
+	TokenXorEq      TokenType = "^="
+	TokenShlEq      TokenType = "<<="
+	TokenShrEq      TokenType = ">>="
 )
 
 var keywords = map[string]TokenType{
@@ -156,6 +186,13 @@ var keywords = map[string]TokenType{
 	"wire":         TokenWire,
 	"uwire":        TokenUwire,
 	"reg":          TokenReg,
+	"logic":        TokenLogic,
+	"bit":          TokenBit,
+	"byte":         TokenByte,
+	"shortint":     TokenShortint,
+	"int":          TokenInt,
+	"longint":      TokenLongint,
+	"void":         TokenVoid,
 	"integer":      TokenInteger,
 	"tri":          TokenTri,
 	"tri0":         TokenTri0,
@@ -177,29 +214,40 @@ var keywords = map[string]TokenType{
 	"localparam":   TokenLocalparam,
 	"defparam":     TokenDefparam,
 	"signed":       TokenSigned,
+	"unsigned":     TokenUnsigned,
 	"assign":       TokenAssign,
 	"deassign":     TokenDeassign,
 	"force":        TokenForce,
 	"release":      TokenRelease,
 	"always":       TokenAlways,
-	"initial":    TokenInitial,
+	"always_comb":  TokenAlwaysComb,
+	"always_ff":    TokenAlwaysFF,
+	"always_latch": TokenAlwaysLatch,
+	"initial":      TokenInitial,
 	"posedge":    TokenPosedge,
 	"negedge":    TokenNegedge,
 	"or":         TokenOr,
 	"begin":      TokenBegin,
 	"end":        TokenEnd,
-	"if":         TokenIf,
-	"else":       TokenElse,
-	"case":       TokenCase,
-	"casex":      TokenCasex,
-	"casez":      TokenCasez,
-	"endcase":    TokenEndcase,
-	"default":    TokenDefault,
-	"for":         TokenFor,
-	"while":       TokenWhile,
-	"repeat":      TokenRepeat,
-	"forever":     TokenForever,
-	"wait":        TokenWait,
+	"if":           TokenIf,
+	"else":         TokenElse,
+	"unique":       TokenUnique,
+	"unique0":      TokenUnique0,
+	"priority":     TokenPriority,
+	"case":         TokenCase,
+	"casex":        TokenCasex,
+	"casez":        TokenCasez,
+	"endcase":      TokenEndcase,
+	"default":      TokenDefault,
+	"for":          TokenFor,
+	"while":        TokenWhile,
+	"do":           TokenDo,
+	"repeat":       TokenRepeat,
+	"forever":      TokenForever,
+	"wait":         TokenWait,
+	"break":        TokenBreak,
+	"continue":     TokenContinue,
+	"return":       TokenReturn,
 	"fork":        TokenFork,
 	"join":        TokenJoin,
 	"disable":     TokenDisable,
