@@ -1,6 +1,8 @@
-# kvx - Verilog Language Server
+# kvx - Verilog / SystemVerilog Language Server
 
-`kvx` is a lightweight, fast Language Server (LSP) for Verilog (IEEE 1364) implemented solely with the Go standard library. It has no external dependencies (such as CGO) and runs as a single binary.
+`kvx` is a lightweight, fast Language Server (LSP) for Verilog (IEEE 1364) and SystemVerilog (IEEE 1800) implemented solely with the Go standard library. It has no external dependencies (such as CGO) and runs as a single binary.
+
+This repository also includes a bundled **VS Code extension** in [`vscode/`](vscode/) (supporting `.v`, `.vh`, `.sv`, and `.svh` files). See the [VS Code](#vs-code) section below for build and installation instructions.
 
 ## Features
 
