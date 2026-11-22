@@ -295,7 +295,7 @@ func (s *Server) handleHover(msg IncomingMessage) error {
 
 	value := fmt.Sprintf("```verilog\n%s\n```", sym.Signature)
 
-	// When hovering over a module declaration name (`module <name>`), prepend hierarchy paths (up to 10) before the port signature.
+	// When hovering over a module declaration name (`module <name>`), show only hierarchy paths (up to 10).
 	for _, modScope := range doc.Analysis.ModuleOrder {
 		if modScope.Module != nil && modScope.Module.Name != "" && modScope.Module.NameRange.Contains(pos) {
 			const maxHierarchyPaths = 10
@@ -313,8 +313,6 @@ func (s *Server) handleHover(msg IncomingMessage) error {
 				if truncated {
 					b.WriteString("\n- `...`")
 				}
-				b.WriteString("\n\n")
-				b.WriteString(value)
 				value = b.String()
 			}
 			break

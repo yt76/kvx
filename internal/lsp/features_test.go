@@ -2048,13 +2048,13 @@ func TestLSPModuleHierarchyHover(t *testing.T) {
 		return h.Contents.Value
 	}
 
-	// id=2: leaf -> both `top.u_mid0.u_leaf` and `top.g_blk.u_mid1.u_leaf`, displayed before the module signature
+	// id=2: leaf -> both `top.u_mid0.u_leaf` and `top.g_blk.u_mid1.u_leaf`, without module port signature
 	hLeaf := readHover("2")
 	if !strings.Contains(hLeaf, "`top.u_mid0.u_leaf`") || !strings.Contains(hLeaf, "`top.g_blk.u_mid1.u_leaf`") {
 		t.Errorf("hover(leaf) = %q, want both hierarchy paths", hLeaf)
 	}
-	if strings.Index(hLeaf, "**Hierarchy:**") > strings.Index(hLeaf, "```verilog") {
-		t.Errorf("hover(leaf) = %q, want Hierarchy section before verilog signature", hLeaf)
+	if strings.Contains(hLeaf, "```verilog") {
+		t.Errorf("hover(leaf) = %q, should show hierarchy paths only (no verilog port signature)", hLeaf)
 	}
 
 	// id=3: top -> `top`
