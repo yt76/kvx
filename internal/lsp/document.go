@@ -514,6 +514,136 @@ func (s *DocumentStore) FindModule(moduleName string) (string, *analyzer.Symbol,
 	return "", nil, false
 }
 
+// ModuleHierarchyPaths returns up to limit full hierarchy paths (from top-level root modules down to moduleName)
+// across all open documents and indexed workspace files. If more than limit paths exist, truncated is true.
+func (s *DocumentStore) ModuleHierarchyPaths(moduleName string, limit int) ([]string, bool) {
+	if moduleName == "" || limit <= 0 {
+		return nil, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	type parentEdge struct {
+		parentMod string
+		segment   string
+	}
+	reverseEdges := make(map[string][]parentEdge)
+
+	var collectInsts func(parentMod string, prefix string, items []ast.ModuleItem)
+	collectInsts = func(parentMod string, prefix string, items []ast.ModuleItem) {
+		for _, item := range items {
+			switch d := item.(type) {
+			case *ast.ModuleInst:
+				if d.ModuleName == "" || d.InstanceName == "" {
+					continue
+				}
+				seg := d.InstanceName
+				if prefix != "" {
+					seg = prefix + "." + seg
+				}
+				reverseEdges[d.ModuleName] = append(reverseEdges[d.ModuleName], parentEdge{
+					parentMod: parentMod,
+					segment:   seg,
+				})
+			case *ast.GenerateBlock:
+				nextPrefix := prefix
+				if d.Label != "" {
+					if nextPrefix != "" {
+						nextPrefix += "." + d.Label
+					} else {
+						nextPrefix = d.Label
+					}
+				}
+				collectInsts(parentMod, nextPrefix, d.Items)
+			}
+		}
+	}
+
+	seenModules := make(map[string]bool)
+	collectDoc := func(doc *Document) {
+		if doc == nil || doc.Analysis == nil {
+			return
+		}
+		for _, modScope := range doc.Analysis.ModuleOrder {
+			if modScope.Module == nil || modScope.Module.Name == "" || seenModules[modScope.Module.Name] {
+				continue
+			}
+			seenModules[modScope.Module.Name] = true
+			collectInsts(modScope.Module.Name, "", modScope.Module.Items)
+		}
+	}
+
+	for _, doc := range s.docs {
+		collectDoc(doc)
+	}
+	for uri, doc := range s.workspaceDocs {
+		if _, isOpen := s.docs[uri]; isOpen {
+			continue
+		}
+		collectDoc(doc)
+	}
+
+	for child := range reverseEdges {
+		edges := reverseEdges[child]
+		sort.Slice(edges, func(i, j int) bool {
+			if edges[i].parentMod != edges[j].parentMod {
+				return edges[i].parentMod < edges[j].parentMod
+			}
+			return edges[i].segment < edges[j].segment
+		})
+	}
+
+	if len(reverseEdges[moduleName]) == 0 {
+		return []string{moduleName}, false
+	}
+
+	var paths []string
+	seenPaths := make(map[string]bool)
+	truncated := false
+
+	var walkUp func(curMod string, suffix []string, visiting map[string]bool)
+	walkUp = func(curMod string, suffix []string, visiting map[string]bool) {
+		if truncated {
+			return
+		}
+		edges := reverseEdges[curMod]
+		if len(edges) == 0 {
+			parts := make([]string, 0, len(suffix)+1)
+			parts = append(parts, curMod)
+			for i := len(suffix) - 1; i >= 0; i-- {
+				parts = append(parts, suffix[i])
+			}
+			full := strings.Join(parts, ".")
+			if !seenPaths[full] {
+				seenPaths[full] = true
+				if len(paths) >= limit {
+					truncated = true
+					return
+				}
+				paths = append(paths, full)
+			}
+			return
+		}
+		for _, e := range edges {
+			if visiting[e.parentMod] {
+				continue
+			}
+			visiting[e.parentMod] = true
+			walkUp(e.parentMod, append(suffix, e.segment), visiting)
+			delete(visiting, e.parentMod)
+			if truncated {
+				return
+			}
+		}
+	}
+
+	walkUp(moduleName, nil, map[string]bool{moduleName: true})
+	if len(paths) == 0 {
+		return []string{moduleName}, false
+	}
+	return paths, truncated
+}
+
 // FindModuleReferences searches all open documents and indexed workspace files for instantiations
 // of moduleName. If includeDeclaration is true, the module declaration itself is also included.
 func (s *DocumentStore) FindModuleReferences(moduleName string, includeDeclaration bool) []Location {

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1911,5 +1912,166 @@ func TestLSPCrossFileImplicitAndWildcardPortConnections(t *testing.T) {
 	}
 	if !strings.Contains(hover.Contents.Value, ".* -> sub_unit") {
 		t.Errorf("hover(.*) = %q, want to contain '.* -> sub_unit'", hover.Contents.Value)
+	}
+}
+
+func TestLSPModuleHierarchyHover(t *testing.T) {
+	root := t.TempDir()
+	rtlDir := filepath.Join(root, "rtl")
+	if err := os.MkdirAll(rtlDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	leafPath := filepath.Join(rtlDir, "leaf.sv")
+	leafSrc := "module leaf (input logic a, output logic y);\n" +
+		"  assign y = a;\n" +
+		"endmodule\n"
+	if err := os.WriteFile(leafPath, []byte(leafSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	midPath := filepath.Join(rtlDir, "mid.sv")
+	midSrc := "module mid (input logic a, output logic y);\n" +
+		"  leaf u_leaf (.a(a), .y(y));\n" +
+		"endmodule\n"
+	if err := os.WriteFile(midPath, []byte(midSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	topPath := filepath.Join(rtlDir, "top.sv")
+	topSrc := "module top (input logic a, output logic [1:0] y);\n" +
+		"  mid u_mid0 (.a(a), .y(y[0]));\n" +
+		"  if (1) begin : g_blk\n" +
+		"    mid u_mid1 (.a(a), .y(y[1]));\n" +
+		"  end\n" +
+		"endmodule\n"
+	if err := os.WriteFile(topPath, []byte(topSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Also create a module `cell_unit` instantiated 12 times inside `many_top` to verify the 10-path cap.
+	cellPath := filepath.Join(rtlDir, "cell_unit.sv")
+	cellSrc := "module cell_unit (input logic a, output logic y);\n" +
+		"  assign y = a;\n" +
+		"endmodule\n"
+	if err := os.WriteFile(cellPath, []byte(cellSrc), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var manyBuf strings.Builder
+	manyBuf.WriteString("module many_top (input logic a, output logic [11:0] y);\n")
+	for i := 0; i < 12; i++ {
+		fmt.Fprintf(&manyBuf, "  cell_unit u_%02d (.a(a), .y(y[%d]));\n", i, i)
+	}
+	manyBuf.WriteString("endmodule\n")
+	if err := os.WriteFile(filepath.Join(rtlDir, "many_top.sv"), []byte(manyBuf.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	leafURI := filePathToURI(leafPath)
+	topURI := filePathToURI(topPath)
+	cellURI := filePathToURI(cellPath)
+
+	var in, out bytes.Buffer
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"rootUri": filePathToURI(root),
+		},
+	})
+	for _, docItem := range []TextDocumentItem{
+		{URI: leafURI, LanguageID: "systemverilog", Version: 1, Text: leafSrc},
+		{URI: topURI, LanguageID: "systemverilog", Version: 1, Text: topSrc},
+		{URI: cellURI, LanguageID: "systemverilog", Version: 1, Text: cellSrc},
+	} {
+		writeFramedJSON(t, &in, map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "textDocument/didOpen",
+			"params":  DidOpenTextDocumentParams{TextDocument: docItem},
+		})
+	}
+
+	// id=2: Hover on `leaf` in `module leaf` (line 0, col 8)
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "textDocument/hover",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: leafURI},
+			Position:     Position{Line: 0, Character: 8},
+		},
+	})
+	// id=3: Hover on `top` in `module top` (line 0, col 8)
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "textDocument/hover",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: topURI},
+			Position:     Position{Line: 0, Character: 8},
+		},
+	})
+	// id=4: Hover on `cell_unit` in `module cell_unit` (line 0, col 8) -> capped at 10 paths
+	writeFramedJSON(t, &in, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      4,
+		"method":  "textDocument/hover",
+		"params": TextDocumentPositionParams{
+			TextDocument: TextDocumentIdentifier{URI: cellURI},
+			Position:     Position{Line: 0, Character: 8},
+		},
+	})
+
+	srv := NewServer(&in, &out, nil)
+	if err := srv.Run(); err != nil {
+		t.Fatalf("Server.Run() error: %v", err)
+	}
+
+	outReader := bufio.NewReader(&out)
+	_ = readFramedResponse(t, outReader)        // initialize
+	_, _ = readFramedNotification(t, outReader) // didOpen leaf
+	_, _ = readFramedNotification(t, outReader) // didOpen top
+	_, _ = readFramedNotification(t, outReader) // didOpen cell_unit
+
+	readHover := func(wantID string) string {
+		resp := readFramedResponse(t, outReader)
+		if string(resp.ID) != wantID {
+			t.Fatalf("got ID=%s, want %s", string(resp.ID), wantID)
+		}
+		raw, _ := json.Marshal(resp.Result)
+		var h Hover
+		if err := json.Unmarshal(raw, &h); err != nil {
+			t.Fatalf("unmarshaling Hover (id=%s): %v", wantID, err)
+		}
+		return h.Contents.Value
+	}
+
+	// id=2: leaf -> both `top.u_mid0.u_leaf` and `top.g_blk.u_mid1.u_leaf`, displayed before the module signature
+	hLeaf := readHover("2")
+	if !strings.Contains(hLeaf, "`top.u_mid0.u_leaf`") || !strings.Contains(hLeaf, "`top.g_blk.u_mid1.u_leaf`") {
+		t.Errorf("hover(leaf) = %q, want both hierarchy paths", hLeaf)
+	}
+	if strings.Index(hLeaf, "**Hierarchy:**") > strings.Index(hLeaf, "```verilog") {
+		t.Errorf("hover(leaf) = %q, want Hierarchy section before verilog signature", hLeaf)
+	}
+
+	// id=3: top -> `top`
+	hTop := readHover("3")
+	if !strings.Contains(hTop, "`top`") {
+		t.Errorf("hover(top) = %q, want `top`", hTop)
+	}
+
+	// id=4: cell_unit -> capped at 10 (`u_00`..`u_09`, NOT `u_10` / `u_11`, and has `...`)
+	hCell := readHover("4")
+	if !strings.Contains(hCell, "`many_top.u_00`") || !strings.Contains(hCell, "`many_top.u_09`") {
+		t.Errorf("hover(cell_unit) = %q, want u_00..u_09", hCell)
+	}
+	if strings.Contains(hCell, "`many_top.u_10`") || strings.Contains(hCell, "`many_top.u_11`") {
+		t.Errorf("hover(cell_unit) = %q, should be capped at 10 paths", hCell)
+	}
+	if !strings.Contains(hCell, "`...`") {
+		t.Errorf("hover(cell_unit) = %q, want truncation marker '...'", hCell)
 	}
 }

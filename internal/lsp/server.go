@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 
 	"kvx/internal/analyzer"
 	"kvx/internal/ast"
@@ -292,10 +293,38 @@ func (s *Server) handleHover(msg IncomingMessage) error {
 		}
 	}
 
+	value := fmt.Sprintf("```verilog\n%s\n```", sym.Signature)
+
+	// When hovering over a module declaration name (`module <name>`), prepend hierarchy paths (up to 10) before the port signature.
+	for _, modScope := range doc.Analysis.ModuleOrder {
+		if modScope.Module != nil && modScope.Module.Name != "" && modScope.Module.NameRange.Contains(pos) {
+			const maxHierarchyPaths = 10
+			paths, truncated := s.docs.ModuleHierarchyPaths(modScope.Module.Name, maxHierarchyPaths)
+			if len(paths) > 0 {
+				var b strings.Builder
+				if truncated {
+					fmt.Fprintf(&b, "**Hierarchy (first %d):**", maxHierarchyPaths)
+				} else {
+					b.WriteString("**Hierarchy:**")
+				}
+				for _, p := range paths {
+					fmt.Fprintf(&b, "\n- `%s`", p)
+				}
+				if truncated {
+					b.WriteString("\n- `...`")
+				}
+				b.WriteString("\n\n")
+				b.WriteString(value)
+				value = b.String()
+			}
+			break
+		}
+	}
+
 	hover := Hover{
 		Contents: MarkupContent{
 			Kind:  "markdown",
-			Value: fmt.Sprintf("```verilog\n%s\n```", sym.Signature),
+			Value: value,
 		},
 	}
 	return s.sendResult(msg.ID, hover)
