@@ -757,3 +757,79 @@ func TestAnalyzeLinterDiagnostics(t *testing.T) {
 		}
 	}
 }
+
+func TestAnalyzeSystemVerilogClockingAndProgram(t *testing.T) {
+	src := "program automatic my_prog (input logic clk, input logic ack, output logic req);\n" +
+		"  clocking cb @(posedge clk);\n" +
+		"    default input #1step output #1ns;\n" +
+		"    input  ack;\n" +
+		"    output req;\n" +
+		"  endclocking : cb\n" +
+		"  initial begin\n" +
+		"    ##1;\n" +
+		"    cb.req <= cb.ack;\n" +
+		"  end\n" +
+		"endprogram\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for clocking/program, got %+v", an.Diagnostics)
+	}
+
+	// `my_prog` signature should start with "program my_prog".
+	progScope := an.Modules["my_prog"]
+	if progScope == nil || !strings.HasPrefix(progScope.Symbol.Signature, "program my_prog") {
+		t.Errorf("unexpected program symbol: %+v", progScope)
+	}
+
+	// `cb.req` on line 8, col 8 resolves to clocking signal `req` at line 4.
+	symReq := an.SymbolAt(ast.Position{Line: 8, Column: 8})
+	if symReq == nil || symReq.Name != "req" || symReq.SelectionRange.Start.Line != 4 {
+		t.Errorf("SymbolAt(cb.req) = %+v, want clocking signal 'req' at line 4", symReq)
+	}
+}
+
+func TestAnalyzeSystemVerilogCovergroup(t *testing.T) {
+	src := "module cov_m (input logic clk, input logic [7:0] addr, input logic [1:0] cmd);\n" +
+		"  covergroup cg @(posedge clk);\n" +
+		"    option.per_instance = 1;\n" +
+		"    cp_addr: coverpoint addr { bins b0 = {0}; }\n" +
+		"    cp_cmd:  coverpoint cmd;\n" +
+		"    cr_both: cross cp_addr, cp_cmd;\n" +
+		"  endgroup\n" +
+		"  cg u_cg;\n" +
+		"  initial begin\n" +
+		"    u_cg = new();\n" +
+		"    u_cg.sample();\n" +
+		"  end\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for covergroup, got %+v", an.Diagnostics)
+	}
+
+	// `cp_addr` in `cross cp_addr, cp_cmd;` (line 5, col 21) resolves to coverpoint `cp_addr` at line 3.
+	symCP := an.SymbolAt(ast.Position{Line: 5, Column: 21})
+	if symCP == nil || symCP.Name != "cp_addr" || symCP.SelectionRange.Start.Line != 3 {
+		t.Errorf("SymbolAt(cp_addr in cross) = %+v, want coverpoint cp_addr at line 3", symCP)
+	}
+
+	// `u_cg.` member completions include `sample`, `get_coverage`, `cp_addr`, and `cr_both`.
+	members := an.MemberCompletions(ast.Position{Line: 10, Column: 9}, "u_cg", nil)
+	names := make(map[string]bool, len(members))
+	for _, m := range members {
+		names[m.Name] = true
+	}
+	if !names["sample"] || !names["get_coverage"] || !names["cp_addr"] || !names["cr_both"] {
+		t.Errorf("MemberCompletions(u_cg.) = %v, want sample, get_coverage, cp_addr, cr_both", names)
+	}
+}

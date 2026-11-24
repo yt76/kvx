@@ -1766,3 +1766,77 @@ endmodule
 		t.Errorf("unexpected class[1]: %+v", file.Classes[1])
 	}
 }
+
+func TestParseSystemVerilogClockingAndProgram(t *testing.T) {
+	src := `
+interface simple_if (input logic clk);
+    logic req, ack;
+    clocking cb @(posedge clk);
+        default input #1step output #1ns;
+        input ack;
+        output req;
+    endclocking : cb
+    modport tb (clocking cb);
+endinterface
+
+program automatic test_prog (input logic clk, simple_if.tb vif);
+    default clocking cb_p @(posedge clk);
+        input ack = vif.cb.ack;
+    endclocking
+    initial begin
+        ##1;
+        vif.cb.req <= 1'b1;
+        ##2 vif.cb.req <= 1'b0;
+    end
+endprogram : test_prog
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Interfaces) != 1 {
+		t.Fatalf("expected 1 interface, got %d", len(file.Interfaces))
+	}
+	if len(file.Modules) != 1 || !file.Modules[0].IsProgram || file.Modules[0].Name != "test_prog" {
+		t.Fatalf("expected 1 program 'test_prog', got %+v", file.Modules)
+	}
+}
+
+func TestParseSystemVerilogCovergroup(t *testing.T) {
+	src := `
+module cov_demo (input logic clk, input logic rst_n, input logic [7:0] addr, input logic [1:0] cmd);
+    covergroup cg_bus @(posedge clk iff rst_n);
+        option.per_instance = 1;
+        cp_addr: coverpoint addr {
+            bins low = {[8'h00:8'h3F]};
+            wildcard bins hi = {8'b1???_????};
+            illegal_bins bad = {8'hFF};
+        }
+        cp_cmd: coverpoint cmd {
+            bins tr = (2'b00 => 2'b01);
+        }
+        cr_all: cross cp_addr, cp_cmd {
+            ignore_bins ign = binsof(cp_addr) intersect {8'h00};
+        }
+    endgroup : cg_bus
+
+    cg_bus u_cg = new();
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(file.Modules))
+	}
+	var cgs []*ast.CovergroupDecl
+	for _, item := range file.Modules[0].Items {
+		if cg, ok := item.(*ast.CovergroupDecl); ok {
+			cgs = append(cgs, cg)
+		}
+	}
+	if len(cgs) != 1 || cgs[0].Name != "cg_bus" || len(cgs[0].Points) != 3 {
+		t.Fatalf("expected 1 covergroup 'cg_bus' with 3 points, got %+v", cgs)
+	}
+}

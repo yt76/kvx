@@ -23,6 +23,8 @@ const (
 	KindProperty   SymbolKind = "property"
 	KindClass      SymbolKind = "class"
 	KindConstraint SymbolKind = "constraint"
+	KindClocking   SymbolKind = "clocking"
+	KindCovergroup SymbolKind = "covergroup"
 	KindType       SymbolKind = "type"
 	KindField      SymbolKind = "field"
 	KindPackage    SymbolKind = "package"
@@ -77,6 +79,14 @@ type PropertyScope struct {
 	Order   []*Symbol
 }
 
+// CovergroupScope holds the local symbol table for a SystemVerilog covergroup declaration.
+type CovergroupScope struct {
+	Decl    *ast.CovergroupDecl
+	Symbol  *Symbol
+	Symbols map[string]*Symbol
+	Order   []*Symbol
+}
+
 // BlockScope holds the local symbol table for a procedural block (always / initial).
 type BlockScope struct {
 	Block   *ast.ProceduralBlock
@@ -86,53 +96,57 @@ type BlockScope struct {
 
 // ClassScope holds the symbol table for a single SystemVerilog class declaration.
 type ClassScope struct {
-	Class      *ast.ClassDecl
-	Symbol     *Symbol
-	Symbols    map[string]*Symbol
-	Order      []*Symbol
-	Functions  []*FunctionScope
-	Tasks      []*TaskScope
-	Properties []*PropertyScope
-	Classes    []*ClassScope
+	Class       *ast.ClassDecl
+	Symbol      *Symbol
+	Symbols     map[string]*Symbol
+	Order       []*Symbol
+	Functions   []*FunctionScope
+	Tasks       []*TaskScope
+	Properties  []*PropertyScope
+	Covergroups []*CovergroupScope
+	Classes     []*ClassScope
 }
 
 // ModuleScope holds the symbol table for a single module declaration.
 type ModuleScope struct {
-	Module     *ast.ModuleDecl
-	Symbol     *Symbol
-	Symbols    map[string]*Symbol
-	Order      []*Symbol
-	Functions  []*FunctionScope
-	Tasks      []*TaskScope
-	Properties []*PropertyScope
-	Classes    []*ClassScope
-	Blocks     []*BlockScope
+	Module      *ast.ModuleDecl
+	Symbol      *Symbol
+	Symbols     map[string]*Symbol
+	Order       []*Symbol
+	Functions   []*FunctionScope
+	Tasks       []*TaskScope
+	Properties  []*PropertyScope
+	Covergroups []*CovergroupScope
+	Classes     []*ClassScope
+	Blocks      []*BlockScope
 }
 
 // PackageScope holds the symbol table for a single SystemVerilog package declaration.
 type PackageScope struct {
-	Package    *ast.PackageDecl
-	Symbol     *Symbol
-	Symbols    map[string]*Symbol
-	Order      []*Symbol
-	Functions  []*FunctionScope
-	Tasks      []*TaskScope
-	Properties []*PropertyScope
-	Classes    []*ClassScope
+	Package     *ast.PackageDecl
+	Symbol      *Symbol
+	Symbols     map[string]*Symbol
+	Order       []*Symbol
+	Functions   []*FunctionScope
+	Tasks       []*TaskScope
+	Properties  []*PropertyScope
+	Covergroups []*CovergroupScope
+	Classes     []*ClassScope
 }
 
 // InterfaceScope holds the symbol table for a single SystemVerilog interface declaration.
 type InterfaceScope struct {
-	Interface  *ast.InterfaceDecl
-	Symbol     *Symbol
-	Symbols    map[string]*Symbol
-	Order      []*Symbol
-	Modports   map[string]*Symbol
-	Functions  []*FunctionScope
-	Tasks      []*TaskScope
-	Properties []*PropertyScope
-	Classes    []*ClassScope
-	Blocks     []*BlockScope
+	Interface   *ast.InterfaceDecl
+	Symbol      *Symbol
+	Symbols     map[string]*Symbol
+	Order       []*Symbol
+	Modports    map[string]*Symbol
+	Functions   []*FunctionScope
+	Tasks       []*TaskScope
+	Properties  []*PropertyScope
+	Covergroups []*CovergroupScope
+	Classes     []*ClassScope
+	Blocks      []*BlockScope
 }
 
 // WorkspaceContext provides cross-file modules, packages, interfaces, and classes for semantic analysis.
@@ -576,6 +590,9 @@ func analyzeInterface(iface *ast.InterfaceDecl, globals map[string]*Symbol, allP
 	modports := make(map[string]*Symbol)
 	for _, sym := range modScope.Order {
 		sym.InterfaceName = iface.Name
+		for _, f := range sym.Fields {
+			f.InterfaceName = iface.Name
+		}
 		if sym.Kind == KindModport && sym.Name != "" {
 			modports[sym.Name] = sym
 		}
@@ -643,10 +660,14 @@ func analyzeModule(mod *ast.ModuleDecl, globals map[string]*Symbol, allPkgs map[
 }
 
 func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym *Symbol, globals map[string]*Symbol, allPkgs map[string]*PackageScope, allIfaces map[string]*InterfaceScope, fileHasExtWildcard bool, diags *[]SemanticDiagnostic) *ModuleScope {
+	modKindLabel := "module"
+	if mod.IsProgram {
+		modKindLabel = "program"
+	}
 	modSym := &Symbol{
 		Name:           mod.Name,
 		Kind:           KindModule,
-		TypeDetail:     fmt.Sprintf("module (%d ports)", len(mod.Ports)),
+		TypeDetail:     fmt.Sprintf("%s (%d ports)", modKindLabel, len(mod.Ports)),
 		Signature:      formatModuleSignature(mod),
 		Range:          mod.Range,
 		SelectionRange: mod.NameRange,
@@ -742,6 +763,45 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 					SelectionRange: d.NameRange,
 				}, inGenerate)
 
+			case *ast.ClockingDecl:
+				if d.Name != "" {
+					detail := "clocking"
+					if d.Default {
+						detail = "default clocking"
+					} else if d.Global {
+						detail = "global clocking"
+					}
+					cbFields := make([]*Symbol, 0, len(d.Signals))
+					for _, s := range d.Signals {
+						if s.Name == "" {
+							continue
+						}
+						cbFields = append(cbFields, &Symbol{
+							Name:           s.Name,
+							Kind:           KindField,
+							TypeDetail:     "clocking " + s.Direction,
+							Signature:      s.Direction + " " + s.Name,
+							Range:          s.Range,
+							SelectionRange: s.NameRange,
+						})
+					}
+					addSymbol(&Symbol{
+						Name:           d.Name,
+						Kind:           KindClocking,
+						TypeDetail:     detail,
+						Signature:      detail + " " + d.Name,
+						Range:          d.Range,
+						SelectionRange: d.NameRange,
+						Fields:         cbFields,
+						Children:       cbFields,
+					}, inGenerate)
+				}
+
+			case *ast.ModuleDecl:
+				// Nested program or module declaration
+				subScope := analyzeModule(d, globals, allPkgs, allIfaces, fileHasExtWildcard, diags)
+				addSymbol(subScope.Symbol, inGenerate)
+
 			case *ast.TypedefDecl:
 				detail := "typedef"
 				sig := "typedef " + d.Name
@@ -826,6 +886,13 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 				propScope := buildPropertyScope(d, diags)
 				addSymbol(propScope.Symbol, inGenerate)
 				scope.Properties = append(scope.Properties, propScope)
+
+			case *ast.CovergroupDecl:
+				cgScope := buildCovergroupScope(d, diags)
+				if cgScope.Symbol.Name != "" {
+					addSymbol(cgScope.Symbol, inGenerate)
+				}
+				scope.Covergroups = append(scope.Covergroups, cgScope)
 
 			case *ast.ClassDecl:
 				mergedGlobals := make(map[string]*Symbol, len(globals)+len(scope.Symbols))
@@ -1004,6 +1071,13 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 	for _, propScope := range scope.Properties {
 		for _, ref := range propScope.Decl.Refs {
 			checkRef(ref, propScope.Symbols)
+		}
+	}
+
+	// Check identifier references inside covergroups against local, module, and global scopes.
+	for _, cgScope := range scope.Covergroups {
+		for _, ref := range cgScope.Decl.Refs {
+			checkRef(ref, cgScope.Symbols)
 		}
 	}
 
@@ -1702,6 +1776,25 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			}
 		}
 
+		// 3b3. Check declarations and references inside covergroups.
+		for _, cgScope := range scope.Covergroups {
+			if !cgScope.Decl.Range.Contains(pos) {
+				continue
+			}
+			for _, sym := range cgScope.Order {
+				if sym.SelectionRange.Contains(pos) {
+					return sym
+				}
+			}
+			for _, ref := range cgScope.Decl.Refs {
+				if ref.Range.Contains(pos) {
+					if sym, ok := resolveRefInScopes(ref.Name, cgScope.Symbols, scope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
+						return sym
+					}
+				}
+			}
+		}
+
 		// 3c. Check declarations and references inside procedural blocks.
 		for _, blkScope := range scope.Blocks {
 			if !blkScope.Block.Range.Contains(pos) {
@@ -2283,7 +2376,11 @@ func formatModportSignature(mp *ast.ModportDecl) string {
 
 func formatModuleSignature(mod *ast.ModuleDecl) string {
 	var b strings.Builder
-	b.WriteString("module ")
+	if mod.IsProgram {
+		b.WriteString("program ")
+	} else {
+		b.WriteString("module ")
+	}
 	b.WriteString(mod.Name)
 	if len(mod.Ports) > 0 {
 		b.WriteString(" (")
@@ -2769,6 +2866,97 @@ func formatPropertySignature(prop *ast.PropertyDecl) string {
 		b.WriteString(")")
 	}
 	return b.String()
+}
+
+func buildCovergroupScope(cg *ast.CovergroupDecl, diags *[]SemanticDiagnostic) *CovergroupScope {
+	cgSym := &Symbol{
+		Name:           cg.Name,
+		Kind:           KindCovergroup,
+		TypeDetail:     "covergroup",
+		Signature:      "covergroup " + cg.Name,
+		Range:          cg.Range,
+		SelectionRange: cg.NameRange,
+	}
+
+	cs := &CovergroupScope{
+		Decl:    cg,
+		Symbol:  cgSym,
+		Symbols: make(map[string]*Symbol),
+	}
+
+	addLocal := func(sym *Symbol, isField bool) {
+		if sym.Name == "" {
+			return
+		}
+		if _, exists := cs.Symbols[sym.Name]; exists {
+			if sym.SelectionRange.File == "" && isField {
+				*diags = append(*diags, SemanticDiagnostic{
+					Range:   sym.SelectionRange,
+					Message: fmt.Sprintf("duplicate declaration of %q", sym.Name),
+					IsError: false,
+				})
+			}
+			return
+		}
+		cs.Symbols[sym.Name] = sym
+		cs.Order = append(cs.Order, sym)
+		if isField {
+			cgSym.Fields = append(cgSym.Fields, sym)
+			if sym.Range.File == "" {
+				cgSym.Children = append(cgSym.Children, sym)
+			}
+		}
+	}
+
+	for _, p := range cg.Params {
+		pDetail := formatPortDeclDetail(p)
+		addLocal(&Symbol{
+			Name:           p.Name,
+			Kind:           KindPort,
+			TypeDetail:     pDetail,
+			Signature:      pDetail + " " + p.Name,
+			Range:          p.Range,
+			SelectionRange: p.NameRange,
+		}, false)
+	}
+
+	for _, pt := range cg.Points {
+		addLocal(&Symbol{
+			Name:           pt.Name,
+			Kind:           KindField,
+			TypeDetail:     pt.Kind,
+			Signature:      pt.Kind + " " + pt.Name,
+			Range:          pt.Range,
+			SelectionRange: pt.NameRange,
+		}, true)
+	}
+
+	// Built-in covergroup methods and option structures for member resolution (`cg_inst.sample()`, `cg_inst.get_coverage()`, etc.).
+	for _, bm := range []struct {
+		name string
+		kind SymbolKind
+		sig  string
+	}{
+		{"sample", KindFunction, "function void sample()"},
+		{"get_coverage", KindFunction, "function real get_coverage()"},
+		{"get_inst_coverage", KindFunction, "function real get_inst_coverage()"},
+		{"set_inst_name", KindFunction, "function void set_inst_name(string s)"},
+		{"start", KindFunction, "function void start()"},
+		{"stop", KindFunction, "function void stop()"},
+		{"option", KindField, "option"},
+		{"type_option", KindField, "type_option"},
+	} {
+		cgSym.Fields = append(cgSym.Fields, &Symbol{
+			Name:           bm.name,
+			Kind:           bm.kind,
+			TypeDetail:     "covergroup " + string(bm.kind),
+			Signature:      bm.sig,
+			Range:          cg.NameRange,
+			SelectionRange: cg.NameRange,
+		})
+	}
+
+	return cs
 }
 
 func buildBlockScope(block *ast.ProceduralBlock, diags *[]SemanticDiagnostic) *BlockScope {

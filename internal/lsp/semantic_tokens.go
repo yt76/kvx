@@ -161,11 +161,11 @@ func classifySemanticToken(tok, prevTok lexer.Token, an *analyzer.Analysis) (uin
 					mods |= semModDeclaration
 				}
 				switch sym.Kind {
-				case analyzer.KindModule, analyzer.KindInterface, analyzer.KindClass, analyzer.KindType, analyzer.KindPackage:
+				case analyzer.KindModule, analyzer.KindInterface, analyzer.KindClass, analyzer.KindCovergroup, analyzer.KindType, analyzer.KindPackage:
 					return semTokenType, mods, true
 				case analyzer.KindParam:
 					return semTokenParameter, mods | semModReadonly, true
-				case analyzer.KindPort, analyzer.KindModport, analyzer.KindField, analyzer.KindConstraint:
+				case analyzer.KindPort, analyzer.KindModport, analyzer.KindField, analyzer.KindConstraint, analyzer.KindClocking:
 					if strings.HasPrefix(sym.TypeDetail, "input") {
 						mods |= semModReadonly
 					}
@@ -191,6 +191,7 @@ func isKeywordToken(t lexer.TokenType) bool {
 	case lexer.TokenModule, lexer.TokenMacromodule, lexer.TokenEndmodule,
 		lexer.TokenPackage, lexer.TokenEndpackage, lexer.TokenImport, lexer.TokenExport,
 		lexer.TokenInterface, lexer.TokenEndinterface, lexer.TokenModport,
+		lexer.TokenProgram, lexer.TokenEndprogram, lexer.TokenClocking, lexer.TokenEndclocking, lexer.TokenGlobal,
 		lexer.TokenPrimitive, lexer.TokenEndprimitive,
 		lexer.TokenTable, lexer.TokenEndtable,
 		lexer.TokenSpecify, lexer.TokenEndspecify,
@@ -213,6 +214,8 @@ func isKeywordToken(t lexer.TokenType) bool {
 		lexer.TokenAlways, lexer.TokenAlwaysComb, lexer.TokenAlwaysFF, lexer.TokenAlwaysLatch, lexer.TokenInitial, lexer.TokenFinal,
 		lexer.TokenAssert, lexer.TokenAssume, lexer.TokenCover, lexer.TokenRestrict,
 		lexer.TokenProperty, lexer.TokenEndproperty, lexer.TokenSequence, lexer.TokenEndsequence, lexer.TokenIff,
+		lexer.TokenCovergroup, lexer.TokenEndgroup, lexer.TokenCoverpoint, lexer.TokenCross,
+		lexer.TokenBins, lexer.TokenIgnoreBins, lexer.TokenIllegalBins, lexer.TokenWildcard, lexer.TokenIntersect, lexer.TokenBinsof, lexer.TokenWith,
 		lexer.TokenPosedge, lexer.TokenNegedge, lexer.TokenOr,
 		lexer.TokenBegin, lexer.TokenEnd,
 		lexer.TokenIf, lexer.TokenElse,
@@ -244,7 +247,7 @@ func isOperatorToken(t lexer.TokenType) bool {
 		lexer.TokenPlusEq, lexer.TokenMinusEq, lexer.TokenMulEq, lexer.TokenDivEq, lexer.TokenModEq,
 		lexer.TokenAndEq, lexer.TokenOrEq, lexer.TokenXorEq, lexer.TokenShlEq, lexer.TokenShrEq,
 		lexer.TokenQuestion, lexer.TokenAt, lexer.TokenHash, lexer.TokenHashHash,
-		lexer.TokenArrow, lexer.TokenEquiv, lexer.TokenImpliesOverlapping, lexer.TokenImpliesNonOverlapping,
+		lexer.TokenArrow, lexer.TokenFatArrow, lexer.TokenEquiv, lexer.TokenImpliesOverlapping, lexer.TokenImpliesNonOverlapping,
 		lexer.TokenColonColon, lexer.TokenColonEq, lexer.TokenColonSlash, lexer.TokenDollar:
 		return true
 	default:

@@ -28,6 +28,11 @@ const (
 	TokenInterface    TokenType = "interface"
 	TokenEndinterface TokenType = "endinterface"
 	TokenModport      TokenType = "modport"
+	TokenProgram      TokenType = "program"
+	TokenEndprogram   TokenType = "endprogram"
+	TokenClocking     TokenType = "clocking"
+	TokenEndclocking  TokenType = "endclocking"
+	TokenGlobal       TokenType = "global"
 	TokenPrimitive    TokenType = "primitive"
 	TokenEndprimitive TokenType = "endprimitive"
 	TokenTable        TokenType = "table"
@@ -120,6 +125,17 @@ const (
 	TokenSequence     TokenType = "sequence"
 	TokenEndsequence  TokenType = "endsequence"
 	TokenIff          TokenType = "iff"
+	TokenCovergroup   TokenType = "covergroup"
+	TokenEndgroup     TokenType = "endgroup"
+	TokenCoverpoint   TokenType = "coverpoint"
+	TokenCross        TokenType = "cross"
+	TokenBins         TokenType = "bins"
+	TokenIgnoreBins   TokenType = "ignore_bins"
+	TokenIllegalBins  TokenType = "illegal_bins"
+	TokenWildcard     TokenType = "wildcard"
+	TokenIntersect    TokenType = "intersect"
+	TokenBinsof       TokenType = "binsof"
+	TokenWith         TokenType = "with"
 	TokenPosedge    TokenType = "posedge"
 	TokenNegedge    TokenType = "negedge"
 	TokenOr         TokenType = "or"
@@ -209,6 +225,7 @@ const (
 	TokenAshl       TokenType = "<<<"
 	TokenAshr       TokenType = ">>>"
 	TokenArrow      TokenType = "->"
+	TokenFatArrow   TokenType = "=>"
 	TokenEquiv      TokenType = "<->"
 	TokenImpliesOverlapping    TokenType = "|->"
 	TokenImpliesNonOverlapping TokenType = "|=>"
@@ -241,6 +258,11 @@ var keywords = map[string]TokenType{
 	"interface":    TokenInterface,
 	"endinterface": TokenEndinterface,
 	"modport":      TokenModport,
+	"program":      TokenProgram,
+	"endprogram":   TokenEndprogram,
+	"clocking":     TokenClocking,
+	"endclocking":  TokenEndclocking,
+	"global":       TokenGlobal,
 	"primitive":    TokenPrimitive,
 	"endprimitive": TokenEndprimitive,
 	"table":        TokenTable,
@@ -333,6 +355,17 @@ var keywords = map[string]TokenType{
 	"sequence":     TokenSequence,
 	"endsequence":  TokenEndsequence,
 	"iff":          TokenIff,
+	"covergroup":   TokenCovergroup,
+	"endgroup":     TokenEndgroup,
+	"coverpoint":   TokenCoverpoint,
+	"cross":        TokenCross,
+	"bins":         TokenBins,
+	"ignore_bins":  TokenIgnoreBins,
+	"illegal_bins": TokenIllegalBins,
+	"wildcard":     TokenWildcard,
+	"intersect":    TokenIntersect,
+	"binsof":       TokenBinsof,
+	"with":         TokenWith,
 	"posedge":    TokenPosedge,
 	"negedge":    TokenNegedge,
 	"or":         TokenOr,

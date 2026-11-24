@@ -257,6 +257,10 @@ func (l *Lexer) NextToken() Token {
 		}
 		return l.makeToken(TokenTilde, "~", start)
 	case '=':
+		if l.peek() == '>' {
+			l.advance()
+			return l.makeToken(TokenFatArrow, "=>", start)
+		}
 		if l.peek() == '=' {
 			l.advance()
 			if l.peek() == '=' {

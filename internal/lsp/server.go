@@ -541,9 +541,9 @@ func toLSPSymbolKind(k analyzer.SymbolKind) LSPSymbolKind {
 		return LSPSymbolKindModule
 	case analyzer.KindInterface:
 		return LSPSymbolKindInterface
-	case analyzer.KindClass:
+	case analyzer.KindClass, analyzer.KindCovergroup:
 		return LSPSymbolKindClass
-	case analyzer.KindPort, analyzer.KindModport, analyzer.KindField, analyzer.KindConstraint:
+	case analyzer.KindPort, analyzer.KindModport, analyzer.KindField, analyzer.KindConstraint, analyzer.KindClocking:
 		return LSPSymbolKindField
 	case analyzer.KindNet:
 		return LSPSymbolKindVariable
@@ -566,9 +566,9 @@ func toCompletionKind(k analyzer.SymbolKind) CompletionItemKind {
 		return CompletionKindModule
 	case analyzer.KindInterface:
 		return CompletionKindInterface
-	case analyzer.KindClass:
+	case analyzer.KindClass, analyzer.KindCovergroup:
 		return CompletionKindClass
-	case analyzer.KindPort, analyzer.KindModport, analyzer.KindField, analyzer.KindConstraint:
+	case analyzer.KindPort, analyzer.KindModport, analyzer.KindField, analyzer.KindConstraint, analyzer.KindClocking:
 		return CompletionKindField
 	case analyzer.KindParam:
 		return CompletionKindConstant

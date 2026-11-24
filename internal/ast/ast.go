@@ -180,8 +180,10 @@ type WriteRef struct {
 	Range         Range
 }
 
-// ModuleDecl represents a Verilog module declaration (module ... endmodule).
+// ModuleDecl represents a Verilog module or SystemVerilog program declaration
+// (module ... endmodule or program ... endprogram).
 type ModuleDecl struct {
+	IsProgram  bool
 	Name       string
 	NameRange  Range
 	Range      Range
@@ -191,6 +193,31 @@ type ModuleDecl struct {
 	Items      []ModuleItem
 	Refs       []IdentifierRef
 	MemberRefs []MemberRef
+}
+
+func (m *ModuleDecl) ItemRange() Range { return m.Range }
+func (m *ModuleDecl) moduleItemNode()  {}
+
+// ClockingDecl represents a SystemVerilog clocking block ([default|global] clocking ... endclocking).
+type ClockingDecl struct {
+	Default   bool
+	Global    bool
+	Name      string
+	NameRange Range
+	Signals   []ClockingSignal
+	Range     Range
+	Refs      []IdentifierRef
+}
+
+func (c *ClockingDecl) ItemRange() Range { return c.Range }
+func (c *ClockingDecl) moduleItemNode()  {}
+
+// ClockingSignal represents a signal entry inside a clocking block.
+type ClockingSignal struct {
+	Direction string // "input", "output", "inout"
+	Name      string
+	NameRange Range
+	Range     Range
 }
 
 // PortDecl represents a module or interface port declaration (input, output, inout, ref, or interface port).
@@ -392,3 +419,24 @@ type AssertStmt struct {
 
 func (a *AssertStmt) ItemRange() Range { return a.Range }
 func (a *AssertStmt) moduleItemNode()  {}
+
+// CovergroupDecl represents a SystemVerilog functional coverage group (covergroup ... endgroup).
+type CovergroupDecl struct {
+	Name      string
+	NameRange Range
+	Params    []*PortDecl
+	Points    []CoverpointDecl
+	Range     Range
+	Refs      []IdentifierRef
+}
+
+func (c *CovergroupDecl) ItemRange() Range { return c.Range }
+func (c *CovergroupDecl) moduleItemNode()  {}
+
+// CoverpointDecl represents a coverpoint or cross item inside a covergroup.
+type CoverpointDecl struct {
+	Kind      string // "coverpoint" or "cross"
+	Name      string
+	NameRange Range
+	Range     Range
+}

@@ -27,3 +27,5 @@ sv_control_ops.sv       0 0
 sv_assertions.sv        0 0
 sv_classes.sv           0 0
 sv_lint.sv              0 5
+sv_clocking_program.sv  0 0
+sv_coverage.sv          0 0
