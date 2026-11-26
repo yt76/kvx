@@ -486,8 +486,11 @@ func (l *Lexer) scanDirectiveOrMacro() (Token, bool) {
 
 	switch name {
 	case "timescale", "define", "include", "ifdef", "ifndef", "elsif", "undef", "undefineall",
-		"default_nettype", "pragma", "line", "begin_keywords", "end_keywords",
+		"default_nettype", "default_decay_time", "default_trireg_strength",
+		"delay_mode_distributed", "delay_mode_path", "delay_mode_unit", "delay_mode_zero",
+		"pragma", "line", "begin_keywords", "end_keywords",
 		"unconnected_drive", "nounconnected_drive",
+		"protect", "endprotect",
 		"else", "endif", "resetall", "celldefine", "endcelldefine":
 		if l.emitDirectives {
 			return Token{
@@ -497,7 +500,9 @@ func (l *Lexer) scanDirectiveOrMacro() (Token, bool) {
 			}, true
 		}
 		if name == "else" || name == "endif" || name == "resetall" || name == "celldefine" || name == "endcelldefine" ||
-			name == "undefineall" || name == "end_keywords" || name == "nounconnected_drive" {
+			name == "undefineall" || name == "end_keywords" || name == "nounconnected_drive" ||
+			name == "delay_mode_distributed" || name == "delay_mode_path" || name == "delay_mode_unit" || name == "delay_mode_zero" ||
+			name == "protect" || name == "endprotect" {
 			return Token{}, false
 		}
 		// Skip remainder of the directive line (respecting backslash continuation).
@@ -663,6 +668,17 @@ func (l *Lexer) readMacroString(start ast.Position) Token {
 		}
 		if ch == '\\' {
 			l.advance()
+			if l.peek() == '\r' {
+				l.advance()
+				if l.peek() == '\n' {
+					l.advance()
+				}
+				continue
+			}
+			if l.peek() == '\n' {
+				l.advance()
+				continue
+			}
 			if l.peek() == '`' && l.peekNext() == '"' {
 				l.advance()
 				l.advance()
@@ -678,7 +694,7 @@ func (l *Lexer) readMacroString(start ast.Position) Token {
 			l.advance() // '`'
 			l.advance() // '"'
 			return Token{
-				Type:    TokenString,
+				Type:    TokenMacroString,
 				Literal: lit,
 				Range:   ast.Range{Start: start, End: l.pos()},
 			}

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"kvx/internal/ast"
+	"kvx/internal/lexer"
 )
 
 func TestParseValidVerilog(t *testing.T) {
@@ -1943,4 +1944,91 @@ endmodule
 	if len(file.Modules[0].Ports) != 4 {
 		t.Fatalf("expected 4 checker ports, got %d", len(file.Modules[0].Ports))
 	}
+}
+
+func TestPreprocessComplete(t *testing.T) {
+	t.Run("stringification_file_line_and_pasting", func(t *testing.T) {
+		src := "`define MSG(tag, v) `\"tag: `\\`\"v`\\`\"`\"\n" +
+			"`define JOIN(p, s) p``s\n" +
+			"`define HEX(w, h) w``'h``h\n" +
+			"module m;\n" +
+			"  localparam string S = `MSG(id, foo);\n" +
+			"  localparam string F = `__FILE__;\n" +
+			"  localparam int    L = `__LINE__;\n" +
+			"  localparam logic [7:0] H = `HEX(8, 5A);\n" +
+			"  logic `JOIN(sig, );\n" +
+			"  logic `JOIN(, sig2);\n" +
+			"endmodule\n"
+
+		pp := newPreprocessState(Options{FilePath: "/proj/top.sv"})
+		toks := pp.preprocessRoot(src)
+		if len(pp.errors) != 0 {
+			t.Fatalf("unexpected preprocess errors: %v", pp.errors)
+		}
+
+		// Verify stringified literal, __FILE__, __LINE__, pasted number, and empty-arg pasting.
+		var sawMsg, sawFile, sawLine, sawHex, sawSig, sawSig2 bool
+		for _, tok := range toks {
+			switch {
+			case tok.Type == lexer.TokenString && tok.Literal == `id: \"foo\"`:
+				sawMsg = true
+			case tok.Type == lexer.TokenString && tok.Literal == "/proj/top.sv":
+				sawFile = true
+			case tok.Type == lexer.TokenNumber && tok.Literal == "7":
+				sawLine = true
+			case tok.Type == lexer.TokenNumber && tok.Literal == "8'h5A":
+				sawHex = true
+			case tok.Type == lexer.TokenIdent && tok.Literal == "sig":
+				sawSig = true
+			case tok.Type == lexer.TokenIdent && tok.Literal == "sig2":
+				sawSig2 = true
+			}
+		}
+		if !sawMsg || !sawFile || !sawLine || !sawHex || !sawSig || !sawSig2 {
+			t.Fatalf("missing expected tokens: msg=%v file=%v line=%v hex=%v sig=%v sig2=%v (tokens=%v)",
+				sawMsg, sawFile, sawLine, sawHex, sawSig, sawSig2, toks)
+		}
+
+		file, errs := ParseWithOptions(src, Options{FilePath: "/proj/top.sv"})
+		if len(errs) != 0 {
+			t.Fatalf("expected 0 parse errors, got %v", errs)
+		}
+		if len(file.Modules) != 1 || file.Modules[0].Name != "m" {
+			t.Fatalf("expected module m, got %+v", file.Modules)
+		}
+	})
+
+	t.Run("include_angle_bracket_macro_and_func_defines", func(t *testing.T) {
+		vfs := map[string]string{
+			"/inc/sys_defs.vh": "`define SYS_W 16\n",
+			"/inc/dyn.vh":      "`define DYN_VAL 42\n",
+		}
+		src := "`include <sys_defs.vh>\n" +
+			"`define DYN_HDR \"dyn.vh\"\n" +
+			"`include `DYN_HDR\n" +
+			"module m;\n" +
+			"  localparam int W = `SYS_W;\n" +
+			"  localparam int V = `SCALE(`DYN_VAL);\n" +
+			"endmodule\n"
+
+		file, errs := ParseWithOptions(src, Options{
+			FilePath:    "/src/top.sv",
+			IncludeDirs: []string{"/inc"},
+			Defines: map[string]string{
+				"SCALE(x, k=2)": "((x) * (k))",
+			},
+			ReadFile: func(path string) ([]byte, error) {
+				if content, ok := vfs[path]; ok {
+					return []byte(content), nil
+				}
+				return nil, os.ErrNotExist
+			},
+		})
+		if len(errs) != 0 {
+			t.Fatalf("expected 0 parse errors, got %v", errs)
+		}
+		if len(file.Includes) != 2 || file.Includes[0].Path != "sys_defs.vh" || file.Includes[1].Path != "dyn.vh" {
+			t.Fatalf("expected 2 resolved includes (sys_defs.vh, dyn.vh), got %+v", file.Includes)
+		}
+	})
 }

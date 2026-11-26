@@ -134,7 +134,7 @@ func classifySemanticToken(tok, prevTok lexer.Token, an *analyzer.Analysis) (uin
 		return semTokenMacro, 0, true
 	case lexer.TokenNumber:
 		return semTokenNumber, 0, true
-	case lexer.TokenString:
+	case lexer.TokenString, lexer.TokenMacroString:
 		return semTokenString, 0, true
 	case lexer.TokenSystemIdent:
 		return semTokenFunction, 0, true

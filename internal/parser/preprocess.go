@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"kvx/internal/ast"
@@ -66,15 +67,34 @@ func newPreprocessState(opts Options) *preprocessState {
 		if name == "" {
 			continue
 		}
-		if val == "" {
-			macros[name] = macroDef{}
+		macroName := name
+		var params []macroParam
+		hasArgs := false
+		if lp := strings.IndexByte(name, '('); lp > 0 && strings.HasSuffix(name, ")") {
+			macroName = strings.TrimSpace(name[:lp])
+			hasArgs = true
+			paramListSrc := name[lp:]
+			paramToks := lexer.Tokenize(paramListSrc)
+			if len(paramToks) > 0 && paramToks[0].Type == lexer.TokenLParen {
+				params, _, _ = parseMacroParams(paramListSrc, paramToks, 0, 0, "")
+			}
+		}
+		if macroName == "" {
 			continue
 		}
-		toks := lexer.Tokenize(val)
-		if len(toks) > 0 && toks[len(toks)-1].Type == lexer.TokenEOF {
-			toks = toks[:len(toks)-1]
+		var body []lexer.Token
+		if val != "" {
+			toks := lexer.Tokenize(val)
+			if len(toks) > 0 && toks[len(toks)-1].Type == lexer.TokenEOF {
+				toks = toks[:len(toks)-1]
+			}
+			body = toks
 		}
-		macros[name] = macroDef{body: toks}
+		macros[macroName] = macroDef{
+			params:  params,
+			hasArgs: hasArgs,
+			body:    body,
+		}
 	}
 	return &preprocessState{
 		opts:       opts,
@@ -249,39 +269,39 @@ func (s *preprocessState) preprocessText(
 
 			switch tok.Literal {
 			case "`include":
-				if i+1 >= len(raw) || raw[i+1].Range.Start.Line != dirLine || raw[i+1].Type != lexer.TokenString {
+				incPath, angleBracket, incEnd, nextIdx, okInc := s.parseIncludeTarget(raw, i, dirLine, currentFilePath, fileTag, rootIncRange)
+				if !okInc {
 					s.addPreprocessError(tok.Range, rootIncRange, "expected filename string after `include")
 					i = skipDirectiveLine(raw, i, dirLine)
 					continue
 				}
-				strTok := raw[i+1]
-				i++
+				i = nextIdx
 				incRange := ast.Range{
 					File:  fileTag,
 					Start: tok.Range.Start,
-					End:   strTok.Range.End,
+					End:   incEnd,
 				}
 				effRootRange := incRange
 				if fileTag != "" {
 					effRootRange = rootIncRange
 				}
 
-				resolvedPath, data, err := s.resolveInclude(strTok.Literal, currentFilePath)
+				resolvedPath, data, err := s.resolveInclude(incPath, currentFilePath, angleBracket)
 				if fileTag == "" {
 					s.includes = append(s.includes, &ast.IncludeDecl{
-						Path:         strTok.Literal,
+						Path:         incPath,
 						ResolvedPath: resolvedPath,
 						Range:        incRange,
 					})
 				}
 				if err != nil {
-					s.addPreprocessError(incRange, effRootRange, fmt.Sprintf("cannot open include file %q", strTok.Literal))
+					s.addPreprocessError(incRange, effRootRange, fmt.Sprintf("cannot open include file %q", incPath))
 					i = skipDirectiveLine(raw, i, dirLine)
 					continue
 				}
 
 				if containsPath(includeStack, resolvedPath) {
-					s.addPreprocessError(incRange, effRootRange, fmt.Sprintf("circular include detected for %q", strTok.Literal))
+					s.addPreprocessError(incRange, effRootRange, fmt.Sprintf("circular include detected for %q", incPath))
 					i = skipDirectiveLine(raw, i, dirLine)
 					continue
 				}
@@ -375,7 +395,9 @@ func (s *preprocessState) preprocessText(
 				})
 				delete(s.macros, argTok.Literal)
 
-			case "`resetall", "`celldefine", "`endcelldefine", "`end_keywords", "`nounconnected_drive":
+			case "`resetall", "`celldefine", "`endcelldefine", "`end_keywords", "`nounconnected_drive",
+				"`delay_mode_distributed", "`delay_mode_path", "`delay_mode_unit", "`delay_mode_zero",
+				"`protect", "`endprotect":
 				// Standalone directive with no arguments on the line.
 
 			case "`undefineall":
@@ -394,12 +416,17 @@ func (s *preprocessState) preprocessText(
 
 		// Handle macro usage: `MACRO_NAME or `MACRO_NAME(arg1, arg2)
 		if tok.Type == lexer.TokenIdent && strings.HasPrefix(tok.Literal, "`") {
-			expanded, nextIdx, ok := s.tryExpandMacro(raw, i, fileTag, rootIncRange, map[string]bool{}, 0, true)
+			expanded, nextIdx, ok := s.tryExpandMacro(raw, i, currentFilePath, fileTag, rootIncRange, map[string]bool{}, 0, true)
 			if ok {
 				out = append(out, expanded...)
 				i = nextIdx
 				continue
 			}
+		}
+
+		if tok.Type == lexer.TokenMacroString {
+			tok.Type = lexer.TokenString
+			tok.Literal = expandMacroString(tok.Literal, nil)
 		}
 
 		out = append(out, tok)
@@ -563,6 +590,7 @@ func parseMacroCallArgs(tokens []lexer.Token, lparenIdx int, fileTag string) ([]
 func (s *preprocessState) tryExpandMacro(
 	tokens []lexer.Token,
 	idx int,
+	currentFilePath string,
 	fileTag string,
 	rootIncRange ast.Range,
 	expanding map[string]bool,
@@ -574,6 +602,27 @@ func (s *preprocessState) tryExpandMacro(
 		tok.Range.File = fileTag
 	}
 	macroName := strings.TrimPrefix(tok.Literal, "`")
+
+	// IEEE 1800 built-in predefined macros: `__FILE__ and `__LINE__
+	if macroName == "__FILE__" {
+		fp := currentFilePath
+		if fp == "" {
+			fp = fileTag
+		}
+		return []lexer.Token{{
+			Type:    lexer.TokenString,
+			Literal: fp,
+			Range:   tok.Range,
+		}}, idx, true
+	}
+	if macroName == "__LINE__" {
+		return []lexer.Token{{
+			Type:    lexer.TokenNumber,
+			Literal: strconv.Itoa(tok.Range.Start.Line + 1),
+			Range:   tok.Range,
+		}}, idx, true
+	}
+
 	if recordRefs {
 		s.macroRefs = append(s.macroRefs, ast.IdentifierRef{
 			Name:  tok.Literal,
@@ -618,7 +667,7 @@ func (s *preprocessState) tryExpandMacro(
 		for pIdx, p := range def.params {
 			var argToks []lexer.Token
 			if pIdx < len(rawArgs) && len(rawArgs[pIdx]) > 0 {
-				argToks = s.expandTokenSlice(rawArgs[pIdx], fileTag, rootIncRange, expanding, depth+1, recordRefs)
+				argToks = s.expandTokenSlice(rawArgs[pIdx], currentFilePath, fileTag, rootIncRange, expanding, depth+1, recordRefs)
 			} else if p.hasDefault {
 				argToks = cloneTokensWithRange(p.defaultVal, tok.Range)
 			}
@@ -626,12 +675,38 @@ func (s *preprocessState) tryExpandMacro(
 		}
 
 		substituted := make([]lexer.Token, 0, len(def.body))
-		for _, bt := range def.body {
+		prevWasEmptyParam := false
+		for bi := 0; bi < len(def.body); bi++ {
+			bt := def.body[bi]
+			if bt.Type == lexer.TokenPaste {
+				// If either side of `` is a formal parameter that expanded to 0 tokens,
+				// drop the `` operator so adjacent unrelated punctuation isn't glued together.
+				nextIsEmptyParam := false
+				if bi+1 < len(def.body) && def.body[bi+1].Type == lexer.TokenIdent {
+					if argToks, isParam := paramMap[def.body[bi+1].Literal]; isParam && len(argToks) == 0 {
+						nextIsEmptyParam = true
+					}
+				}
+				if prevWasEmptyParam || nextIsEmptyParam {
+					prevWasEmptyParam = false
+					continue
+				}
+			}
 			if bt.Type == lexer.TokenIdent {
 				if argToks, isParam := paramMap[bt.Literal]; isParam {
 					substituted = append(substituted, argToks...)
+					prevWasEmptyParam = len(argToks) == 0
 					continue
 				}
+			}
+			prevWasEmptyParam = false
+			if bt.Type == lexer.TokenMacroString {
+				substituted = append(substituted, lexer.Token{
+					Type:    lexer.TokenString,
+					Literal: expandMacroString(bt.Literal, paramMap),
+					Range:   tok.Range,
+				})
+				continue
 			}
 			expanded := bt
 			expanded.Range = tok.Range
@@ -640,7 +715,7 @@ func (s *preprocessState) tryExpandMacro(
 
 		substituted = pasteMacroTokens(substituted)
 		nextExpanding := copyExpandingSet(expanding, macroName)
-		res := s.expandTokenSlice(substituted, fileTag, rootIncRange, nextExpanding, depth+1, false)
+		res := s.expandTokenSlice(substituted, currentFilePath, fileTag, rootIncRange, nextExpanding, depth+1, false)
 		return res, endIdx, true
 	}
 
@@ -649,9 +724,16 @@ func (s *preprocessState) tryExpandMacro(
 		return nil, idx, true
 	}
 
-	substituted := pasteMacroTokens(cloneTokensWithRange(def.body, tok.Range))
+	cloned := cloneTokensWithRange(def.body, tok.Range)
+	for ci := range cloned {
+		if cloned[ci].Type == lexer.TokenMacroString {
+			cloned[ci].Type = lexer.TokenString
+			cloned[ci].Literal = expandMacroString(cloned[ci].Literal, nil)
+		}
+	}
+	substituted := pasteMacroTokens(cloned)
 	nextExpanding := copyExpandingSet(expanding, macroName)
-	res := s.expandTokenSlice(substituted, fileTag, rootIncRange, nextExpanding, depth+1, false)
+	res := s.expandTokenSlice(substituted, currentFilePath, fileTag, rootIncRange, nextExpanding, depth+1, false)
 	return res, idx, true
 }
 
@@ -675,12 +757,37 @@ func pasteMacroTokens(tokens []lexer.Token) []lexer.Token {
 				prev := out[len(out)-1]
 				next := tokens[i+1]
 				combinedLit := prev.Literal + next.Literal
-				out[len(out)-1] = lexer.Token{
-					Type:    lexer.LookupIdent(combinedLit),
-					Literal: combinedLit,
-					Range:   prev.Range,
-				}
 				i++ // consume next
+				// Also absorb any immediately contiguous word/number tokens from the same
+				// source slice (e.g. hex digits like `5A` that lexed as `5` + `A`).
+				lastTok := next
+				for i+1 < len(tokens) &&
+					len(tokens[i+1].Literal) > 0 &&
+					isWordByte(tokens[i+1].Literal[0]) &&
+					lastTok.Range.File == tokens[i+1].Range.File &&
+					lastTok.Range.End.Offset > 0 &&
+					lastTok.Range.End.Offset == tokens[i+1].Range.Start.Offset {
+					i++
+					lastTok = tokens[i]
+					combinedLit += lastTok.Literal
+				}
+				relexed := lexer.Tokenize(combinedLit)
+				if len(relexed) > 0 && relexed[len(relexed)-1].Type == lexer.TokenEOF {
+					relexed = relexed[:len(relexed)-1]
+				}
+				if len(relexed) > 0 {
+					out = out[:len(out)-1]
+					for _, rt := range relexed {
+						rt.Range = prev.Range
+						out = append(out, rt)
+					}
+				} else {
+					out[len(out)-1] = lexer.Token{
+						Type:    lexer.LookupIdent(combinedLit),
+						Literal: combinedLit,
+						Range:   prev.Range,
+					}
+				}
 			}
 			continue
 		}
@@ -691,6 +798,7 @@ func pasteMacroTokens(tokens []lexer.Token) []lexer.Token {
 
 func (s *preprocessState) expandTokenSlice(
 	tokens []lexer.Token,
+	currentFilePath string,
 	fileTag string,
 	rootIncRange ast.Range,
 	expanding map[string]bool,
@@ -704,15 +812,160 @@ func (s *preprocessState) expandTokenSlice(
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
 		if tok.Type == lexer.TokenIdent && strings.HasPrefix(tok.Literal, "`") {
-			if expanded, nextIdx, ok := s.tryExpandMacro(tokens, i, fileTag, rootIncRange, expanding, depth, recordRefs); ok {
+			if expanded, nextIdx, ok := s.tryExpandMacro(tokens, i, currentFilePath, fileTag, rootIncRange, expanding, depth, recordRefs); ok {
 				out = append(out, expanded...)
 				i = nextIdx
 				continue
 			}
 		}
+		if tok.Type == lexer.TokenMacroString {
+			tok.Type = lexer.TokenString
+			tok.Literal = expandMacroString(tok.Literal, nil)
+		}
 		out = append(out, tok)
 	}
 	return out
+}
+
+// expandMacroString evaluates a SystemVerilog macro stringification literal `"...`"
+// by substituting formal arguments, converting `\`" to \", and stripping `` separators.
+func expandMacroString(raw string, paramMap map[string][]lexer.Token) string {
+	var b strings.Builder
+	b.Grow(len(raw))
+
+	isIdentStart := func(c byte) bool {
+		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+	}
+	isIdentPart := func(c byte) bool {
+		return isIdentStart(c) || (c >= '0' && c <= '9') || c == '$'
+	}
+
+	for i := 0; i < len(raw); {
+		// Escaped quote inside macro string: `\`" -> \"
+		if i+3 < len(raw) && raw[i] == '`' && raw[i+1] == '\\' && raw[i+2] == '`' && raw[i+3] == '"' {
+			b.WriteString(`\"`)
+			i += 4
+			continue
+		}
+		// Line continuation inside macro string: \<CR><LF> or \<LF>
+		if raw[i] == '\\' && i+1 < len(raw) && (raw[i+1] == '\n' || raw[i+1] == '\r') {
+			i++
+			if i < len(raw) && raw[i] == '\r' {
+				i++
+			}
+			if i < len(raw) && raw[i] == '\n' {
+				i++
+			}
+			continue
+		}
+		// Token pasting separator inside macro string: ``
+		if i+1 < len(raw) && raw[i] == '`' && raw[i+1] == '`' {
+			i += 2
+			continue
+		}
+		// Formal parameter substitution on identifier boundaries
+		if len(paramMap) > 0 && isIdentStart(raw[i]) {
+			start := i
+			i++
+			for i < len(raw) && isIdentPart(raw[i]) {
+				i++
+			}
+			ident := raw[start:i]
+			if argToks, ok := paramMap[ident]; ok {
+				b.WriteString(renderMacroArgTokens(argToks))
+			} else {
+				b.WriteString(ident)
+			}
+			continue
+		}
+		b.WriteByte(raw[i])
+		i++
+	}
+	return b.String()
+}
+
+func renderMacroArgTokens(tokens []lexer.Token) string {
+	if len(tokens) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, t := range tokens {
+		if i > 0 {
+			prev := tokens[i-1].Literal
+			cur := t.Literal
+			// Insert space between adjacent word/number tokens for readability.
+			if len(prev) > 0 && len(cur) > 0 && isWordByte(prev[len(prev)-1]) && isWordByte(cur[0]) {
+				b.WriteByte(' ')
+			}
+		}
+		if t.Type == lexer.TokenString {
+			b.WriteByte('"')
+			b.WriteString(t.Literal)
+			b.WriteByte('"')
+		} else {
+			b.WriteString(t.Literal)
+		}
+	}
+	return b.String()
+}
+
+func isWordByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '$'
+}
+
+// parseIncludeTarget parses the filename after `include:
+// supports "file.vh", <file.vh>, and `MACRO expanding to either form.
+func (s *preprocessState) parseIncludeTarget(
+	raw []lexer.Token,
+	dirIdx int,
+	dirLine int,
+	currentFilePath string,
+	fileTag string,
+	rootIncRange ast.Range,
+) (incPath string, angleBracket bool, endPos ast.Position, nextIdx int, ok bool) {
+	if dirIdx+1 >= len(raw) || raw[dirIdx+1].Range.Start.Line != dirLine || raw[dirIdx+1].Type == lexer.TokenEOF {
+		return "", false, ast.Position{}, dirIdx, false
+	}
+	first := raw[dirIdx+1]
+	if first.Type == lexer.TokenString {
+		return first.Literal, false, first.Range.End, dirIdx + 1, true
+	}
+	if first.Type == lexer.TokenLt {
+		var parts []string
+		for j := dirIdx + 2; j < len(raw) && raw[j].Range.Start.Line == dirLine && raw[j].Type != lexer.TokenEOF; j++ {
+			if raw[j].Type == lexer.TokenGt {
+				if len(parts) == 0 {
+					return "", true, raw[j].Range.End, j, false
+				}
+				return strings.Join(parts, ""), true, raw[j].Range.End, j, true
+			}
+			parts = append(parts, raw[j].Literal)
+		}
+		return "", true, first.Range.End, dirIdx, false
+	}
+	if first.Type == lexer.TokenIdent && strings.HasPrefix(first.Literal, "`") {
+		expanded, expEndIdx, expandedOK := s.tryExpandMacro(raw, dirIdx+1, currentFilePath, fileTag, rootIncRange, map[string]bool{}, 0, true)
+		if !expandedOK || len(expanded) == 0 {
+			return "", false, first.Range.End, dirIdx, false
+		}
+		end := raw[expEndIdx].Range.End
+		if expanded[0].Type == lexer.TokenString {
+			return expanded[0].Literal, false, end, expEndIdx, true
+		}
+		if expanded[0].Type == lexer.TokenLt {
+			var parts []string
+			for j := 1; j < len(expanded); j++ {
+				if expanded[j].Type == lexer.TokenGt {
+					if len(parts) == 0 {
+						return "", true, end, expEndIdx, false
+					}
+					return strings.Join(parts, ""), true, end, expEndIdx, true
+				}
+				parts = append(parts, expanded[j].Literal)
+			}
+		}
+	}
+	return "", false, first.Range.End, dirIdx, false
 }
 
 func cloneTokensWithRange(tokens []lexer.Token, rng ast.Range) []lexer.Token {
@@ -736,11 +989,22 @@ func copyExpandingSet(src map[string]bool, add string) map[string]bool {
 	return dst
 }
 
-func (s *preprocessState) resolveInclude(incPath string, currentFilePath string) (string, []byte, error) {
+func (s *preprocessState) resolveInclude(incPath string, currentFilePath string, angleBracket bool) (string, []byte, error) {
 	var candidates []string
 
 	if filepath.IsAbs(incPath) {
 		candidates = append(candidates, incPath)
+	} else if angleBracket {
+		for _, dir := range s.opts.IncludeDirs {
+			if dir != "" {
+				candidates = append(candidates, filepath.Join(dir, incPath))
+			}
+		}
+		if currentFilePath != "" {
+			candidates = append(candidates, filepath.Join(filepath.Dir(currentFilePath), incPath))
+		} else {
+			candidates = append(candidates, incPath)
+		}
 	} else {
 		if currentFilePath != "" {
 			candidates = append(candidates, filepath.Join(filepath.Dir(currentFilePath), incPath))
