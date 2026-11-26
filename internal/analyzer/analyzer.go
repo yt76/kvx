@@ -36,6 +36,8 @@ type Symbol struct {
 	Kind           SymbolKind
 	TypeDetail     string
 	TypeName       string
+	TypeArgs       []ast.TypeParamArg
+	TypeParams     []*ast.ParamDecl
 	Signature      string
 	Range          ast.Range
 	SelectionRange ast.Range
@@ -283,6 +285,8 @@ func AnalyzeWithWorkspace(file *ast.SourceFile, ctx WorkspaceContext) *Analysis 
 				Name:           td.Name,
 				Kind:           KindType,
 				TypeDetail:     detail,
+				TypeName:       td.BaseType,
+				TypeArgs:       td.TypeArgs,
 				Signature:      sig,
 				Range:          td.Range,
 				SelectionRange: td.NameRange,
@@ -540,6 +544,7 @@ func analyzeClass(cls *ast.ClassDecl, globals map[string]*Symbol, allPkgs map[st
 		Name:           cls.Name,
 		Kind:           KindClass,
 		TypeDetail:     detail,
+		TypeParams:     cls.Params,
 		Signature:      sig,
 		Range:          cls.Range,
 		SelectionRange: cls.NameRange,
@@ -547,11 +552,20 @@ func analyzeClass(cls *ast.ClassDecl, globals map[string]*Symbol, allPkgs map[st
 	}
 
 	// Pre-populate inherited members from BaseClass (if known) into a copy of globals for method bodies,
-	// and also inject `this` and `super` into the class scope.
+	// instantiating BaseClass type parameters using cls.BaseTypeArgs (e.g. `extends base_box #(U, 16)`).
 	var baseSym *Symbol
+	var inheritedFields []*Symbol
 	if cls.BaseClass != "" {
 		if sym, ok := resolveRefInScopes(cls.BaseClass, nil, nil, globals, allPkgs, allIfaces, false); ok && sym != nil {
 			baseSym = sym
+			if len(baseSym.TypeParams) > 0 {
+				inheritedFields = instantiateClassFields(baseSym, cls.BaseTypeArgs)
+				clonedBase := *baseSym
+				clonedBase.Fields = inheritedFields
+				baseSym = &clonedBase
+			} else {
+				inheritedFields = baseSym.Fields
+			}
 		}
 	}
 
@@ -559,11 +573,9 @@ func analyzeClass(cls *ast.ClassDecl, globals map[string]*Symbol, allPkgs map[st
 	for k, v := range globals {
 		classGlobals[k] = v
 	}
-	if baseSym != nil {
-		for _, f := range baseSym.Fields {
-			if f.Name != "" {
-				classGlobals[f.Name] = f
-			}
+	for _, f := range inheritedFields {
+		if f.Name != "" {
+			classGlobals[f.Name] = f
 		}
 	}
 
@@ -806,6 +818,7 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 					Kind:           KindPort,
 					TypeDetail:     detail,
 					TypeName:       d.NetType,
+					TypeArgs:       d.TypeArgs,
 					Signature:      detail + " " + d.Name,
 					Range:          d.Range,
 					SelectionRange: d.NameRange,
@@ -872,6 +885,8 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 					Name:           d.Name,
 					Kind:           KindType,
 					TypeDetail:     detail,
+					TypeName:       d.BaseType,
+					TypeArgs:       d.TypeArgs,
 					Signature:      sig,
 					Range:          d.Range,
 					SelectionRange: d.NameRange,
@@ -899,6 +914,7 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 					Kind:           KindNet,
 					TypeDetail:     detail,
 					TypeName:       d.Kind,
+					TypeArgs:       d.TypeArgs,
 					Signature:      detail + " " + d.Name,
 					Range:          d.Range,
 					SelectionRange: d.NameRange,
@@ -1181,7 +1197,7 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 				}
 			}
 		}
-		baseSym, ok := resolveRefInScopes(mref.BaseName, localSyms, scope.Symbols, globals, allPkgs, allIfaces, false)
+		baseSym, ok := resolveMemberChain(mref.BaseName, localSyms, scope.Symbols, globals, allPkgs, allIfaces, nil)
 		if !ok || baseSym == nil {
 			continue
 		}
@@ -1211,20 +1227,22 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 			}
 			continue
 		}
-		// Check typed struct/union/class variable
+		// Check typed struct/union/class/parameterized-class variable
 		if baseSym.TypeName != "" {
-			if typeSym, found := resolveRefInScopes(baseSym.TypeName, localSyms, scope.Symbols, globals, allPkgs, allIfaces, false); found && typeSym != nil && len(typeSym.Fields) > 0 {
-				if findFieldByName(typeSym.Fields, mref.MemberName) == nil {
-					kindLabel := "struct"
-					if typeSym.Kind == KindClass {
-						kindLabel = "class"
-					}
-					*diags = append(*diags, SemanticDiagnostic{
-						Range:   mref.Range,
-						Message: fmt.Sprintf("unknown field %q of %s %q", mref.MemberName, kindLabel, typeSym.Name),
-						IsError: false,
-					})
+			fields, ownerKind, ownerName := resolveFieldsWithOwner(baseSym, localSyms, scope.Symbols, globals, allPkgs, allIfaces, nil, 0)
+			if len(fields) > 0 && findFieldByName(fields, mref.MemberName) == nil {
+				kindLabel := "struct"
+				if ownerKind == KindClass {
+					kindLabel = "class"
 				}
+				if ownerName == "" {
+					ownerName = baseSym.TypeName
+				}
+				*diags = append(*diags, SemanticDiagnostic{
+					Range:   mref.Range,
+					Message: fmt.Sprintf("unknown field %q of %s %q", mref.MemberName, kindLabel, ownerName),
+					IsError: false,
+				})
 			}
 		}
 	}
@@ -1999,7 +2017,7 @@ func (a *Analysis) ResolveMemberAt(pos ast.Position, extModuleLookup func(string
 		return nil, ""
 	}
 
-	baseSym, ok := resolveRefInScopes(mref.BaseName, localSyms, modSyms, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false)
+	baseSym, ok := resolveMemberChain(mref.BaseName, localSyms, modSyms, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, extModuleLookup)
 	if !ok || baseSym == nil {
 		return nil, ""
 	}
@@ -2040,10 +2058,9 @@ func (a *Analysis) ResolveMemberAt(pos ast.Position, extModuleLookup func(string
 				return sym, ""
 			}
 		}
-		if typeSym, found := resolveRefInScopes(baseSym.TypeName, localSyms, modSyms, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); found && typeSym != nil && len(typeSym.Fields) > 0 {
-			if f := findFieldByName(typeSym.Fields, mref.MemberName); f != nil {
-				return f, ""
-			}
+		fields, _, _ := resolveFieldsWithOwner(baseSym, localSyms, modSyms, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, extModuleLookup, 0)
+		if f := findFieldByName(fields, mref.MemberName); f != nil {
+			return f, ""
 		}
 	}
 
@@ -2236,7 +2253,7 @@ func (a *Analysis) MemberCompletions(pos ast.Position, baseName string, extModul
 		modSyms = ifaceScope.Symbols
 	}
 
-	sym, ok := resolveRefInScopes(baseName, localSyms, modSyms, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false)
+	sym, ok := resolveMemberChain(baseName, localSyms, modSyms, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, extModuleLookup)
 	if !ok || sym == nil {
 		return nil
 	}
@@ -2261,17 +2278,157 @@ func (a *Analysis) MemberCompletions(pos ast.Position, baseName string, extModul
 		}
 	}
 
-	// 2c. Typed variable or port (`pkt_t pkt;`, `pkg::pkt_t pkt;`, or `axi_if u_if;`).
+	// 2c. Typed variable or port (`pkt_t pkt;`, `box #(packet) b1;`, `pkg::pkt_t pkt;`, or `axi_if u_if;`).
 	if sym.TypeName != "" {
 		if ifaceScope, found := a.AllInterfaces[sym.TypeName]; found {
 			return ifaceScope.Order
 		}
-		if typeSym, found := resolveRefInScopes(sym.TypeName, localSyms, modSyms, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); found && typeSym != nil && len(typeSym.Fields) > 0 {
-			return typeSym.Fields
+		fields, _, _ := resolveFieldsWithOwner(sym, localSyms, modSyms, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, extModuleLookup, 0)
+		if len(fields) > 0 {
+			return fields
 		}
 	}
 
 	return nil
+}
+
+// instantiateClassFields clones class member symbols while substituting formal type parameters
+// with concrete type arguments (positional, named `.T(packet)`, or parameter defaults).
+func instantiateClassFields(typeSym *Symbol, typeArgs []ast.TypeParamArg) []*Symbol {
+	if typeSym == nil || len(typeSym.Fields) == 0 {
+		return nil
+	}
+	subst := make(map[string]string, len(typeSym.TypeParams))
+	for _, p := range typeSym.TypeParams {
+		if p.Name != "" && p.ValueText != "" {
+			subst[p.Name] = strings.TrimSpace(p.ValueText)
+		}
+	}
+	posIdx := 0
+	for _, arg := range typeArgs {
+		if arg.ParamName != "" {
+			if arg.TypeName != "" {
+				subst[arg.ParamName] = arg.TypeName
+			}
+		} else {
+			if posIdx < len(typeSym.TypeParams) && arg.TypeName != "" {
+				subst[typeSym.TypeParams[posIdx].Name] = arg.TypeName
+			}
+			posIdx++
+		}
+	}
+	if len(subst) == 0 {
+		return typeSym.Fields
+	}
+
+	out := make([]*Symbol, len(typeSym.Fields))
+	for i, f := range typeSym.Fields {
+		if f == nil {
+			continue
+		}
+		cloned := *f
+		if newType, ok := subst[f.TypeName]; ok && newType != "" {
+			oldType := f.TypeName
+			cloned.TypeName = newType
+			if oldType != "" {
+				if cloned.TypeDetail == oldType {
+					cloned.TypeDetail = newType
+				}
+				if strings.HasPrefix(cloned.Signature, oldType+" ") {
+					cloned.Signature = newType + cloned.Signature[len(oldType):]
+				}
+			}
+		}
+		if len(f.TypeArgs) > 0 {
+			newArgs := make([]ast.TypeParamArg, len(f.TypeArgs))
+			for j, a := range f.TypeArgs {
+				if mapped, ok := subst[a.TypeName]; ok && mapped != "" {
+					a.TypeName = mapped
+				}
+				newArgs[j] = a
+			}
+			cloned.TypeArgs = newArgs
+		}
+		out[i] = &cloned
+	}
+	return out
+}
+
+// resolveFieldsWithOwner resolves the accessible member fields of sym, following typedef aliases
+// and instantiating parameterized class type arguments recursively.
+func resolveFieldsWithOwner(
+	sym *Symbol,
+	localSyms, modSyms, globals map[string]*Symbol,
+	allPkgs map[string]*PackageScope,
+	allIfaces map[string]*InterfaceScope,
+	extModuleLookup func(string) *ModuleScope,
+	depth int,
+) ([]*Symbol, SymbolKind, string) {
+	if sym == nil || depth > 8 {
+		return nil, "", ""
+	}
+	if len(sym.Fields) > 0 {
+		return sym.Fields, sym.Kind, sym.Name
+	}
+	if sym.TargetModule != "" {
+		if ifaceScope, found := allIfaces[sym.TargetModule]; found {
+			return ifaceScope.Order, KindInterface, ifaceScope.Interface.Name
+		}
+		if extModuleLookup != nil {
+			if modScope := extModuleLookup(sym.TargetModule); modScope != nil {
+				return modScope.Order, KindModule, modScope.Module.Name
+			}
+		}
+	}
+	if sym.TypeName == "" {
+		return nil, "", ""
+	}
+	if ifaceScope, found := allIfaces[sym.TypeName]; found {
+		return ifaceScope.Order, KindInterface, ifaceScope.Interface.Name
+	}
+	typeSym, found := resolveRefInScopes(sym.TypeName, localSyms, modSyms, globals, allPkgs, allIfaces, false)
+	if !found || typeSym == nil {
+		return nil, "", ""
+	}
+	// Follow typedef aliases (including parameterized class typedefs like `typedef box #(packet) pkt_box_t;`)
+	if typeSym.Kind == KindType && len(typeSym.Fields) == 0 && typeSym.TypeName != "" {
+		return resolveFieldsWithOwner(typeSym, localSyms, modSyms, globals, allPkgs, allIfaces, extModuleLookup, depth+1)
+	}
+	if len(typeSym.Fields) > 0 {
+		if len(typeSym.TypeParams) > 0 {
+			return instantiateClassFields(typeSym, sym.TypeArgs), typeSym.Kind, typeSym.Name
+		}
+		return typeSym.Fields, typeSym.Kind, typeSym.Name
+	}
+	return nil, "", ""
+}
+
+// resolveMemberChain resolves a single identifier (`b1`) or dotted member chain (`b1.item`)
+// to its resulting symbol.
+func resolveMemberChain(
+	chain string,
+	localSyms, modSyms, globals map[string]*Symbol,
+	allPkgs map[string]*PackageScope,
+	allIfaces map[string]*InterfaceScope,
+	extModuleLookup func(string) *ModuleScope,
+) (*Symbol, bool) {
+	if !strings.Contains(chain, ".") {
+		return resolveRefInScopes(chain, localSyms, modSyms, globals, allPkgs, allIfaces, false)
+	}
+	parts := strings.Split(chain, ".")
+	cur, ok := resolveRefInScopes(parts[0], localSyms, modSyms, globals, allPkgs, allIfaces, false)
+	if !ok || cur == nil {
+		return nil, false
+	}
+	for i := 1; i < len(parts); i++ {
+		fields, _, _ := resolveFieldsWithOwner(cur, localSyms, modSyms, globals, allPkgs, allIfaces, extModuleLookup, 0)
+		next := findFieldByName(fields, parts[i])
+		if next == nil {
+			return nil, false
+		}
+		cur = next
+	}
+	return cur, true
 }
 
 func (a *Analysis) resolveBindAt(b *ast.BindStmt, pos ast.Position) *Symbol {

@@ -186,13 +186,57 @@ func detectCompletionContext(text string, pos Position) completionContext {
 			}
 		}
 		endBase := j
-		for j > 0 && isIdentByte(text[j-1]) {
-			j--
+		for j > 0 {
+			if isIdentByte(text[j-1]) {
+				j--
+				continue
+			}
+			// Allow chained member access such as `b1.item.` or `arr[0].item.`
+			if text[j-1] == '.' && j-1 > 0 {
+				k := j - 1
+				if k > 0 && text[k-1] == ']' {
+					depth := 1
+					k--
+					for k > 0 && depth > 0 {
+						k--
+						if text[k] == ']' {
+							depth++
+						} else if text[k] == '[' {
+							depth--
+						}
+					}
+				}
+				if k > 0 && isIdentByte(text[k-1]) {
+					j = k
+					continue
+				}
+			}
+			break
 		}
 		if j < endBase {
+			// Strip any `[...]` index slices from intermediate segments so `arr[0].item` becomes `arr.item`.
+			rawChain := text[j:endBase]
+			var cleanChain strings.Builder
+			bDepth := 0
+			for ci := 0; ci < len(rawChain); ci++ {
+				ch := rawChain[ci]
+				if ch == '[' {
+					bDepth++
+					continue
+				}
+				if ch == ']' {
+					if bDepth > 0 {
+						bDepth--
+					}
+					continue
+				}
+				if bDepth == 0 {
+					cleanChain.WriteByte(ch)
+				}
+			}
 			return completionContext{
 				kind:     compMember,
-				baseName: text[j:endBase],
+				baseName: cleanChain.String(),
 				prefix:   prefix,
 			}
 		}

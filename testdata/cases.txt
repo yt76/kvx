@@ -33,3 +33,4 @@ sv_bind.sv              0 0
 sv_dpi.sv               0 0
 sv_checker_let.sv       0 0
 sv_preprocess.sv        0 0
+sv_param_classes.sv     0 0

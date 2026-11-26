@@ -2032,3 +2032,44 @@ func TestPreprocessComplete(t *testing.T) {
 		}
 	})
 }
+
+func TestParseSystemVerilogParameterizedClass(t *testing.T) {
+	src := `
+class packet;
+    logic [31:0] addr;
+endclass
+
+class box #(type T = packet, int DEPTH = 8);
+    T item;
+endclass
+
+class ext_box #(type U = packet) extends box #(U, 16);
+    U extra;
+endclass
+
+typedef box #(packet, 16) pkt_box_t;
+
+module tb;
+    box #(packet) b1;
+    box #(.T(packet)) b2;
+    pkt_box_t b3;
+    logic [31:0] a;
+    initial begin
+        a = b1.item.addr;
+    end
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Classes) != 3 {
+		t.Fatalf("expected 3 classes, got %d", len(file.Classes))
+	}
+	if len(file.Classes[2].BaseTypeArgs) != 2 || file.Classes[2].BaseTypeArgs[0].TypeName != "U" {
+		t.Fatalf("expected BaseTypeArgs [U, 16] on ext_box, got %+v", file.Classes[2].BaseTypeArgs)
+	}
+	if len(file.Typedefs) != 1 || len(file.Typedefs[0].TypeArgs) != 2 || file.Typedefs[0].TypeArgs[0].TypeName != "packet" {
+		t.Fatalf("expected typedef pkt_box_t with TypeArgs [packet, 16], got %+v", file.Typedefs)
+	}
+}

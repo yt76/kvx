@@ -370,6 +370,7 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 
 	var curDir string
 	var curNetType string
+	var curTypeArgs []ast.TypeParamArg
 	var curIfName string
 	var curIfRange ast.Range
 	var curModportName string
@@ -440,6 +441,11 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 				}
 			} else if p.isUserTypeBeforeIdent() {
 				curNetType, _ = p.parseScopedTypeName(nil, mod)
+				if p.cur().Type == lexer.TokenHash && p.peekN(1).Type == lexer.TokenLParen {
+					curTypeArgs = p.parseTypeParamArgs(nil, mod)
+				} else {
+					curTypeArgs = nil
+				}
 			}
 			if p.cur().Type == lexer.TokenScalared || p.cur().Type == lexer.TokenVectored {
 				p.advance()
@@ -524,6 +530,11 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 				}
 			} else if p.isUserTypeBeforeIdent() {
 				curNetType, _ = p.parseScopedTypeName(nil, mod)
+				if p.cur().Type == lexer.TokenHash && p.peekN(1).Type == lexer.TokenLParen {
+					curTypeArgs = p.parseTypeParamArgs(nil, mod)
+				} else {
+					curTypeArgs = nil
+				}
 			}
 			if p.cur().Type == lexer.TokenSigned || p.cur().Type == lexer.TokenUnsigned {
 				curSigned = p.cur().Type == lexer.TokenSigned
@@ -609,6 +620,7 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 			port := &ast.PortDecl{
 				Direction:          portDir,
 				NetType:            portNetType,
+				TypeArgs:           curTypeArgs,
 				InterfaceName:      curIfName,
 				InterfaceNameRange: curIfRange,
 				ModportName:        curModportName,
@@ -1177,6 +1189,9 @@ func (p *Parser) parseFunctionDeclOpts(mod *ast.ModuleDecl, isPrototype bool) {
 		}
 	} else if p.isUserTypeBeforeIdent() {
 		fn.ReturnType, _ = p.parseScopedTypeName(nil, mod)
+		if p.cur().Type == lexer.TokenHash && p.peekN(1).Type == lexer.TokenLParen {
+			_ = p.parseTypeParamArgs(nil, mod)
+		}
 	}
 
 	for p.cur().Type == lexer.TokenLBracket {
@@ -2272,9 +2287,11 @@ func (p *Parser) parseInstConnections(refs *[]ast.IdentifierRef, namedRefs *[]as
 			} else {
 				if lastBase != "" && bracketDepth == 0 {
 					p.recordMemberRef(mod, lastBase, tok)
+					lastBase = lastBase + "." + tok.Literal
+				} else {
+					lastBase = ""
 				}
 				scopedPrefix = ""
-				lastBase = ""
 			}
 		case lexer.TokenIllegal:
 			p.addError(tok.Range, tok.Literal)
@@ -2544,9 +2561,11 @@ func (p *Parser) collectTokensUntil(refs *[]ast.IdentifierRef, mod *ast.ModuleDe
 			} else {
 				if prevWasDot && lastBase != "" && bracketDepth == 0 {
 					p.recordMemberRef(mod, lastBase, tok)
+					lastBase = lastBase + "." + tok.Literal
+				} else {
+					lastBase = ""
 				}
 				scopedPrefix = ""
-				lastBase = ""
 			}
 		case lexer.TokenIllegal:
 			p.addError(tok.Range, tok.Literal)
@@ -2643,9 +2662,11 @@ func (p *Parser) parseBalancedParensOpts(refs *[]ast.IdentifierRef, mod *ast.Mod
 			} else {
 				if lastBase != "" && bracketDepth == 0 {
 					p.recordMemberRef(mod, lastBase, tok)
+					lastBase = lastBase + "." + tok.Literal
+				} else {
+					lastBase = ""
 				}
 				scopedPrefix = ""
-				lastBase = ""
 			}
 		case lexer.TokenIllegal:
 			p.addError(tok.Range, tok.Literal)
@@ -2936,8 +2957,9 @@ func (p *Parser) consumeOptionalEndLabel() {
 	}
 }
 
-// isUserTypeBeforeIdent reports whether the current TokenIdent (or scoped `pkg::type_t`)
-// is a user-defined type name followed (after optional packed dimensions `[...]`) by another TokenIdent.
+// isUserTypeBeforeIdent reports whether the current TokenIdent (or scoped `pkg::type_t`,
+// optionally parameterized `box #(packet)`) is a user-defined type name followed
+// (after optional packed dimensions `[...]`) by another TokenIdent.
 func (p *Parser) isUserTypeBeforeIdent() bool {
 	if p.cur().Type != lexer.TokenIdent {
 		return false
@@ -2945,6 +2967,22 @@ func (p *Parser) isUserTypeBeforeIdent() bool {
 	offset := 1
 	if p.peekN(offset).Type == lexer.TokenColonColon && p.peekN(offset+1).Type == lexer.TokenIdent {
 		offset += 2
+	}
+	if p.peekN(offset).Type == lexer.TokenHash && p.peekN(offset+1).Type == lexer.TokenLParen {
+		depth := 1
+		offset += 2
+		for depth > 0 {
+			pt := p.peekN(offset)
+			if pt.Type == lexer.TokenEOF || pt.Type == lexer.TokenSemicolon {
+				return false
+			}
+			if pt.Type == lexer.TokenLParen {
+				depth++
+			} else if pt.Type == lexer.TokenRParen {
+				depth--
+			}
+			offset++
+		}
 	}
 	for p.peekN(offset).Type == lexer.TokenLBracket {
 		depth := 1
@@ -2965,8 +3003,8 @@ func (p *Parser) isUserTypeBeforeIdent() bool {
 	return p.peekN(offset).Type == lexer.TokenIdent
 }
 
-// isUserTypeVarDecl reports whether the current TokenIdent (or `pkg::type_t`) begins a variable declaration,
-// e.g. `state_t cur, next;`, `pkg::pkt_t [3:0] mem [0:15];`, `T tmp = '0;`.
+// isUserTypeVarDecl reports whether the current TokenIdent (or `pkg::type_t`, optionally `#(...)`)
+// begins a variable declaration, e.g. `state_t cur, next;`, `box #(packet) b1;`, `T tmp = '0;`.
 func (p *Parser) isUserTypeVarDecl() bool {
 	if p.cur().Type != lexer.TokenIdent {
 		return false
@@ -2974,6 +3012,23 @@ func (p *Parser) isUserTypeVarDecl() bool {
 	offset := 1
 	if p.peekN(offset).Type == lexer.TokenColonColon && p.peekN(offset+1).Type == lexer.TokenIdent {
 		offset += 2
+	}
+	// Skip optional class/type parameter overrides: `box #(packet, 16) b1;`
+	if p.peekN(offset).Type == lexer.TokenHash && p.peekN(offset+1).Type == lexer.TokenLParen {
+		depth := 1
+		offset += 2
+		for depth > 0 {
+			pt := p.peekN(offset)
+			if pt.Type == lexer.TokenEOF || pt.Type == lexer.TokenSemicolon {
+				return false
+			}
+			if pt.Type == lexer.TokenLParen {
+				depth++
+			} else if pt.Type == lexer.TokenRParen {
+				depth--
+			}
+			offset++
+		}
 	}
 	// Skip optional packed dimensions after type name: `pkt_t [3:0] var_name`
 	for p.peekN(offset).Type == lexer.TokenLBracket {
@@ -3261,8 +3316,7 @@ func (p *Parser) parseClassDeclWithVirtual(isVirtual bool, startPos ast.Position
 			cls.BaseClass = baseName
 			cls.BaseClassRange = baseTok.Range
 			if p.cur().Type == lexer.TokenHash && p.peekN(1).Type == lexer.TokenLParen {
-				p.advance()
-				p.parseBalancedParens(nil, dummyMod)
+				cls.BaseTypeArgs = p.parseTypeParamArgs(nil, dummyMod)
 			}
 			if p.cur().Type == lexer.TokenLParen {
 				p.parseBalancedParens(nil, dummyMod)
@@ -3378,9 +3432,11 @@ func (p *Parser) parseConstraintDecl(mod *ast.ModuleDecl) {
 			if prevWasDot {
 				if lastBase != "" && bracketDepth == 0 {
 					p.recordMemberRef(mod, lastBase, tok)
+					lastBase = lastBase + "." + tok.Literal
+				} else {
+					lastBase = ""
 				}
 				scopedPrefix = ""
-				lastBase = ""
 			} else if p.cur().Type == lexer.TokenColonColon {
 				scopedPrefix = tok.Literal
 				lastBase = ""
@@ -3473,6 +3529,11 @@ func (p *Parser) parseForeachHeader(refs *[]ast.IdentifierRef, mod *ast.ModuleDe
 func (p *Parser) parseUserTypeVarDecl(mod *ast.ModuleDecl) {
 	typeName, typeTok := p.parseScopedTypeName(nil, mod)
 
+	var typeArgs []ast.TypeParamArg
+	if p.cur().Type == lexer.TokenHash && p.peekN(1).Type == lexer.TokenLParen {
+		typeArgs = p.parseTypeParamArgs(nil, mod)
+	}
+
 	var width *ast.BitRange
 	for p.cur().Type == lexer.TokenLBracket {
 		r := p.parseBitRange(mod)
@@ -3502,6 +3563,7 @@ func (p *Parser) parseUserTypeVarDecl(mod *ast.ModuleDecl) {
 		if mod != nil {
 			mod.Items = append(mod.Items, &ast.NetDecl{
 				Kind:      typeName,
+				TypeArgs:  typeArgs,
 				Width:     width,
 				Name:      nameTok.Literal,
 				NameRange: nameTok.Range,
@@ -3517,6 +3579,113 @@ func (p *Parser) parseUserTypeVarDecl(mod *ast.ModuleDecl) {
 	}
 
 	p.expectSemicolon("variable declaration")
+}
+
+// parseTypeParamArgs parses `#(arg1, .P(arg2), ...)` in a parameterized class or type instantiation.
+func (p *Parser) parseTypeParamArgs(itemRefs *[]ast.IdentifierRef, mod *ast.ModuleDecl) []ast.TypeParamArg {
+	p.advance() // '#'
+	if p.cur().Type != lexer.TokenLParen {
+		return nil
+	}
+	p.advance() // '('
+
+	var args []ast.TypeParamArg
+	for !p.isEOF() && p.cur().Type != lexer.TokenRParen {
+		startPos := p.cur().Range.Start
+		paramName := ""
+		if p.cur().Type == lexer.TokenDot && p.peekN(1).Type == lexer.TokenIdent {
+			p.advance() // '.'
+			paramName = p.advance().Literal
+			if p.cur().Type == lexer.TokenLParen {
+				p.advance() // '('
+				typeStr, endPos := p.parseSingleTypeParamValue(itemRefs, mod, lexer.TokenRParen)
+				if p.cur().Type == lexer.TokenRParen {
+					endPos = p.advance().Range.End
+				}
+				args = append(args, ast.TypeParamArg{
+					ParamName: paramName,
+					TypeName:  typeStr,
+					Range:     ast.Range{File: p.cur().Range.File, Start: startPos, End: endPos},
+				})
+			}
+		} else {
+			typeStr, endPos := p.parseSingleTypeParamValue(itemRefs, mod, lexer.TokenComma, lexer.TokenRParen)
+			args = append(args, ast.TypeParamArg{
+				TypeName: typeStr,
+				Range:    ast.Range{File: p.cur().Range.File, Start: startPos, End: endPos},
+			})
+		}
+		if p.cur().Type == lexer.TokenComma {
+			p.advance()
+			continue
+		}
+		break
+	}
+	if p.cur().Type == lexer.TokenRParen {
+		p.advance()
+	}
+	return args
+}
+
+// parseSingleTypeParamValue parses one type or value expression inside `#(...)` up to stop tokens,
+// recording identifier references and returning the normalized type/value string.
+func (p *Parser) parseSingleTypeParamValue(itemRefs *[]ast.IdentifierRef, mod *ast.ModuleDecl, stops ...lexer.TokenType) (string, ast.Position) {
+	isStop := func(t lexer.TokenType) bool {
+		for _, s := range stops {
+			if t == s {
+				return true
+			}
+		}
+		return false
+	}
+
+	var parts []string
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+	endPos := p.cur().Range.Start
+
+	for !p.isEOF() {
+		tok := p.cur()
+		if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 && isStop(tok.Type) {
+			break
+		}
+		if tok.Type == lexer.TokenSemicolon || tok.Type == lexer.TokenEndmodule || tok.Type == lexer.TokenEndclass {
+			break
+		}
+		if tok.Type == lexer.TokenIdent && p.peekN(1).Type == lexer.TokenColonColon && p.peekN(2).Type == lexer.TokenIdent {
+			scoped, _ := p.parseScopedTypeName(itemRefs, mod)
+			parts = append(parts, scoped)
+			endPos = p.prev().Range.End
+			continue
+		}
+		p.advance()
+		endPos = tok.Range.End
+		switch tok.Type {
+		case lexer.TokenLParen:
+			parenDepth++
+		case lexer.TokenRParen:
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case lexer.TokenLBracket:
+			bracketDepth++
+		case lexer.TokenRBracket:
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case lexer.TokenLBrace:
+			braceDepth++
+		case lexer.TokenRBrace:
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case lexer.TokenIdent:
+			p.recordRef(itemRefs, mod, tok)
+		}
+		parts = append(parts, tok.Literal)
+	}
+	return strings.TrimSpace(strings.Join(parts, " ")), endPos
 }
 
 func (p *Parser) parsePropertyOrSequenceDecl(mod *ast.ModuleDecl) {
@@ -4900,13 +5069,16 @@ func (p *Parser) parseTypedefDecl(mod *ast.ModuleDecl, file *ast.SourceFile) {
 		}
 
 	default:
-		// Simple type alias: `typedef logic [7:0] byte_t;` or `typedef state_t my_state_t;`
+		// Simple type alias: `typedef logic [7:0] byte_t;`, `typedef state_t my_state_t;`,
+		// or parameterized class specialization `typedef base_box #(packet, 16) pkt_box_t;`.
 		if isPortNetType(p.cur().Type) || isParamTypeKeyword(p.cur().Type) {
 			baseParts = append(baseParts, p.advance().Literal)
 		} else if p.cur().Type == lexer.TokenIdent {
-			tTok := p.advance()
-			baseParts = append(baseParts, tTok.Literal)
-			p.recordRef(&td.Refs, mod, tTok)
+			tName, _ := p.parseScopedTypeName(&td.Refs, mod)
+			baseParts = append(baseParts, tName)
+			if p.cur().Type == lexer.TokenHash && p.peekN(1).Type == lexer.TokenLParen {
+				td.TypeArgs = p.parseTypeParamArgs(&td.Refs, mod)
+			}
 		}
 		if p.cur().Type == lexer.TokenSigned || p.cur().Type == lexer.TokenUnsigned {
 			baseParts = append(baseParts, p.advance().Literal)

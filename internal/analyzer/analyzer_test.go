@@ -957,3 +957,80 @@ func TestAnalyzeSystemVerilogCheckerAndLet(t *testing.T) {
 		t.Errorf("let Signature = %q, want %q", symLet.Signature, "let active(r)")
 	}
 }
+
+func TestAnalyzeSystemVerilogParameterizedClass(t *testing.T) {
+	src := "class packet;\n" +
+		"  logic [31:0] addr;\n" +
+		"  logic [31:0] data;\n" +
+		"  function void print();\n" +
+		"  endfunction\n" +
+		"endclass\n" +
+		"class base_box #(type T = packet, int DEPTH = 8);\n" +
+		"  T item;\n" +
+		"endclass\n" +
+		"class ext_box #(type U = packet) extends base_box #(U, 16);\n" +
+		"  U extra;\n" +
+		"endclass\n" +
+		"typedef base_box #(packet, 16) pkt_box_t;\n" +
+		"typedef ext_box #(packet) pkt_ext_t;\n" +
+		"module tb;\n" +
+		"  base_box #(packet) b1;\n" +
+		"  base_box #(.T(packet)) b2;\n" +
+		"  pkt_box_t b3;\n" +
+		"  pkt_ext_t e1;\n" +
+		"  logic [31:0] a;\n" +
+		"  initial begin\n" +
+		"    a = b1.item.addr;\n" +
+		"    a = b2.item.data;\n" +
+		"    a = b3.item.addr;\n" +
+		"    a = e1.item.addr;\n" +
+		"  end\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for parameterized classes, got %+v", an.Diagnostics)
+	}
+
+	// `addr` in `b1.item.addr` (line 21, col 17) resolves to `packet.addr` at line 1.
+	symAddr := an.SymbolAt(ast.Position{Line: 21, Column: 17})
+	if symAddr == nil || symAddr.Name != "addr" || symAddr.SelectionRange.Start.Line != 1 {
+		t.Errorf("SymbolAt(b1.item.addr) = %+v, want packet.addr at line 1", symAddr)
+	}
+
+	// `addr` in `e1.item.addr` (line 24, col 17) resolves through inheritance + typedef to `packet.addr` at line 1.
+	symExtAddr := an.SymbolAt(ast.Position{Line: 24, Column: 17})
+	if symExtAddr == nil || symExtAddr.Name != "addr" || symExtAddr.SelectionRange.Start.Line != 1 {
+		t.Errorf("SymbolAt(e1.item.addr) = %+v, want packet.addr at line 1", symExtAddr)
+	}
+
+	// Chained MemberCompletions on `b1.item.` and `e1.item.` return `addr`, `data`, `print`.
+	for _, base := range []string{"b1.item", "b2.item", "b3.item", "e1.item"} {
+		members := an.MemberCompletions(ast.Position{Line: 21, Column: 16}, base, nil)
+		names := make(map[string]bool, len(members))
+		for _, m := range members {
+			names[m.Name] = true
+		}
+		if !names["addr"] || !names["data"] || !names["print"] {
+			t.Errorf("MemberCompletions(%q) = %v, want addr, data, print", base, names)
+		}
+	}
+
+	// Unknown member on parameterized member chain must be diagnosed.
+	badSrc := "class packet; logic [31:0] addr; endclass\n" +
+		"class box #(type T = int); T item; endclass\n" +
+		"module tb;\n" +
+		"  box #(packet) b;\n" +
+		"  logic [31:0] a;\n" +
+		"  initial begin a = b.item.no_such_field; end\n" +
+		"endmodule\n"
+	badFile, _ := parser.Parse(badSrc)
+	badAn := Analyze(badFile)
+	if len(badAn.Diagnostics) != 1 || !strings.Contains(badAn.Diagnostics[0].Message, `"no_such_field"`) {
+		t.Errorf("expected 1 diagnostic for unknown field on parameterized class member, got %+v", badAn.Diagnostics)
+	}
+}

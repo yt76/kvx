@@ -64,6 +64,14 @@ type BindStmt struct {
 func (b *BindStmt) ItemRange() Range { return b.Range }
 func (b *BindStmt) moduleItemNode()  {}
 
+// TypeParamArg represents a single parameter override in a parameterized type instantiation,
+// such as `packet` in `box #(packet)` or `.T(packet)` in `box #(.T(packet), .DEPTH(16))`.
+type TypeParamArg struct {
+	ParamName string // empty for positional arguments; e.g. "T" for `.T(packet)`
+	TypeName  string // resolved type or value literal; e.g. "packet", "pkg::pkt_t", "16"
+	Range     Range
+}
+
 // ClassDecl represents a SystemVerilog class declaration ([virtual] class ... endclass).
 type ClassDecl struct {
 	Virtual        bool
@@ -71,6 +79,7 @@ type ClassDecl struct {
 	NameRange      Range
 	BaseClass      string
 	BaseClassRange Range
+	BaseTypeArgs   []TypeParamArg
 	Params         []*ParamDecl
 	Items          []ModuleItem
 	Range          Range
@@ -242,6 +251,7 @@ type ClockingSignal struct {
 type PortDecl struct {
 	Direction          string // "input", "output", "inout", "ref", or "interface"
 	NetType            string // "wire", "reg", "logic", "axi_if.master", or ""
+	TypeArgs           []TypeParamArg
 	InterfaceName      string // non-empty for typed interface ports (e.g. "axi_if")
 	InterfaceNameRange Range
 	ModportName        string // non-empty when a modport is specified (e.g. "master")
@@ -277,6 +287,7 @@ type TypedefDecl struct {
 	Name         string
 	NameRange    Range
 	BaseType     string
+	TypeArgs     []TypeParamArg
 	EnumMembers  []EnumMember
 	StructFields []StructField
 	Range        Range
@@ -289,6 +300,7 @@ func (t *TypedefDecl) moduleItemNode()  {}
 // NetDecl represents a net or variable declaration (wire, reg, integer, logic, user-defined type, etc.).
 type NetDecl struct {
 	Kind         string // "wire", "reg", "integer", "logic", or user-defined type name
+	TypeArgs     []TypeParamArg
 	Signed       bool
 	Width        *BitRange
 	Name         string
