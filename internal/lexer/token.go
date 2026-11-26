@@ -30,9 +30,14 @@ const (
 	TokenModport      TokenType = "modport"
 	TokenProgram      TokenType = "program"
 	TokenEndprogram   TokenType = "endprogram"
+	TokenChecker      TokenType = "checker"
+	TokenEndchecker   TokenType = "endchecker"
+	TokenLet          TokenType = "let"
+	TokenUntyped      TokenType = "untyped"
 	TokenClocking     TokenType = "clocking"
 	TokenEndclocking  TokenType = "endclocking"
 	TokenGlobal       TokenType = "global"
+	TokenBind         TokenType = "bind"
 	TokenPrimitive    TokenType = "primitive"
 	TokenEndprimitive TokenType = "endprimitive"
 	TokenTable        TokenType = "table"
@@ -55,6 +60,9 @@ const (
 	TokenInt          TokenType = "int"
 	TokenLongint      TokenType = "longint"
 	TokenStringKw     TokenType = "string"
+	TokenChandle      TokenType = "chandle"
+	TokenShortreal    TokenType = "shortreal"
+	TokenContext      TokenType = "context"
 	TokenVoid         TokenType = "void"
 	TokenConst        TokenType = "const"
 	TokenVar          TokenType = "var"
@@ -260,9 +268,14 @@ var keywords = map[string]TokenType{
 	"modport":      TokenModport,
 	"program":      TokenProgram,
 	"endprogram":   TokenEndprogram,
+	"checker":      TokenChecker,
+	"endchecker":   TokenEndchecker,
+	"let":          TokenLet,
+	"untyped":      TokenUntyped,
 	"clocking":     TokenClocking,
 	"endclocking":  TokenEndclocking,
 	"global":       TokenGlobal,
+	"bind":         TokenBind,
 	"primitive":    TokenPrimitive,
 	"endprimitive": TokenEndprimitive,
 	"table":        TokenTable,
@@ -285,6 +298,9 @@ var keywords = map[string]TokenType{
 	"int":          TokenInt,
 	"longint":      TokenLongint,
 	"string":       TokenStringKw,
+	"chandle":      TokenChandle,
+	"shortreal":    TokenShortreal,
+	"context":      TokenContext,
 	"void":         TokenVoid,
 	"const":        TokenConst,
 	"var":          TokenVar,

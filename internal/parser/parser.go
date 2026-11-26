@@ -71,7 +71,7 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 			p.skipAttributes()
 			continue
 		}
-		if tok.Type == lexer.TokenModule || tok.Type == lexer.TokenMacromodule || tok.Type == lexer.TokenProgram {
+		if tok.Type == lexer.TokenModule || tok.Type == lexer.TokenMacromodule || tok.Type == lexer.TokenProgram || tok.Type == lexer.TokenChecker {
 			if mod := p.parseModuleDecl(); mod != nil {
 				file.Modules = append(file.Modules, mod)
 			}
@@ -98,11 +98,29 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 		if tok.Type == lexer.TokenFunction {
 			dummyMod := &ast.ModuleDecl{}
 			p.parseFunctionDecl(dummyMod)
+			for _, item := range dummyMod.Items {
+				if fn, ok := item.(*ast.FunctionDecl); ok {
+					file.Functions = append(file.Functions, fn)
+				}
+			}
 			continue
 		}
 		if tok.Type == lexer.TokenTask {
 			dummyMod := &ast.ModuleDecl{}
 			p.parseTaskDecl(dummyMod)
+			for _, item := range dummyMod.Items {
+				if tk, ok := item.(*ast.TaskDecl); ok {
+					file.Tasks = append(file.Tasks, tk)
+				}
+			}
+			continue
+		}
+		if tok.Type == lexer.TokenExport {
+			p.parseDPIExportDecl(nil, file)
+			continue
+		}
+		if tok.Type == lexer.TokenLet {
+			p.parseLetDecl(nil, file)
 			continue
 		}
 		if tok.Type == lexer.TokenConstraint {
@@ -113,6 +131,10 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 		if tok.Type == lexer.TokenCovergroup {
 			dummyMod := &ast.ModuleDecl{}
 			p.parseCovergroupDecl(dummyMod)
+			continue
+		}
+		if tok.Type == lexer.TokenBind {
+			p.parseBindStmt(nil, file)
 			continue
 		}
 		if tok.Type == lexer.TokenImport {
@@ -142,11 +164,15 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 			p.cur().Type != lexer.TokenModule &&
 			p.cur().Type != lexer.TokenMacromodule &&
 			p.cur().Type != lexer.TokenProgram &&
+			p.cur().Type != lexer.TokenChecker &&
+			p.cur().Type != lexer.TokenLet &&
 			p.cur().Type != lexer.TokenInterface &&
 			p.cur().Type != lexer.TokenPackage &&
 			p.cur().Type != lexer.TokenClass &&
 			p.cur().Type != lexer.TokenVirtual &&
+			p.cur().Type != lexer.TokenBind &&
 			p.cur().Type != lexer.TokenImport &&
+			p.cur().Type != lexer.TokenExport &&
 			p.cur().Type != lexer.TokenPrimitive &&
 			p.cur().Type != lexer.TokenConfig &&
 			p.cur().Type != lexer.TokenTypedef &&
@@ -172,6 +198,7 @@ func (p *Parser) parseTopLevelParamDecl(file *ast.SourceFile) {
 func (p *Parser) parseModuleDecl() *ast.ModuleDecl {
 	startTok := p.advance() // consume 'module', 'macromodule', or 'program'
 	isProg := startTok.Type == lexer.TokenProgram
+	isChecker := startTok.Type == lexer.TokenChecker
 	endKw := lexer.TokenEndmodule
 	kwName := "module"
 	endKwName := "endmodule"
@@ -179,12 +206,17 @@ func (p *Parser) parseModuleDecl() *ast.ModuleDecl {
 		endKw = lexer.TokenEndprogram
 		kwName = "program"
 		endKwName = "endprogram"
+	} else if isChecker {
+		endKw = lexer.TokenEndchecker
+		kwName = "checker"
+		endKwName = "endchecker"
 	}
 	if p.cur().Type == lexer.TokenAutomatic || p.cur().Type == lexer.TokenStatic {
 		p.advance()
 	}
 	mod := &ast.ModuleDecl{
 		IsProgram: isProg,
+		IsChecker: isChecker,
 		Range:     ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
 	}
 
@@ -227,6 +259,7 @@ func (p *Parser) parseModuleDecl() *ast.ModuleDecl {
 		p.cur().Type != endKw &&
 		p.cur().Type != lexer.TokenEndmodule &&
 		p.cur().Type != lexer.TokenEndprogram &&
+		p.cur().Type != lexer.TokenEndchecker &&
 		p.cur().Type != lexer.TokenModule &&
 		p.cur().Type != lexer.TokenInterface &&
 		p.cur().Type != lexer.TokenPackage &&
@@ -344,6 +377,16 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 	var curSigned bool
 	var curWidth *ast.BitRange
 
+	isPortType := func(t lexer.TokenType) bool {
+		if isPortNetType(t) || t == lexer.TokenUntyped {
+			return true
+		}
+		if mod != nil && mod.IsChecker {
+			return t == lexer.TokenEvent || t == lexer.TokenProperty || t == lexer.TokenSequence
+		}
+		return false
+	}
+
 	for !p.isEOF() && p.cur().Type != lexer.TokenRParen {
 		p.skipAttributes()
 		if p.cur().Type == lexer.TokenRParen {
@@ -388,7 +431,7 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 				p.advance()
 			}
 
-			if isPortNetType(p.cur().Type) {
+			if isPortType(p.cur().Type) {
 				curNetType = p.cur().Literal
 				p.advance()
 				// Allow `input wire logic [7:0] a`
@@ -458,9 +501,43 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 			curNetType = ifTok.Literal
 			curSigned = false
 			curWidth = nil
+		} else if curDir == "" && (isPortType(p.cur().Type) || p.cur().Type == lexer.TokenConst || p.cur().Type == lexer.TokenVar) {
+			// Directionless typed argument (common in SV functions/tasks, checkers, and DPI-C, e.g. `(int a, chandle p)`): defaults to `input`.
+			curDir = "input"
+			curNetType = ""
+			curIfName = ""
+			curIfRange = ast.Range{}
+			curModportName = ""
+			curModportRange = ast.Range{}
+			curSigned = false
+			curWidth = nil
+			for p.cur().Type == lexer.TokenConst || p.cur().Type == lexer.TokenVar {
+				p.advance()
+			}
+			if isPortDirection(p.cur().Type) {
+				curDir = p.advance().Literal
+			}
+			if isPortType(p.cur().Type) {
+				curNetType = p.advance().Literal
+				if isSVDataType(p.cur().Type) {
+					p.advance()
+				}
+			} else if p.isUserTypeBeforeIdent() {
+				curNetType, _ = p.parseScopedTypeName(nil, mod)
+			}
+			if p.cur().Type == lexer.TokenSigned || p.cur().Type == lexer.TokenUnsigned {
+				curSigned = p.cur().Type == lexer.TokenSigned
+				p.advance()
+			}
+			for p.cur().Type == lexer.TokenLBracket {
+				r := p.parseBitRange(mod)
+				if curWidth == nil {
+					curWidth = r
+				}
+			}
 		} else if curDir != "" {
 			// Subsequent port in ANSI port list might override netType/signed/width or inherit curDir.
-			if isPortNetType(p.cur().Type) {
+			if isPortType(p.cur().Type) {
 				curNetType = p.cur().Literal
 				curIfName = ""
 				curIfRange = ast.Range{}
@@ -520,10 +597,18 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 			_, endPos = p.parseExprUntil(mod, lexer.TokenComma, lexer.TokenRParen)
 		}
 
-		if curDir != "" {
+		portDir := curDir
+		portNetType := curNetType
+		if portDir == "" && mod != nil && mod.IsChecker {
+			portDir = "input"
+			if portNetType == "" {
+				portNetType = "untyped"
+			}
+		}
+		if portDir != "" {
 			port := &ast.PortDecl{
-				Direction:          curDir,
-				NetType:            curNetType,
+				Direction:          portDir,
+				NetType:            portNetType,
 				InterfaceName:      curIfName,
 				InterfaceNameRange: curIfRange,
 				ModportName:        curModportName,
@@ -561,7 +646,7 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 	if p.isAttrStart() {
 		p.skipAttributes()
-		if p.isEOF() || p.cur().Type == lexer.TokenEndmodule || p.cur().Type == lexer.TokenEndprogram || p.cur().Type == lexer.TokenEndinterface || p.cur().Type == lexer.TokenModule || p.cur().Type == lexer.TokenEndgenerate || p.cur().Type == lexer.TokenEnd {
+		if p.isEOF() || p.cur().Type == lexer.TokenEndmodule || p.cur().Type == lexer.TokenEndprogram || p.cur().Type == lexer.TokenEndchecker || p.cur().Type == lexer.TokenEndinterface || p.cur().Type == lexer.TokenModule || p.cur().Type == lexer.TokenEndgenerate || p.cur().Type == lexer.TokenEnd {
 			return
 		}
 	}
@@ -599,7 +684,7 @@ func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 			mod.Items = append(mod.Items, prog)
 		}
 	case lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg,
-		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw,
+		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw, lexer.TokenChandle, lexer.TokenShortreal,
 		lexer.TokenInteger, lexer.TokenGenvar,
 		lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,
 		lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
@@ -617,8 +702,18 @@ func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 		p.parseConstraintDecl(mod)
 	case lexer.TokenCovergroup:
 		p.parseCovergroupDecl(mod)
+	case lexer.TokenBind:
+		p.parseBindStmt(mod, nil)
+	case lexer.TokenChecker:
+		if chk := p.parseModuleDecl(); chk != nil {
+			mod.Items = append(mod.Items, chk)
+		}
+	case lexer.TokenLet:
+		p.parseLetDecl(mod, nil)
 	case lexer.TokenImport:
 		p.parseImportDecl(mod, nil)
+	case lexer.TokenExport:
+		p.parseDPIExportDecl(mod, nil)
 	case lexer.TokenTypedef:
 		p.parseTypedefDecl(mod, nil)
 	case lexer.TokenEnum, lexer.TokenStruct, lexer.TokenUnion:
@@ -1137,7 +1232,7 @@ func (p *Parser) parseFunctionDeclOpts(mod *ast.ModuleDecl, isPrototype bool) {
 		case lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout, lexer.TokenRef:
 			p.parsePortDeclItem(tempMod)
 		case lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger,
-			lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw,
+			lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw, lexer.TokenChandle, lexer.TokenShortreal,
 			lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime, lexer.TokenEvent:
 			p.parseNetDeclItem(tempMod)
 		case lexer.TokenConst, lexer.TokenVar, lexer.TokenStatic, lexer.TokenAutomatic:
@@ -1146,6 +1241,8 @@ func (p *Parser) parseFunctionDeclOpts(mod *ast.ModuleDecl, isPrototype bool) {
 			p.parseParamDeclItem(tempMod)
 		case lexer.TokenImport:
 			p.parseImportDecl(tempMod, nil)
+		case lexer.TokenLet:
+			p.parseLetDecl(tempMod, nil)
 		case lexer.TokenTypedef:
 			p.parseTypedefDecl(tempMod, nil)
 		case lexer.TokenEnum, lexer.TokenStruct, lexer.TokenUnion:
@@ -1242,7 +1339,7 @@ func (p *Parser) parseTaskDeclOpts(mod *ast.ModuleDecl, isPrototype bool) {
 		case lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout, lexer.TokenRef:
 			p.parsePortDeclItem(tempMod)
 		case lexer.TokenWire, lexer.TokenReg, lexer.TokenInteger,
-			lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw,
+			lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw, lexer.TokenChandle, lexer.TokenShortreal,
 			lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime, lexer.TokenEvent:
 			p.parseNetDeclItem(tempMod)
 		case lexer.TokenConst, lexer.TokenVar, lexer.TokenStatic, lexer.TokenAutomatic:
@@ -1251,6 +1348,8 @@ func (p *Parser) parseTaskDeclOpts(mod *ast.ModuleDecl, isPrototype bool) {
 			p.parseParamDeclItem(tempMod)
 		case lexer.TokenImport:
 			p.parseImportDecl(tempMod, nil)
+		case lexer.TokenLet:
+			p.parseLetDecl(tempMod, nil)
 		case lexer.TokenTypedef:
 			p.parseTypedefDecl(tempMod, nil)
 		case lexer.TokenEnum, lexer.TokenStruct, lexer.TokenUnion:
@@ -1564,7 +1663,7 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 		p.advance()
 
 	case lexer.TokenReg, lexer.TokenInteger,
-		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw,
+		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw, lexer.TokenChandle, lexer.TokenShortreal,
 		lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime, lexer.TokenEvent:
 		// Block-local variable declaration (e.g., `begin : blk integer i; reg [7:0] tmp; ... end`)
 		p.parseNetDeclItem(mod)
@@ -1581,6 +1680,14 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 		p.parseConstraintDecl(mod)
 	case lexer.TokenCovergroup:
 		p.parseCovergroupDecl(mod)
+	case lexer.TokenBind:
+		p.parseBindStmt(mod, nil)
+	case lexer.TokenChecker:
+		if chk := p.parseModuleDecl(); chk != nil {
+			mod.Items = append(mod.Items, chk)
+		}
+	case lexer.TokenLet:
+		p.parseLetDecl(mod, nil)
 
 	case lexer.TokenParameter, lexer.TokenLocalparam:
 		// Block-local parameter/localparam declaration
@@ -1588,6 +1695,8 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 
 	case lexer.TokenImport:
 		p.parseImportDecl(mod, nil)
+	case lexer.TokenExport:
+		p.parseDPIExportDecl(mod, nil)
 	case lexer.TokenTypedef:
 		p.parseTypedefDecl(mod, nil)
 
@@ -2662,18 +2771,18 @@ func (p *Parser) syncToStatementEnd() {
 		case lexer.TokenSemicolon:
 			p.advance()
 			return
-		case lexer.TokenEnd, lexer.TokenJoin, lexer.TokenJoinAny, lexer.TokenJoinNone, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndclass, lexer.TokenEndgroup, lexer.TokenEndclocking, lexer.TokenEndgenerate, lexer.TokenEndspecify, lexer.TokenEndmodule, lexer.TokenEndprogram, lexer.TokenEndinterface, lexer.TokenEndpackage, lexer.TokenModule, lexer.TokenMacromodule, lexer.TokenProgram, lexer.TokenInterface, lexer.TokenPackage, lexer.TokenClass, lexer.TokenCovergroup, lexer.TokenClocking, lexer.TokenPrimitive,
+		case lexer.TokenEnd, lexer.TokenJoin, lexer.TokenJoinAny, lexer.TokenJoinNone, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndclass, lexer.TokenEndgroup, lexer.TokenEndclocking, lexer.TokenEndgenerate, lexer.TokenEndspecify, lexer.TokenEndmodule, lexer.TokenEndprogram, lexer.TokenEndchecker, lexer.TokenEndinterface, lexer.TokenEndpackage, lexer.TokenModule, lexer.TokenMacromodule, lexer.TokenProgram, lexer.TokenChecker, lexer.TokenLet, lexer.TokenInterface, lexer.TokenPackage, lexer.TokenClass, lexer.TokenCovergroup, lexer.TokenClocking, lexer.TokenPrimitive,
 			lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout, lexer.TokenRef, lexer.TokenModport,
 			lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg,
-			lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw,
+			lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw, lexer.TokenChandle, lexer.TokenShortreal,
 			lexer.TokenConst, lexer.TokenVar, lexer.TokenStatic, lexer.TokenLocal, lexer.TokenProtected, lexer.TokenRand, lexer.TokenRandc, lexer.TokenVirtual, lexer.TokenPure, lexer.TokenExtern, lexer.TokenConstraint,
 			lexer.TokenInteger, lexer.TokenGenvar,
 			lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,
 			lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
 			lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime, lexer.TokenEvent,
-			lexer.TokenParameter, lexer.TokenLocalparam, lexer.TokenDefparam, lexer.TokenTypedef, lexer.TokenImport,
+			lexer.TokenParameter, lexer.TokenLocalparam, lexer.TokenDefparam, lexer.TokenTypedef, lexer.TokenImport, lexer.TokenExport,
 			lexer.TokenEnum, lexer.TokenStruct, lexer.TokenUnion,
-			lexer.TokenAssign, lexer.TokenDeassign, lexer.TokenForce, lexer.TokenRelease,
+			lexer.TokenAssign, lexer.TokenDeassign, lexer.TokenForce, lexer.TokenRelease, lexer.TokenBind,
 			lexer.TokenAlways, lexer.TokenAlwaysComb, lexer.TokenAlwaysFF, lexer.TokenAlwaysLatch, lexer.TokenInitial, lexer.TokenFinal,
 			lexer.TokenAssert, lexer.TokenAssume, lexer.TokenCover, lexer.TokenRestrict,
 			lexer.TokenProperty, lexer.TokenEndproperty, lexer.TokenSequence, lexer.TokenEndsequence,
@@ -2721,7 +2830,7 @@ func isStrengthSpec(lit string) bool {
 
 func isSVDataType(t lexer.TokenType) bool {
 	switch t {
-	case lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw:
+	case lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw, lexer.TokenChandle, lexer.TokenShortreal:
 		return true
 	default:
 		return false
@@ -2730,8 +2839,8 @@ func isSVDataType(t lexer.TokenType) bool {
 
 func isParamTypeKeyword(t lexer.TokenType) bool {
 	switch t {
-	case lexer.TokenInteger, lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime,
-		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw:
+	case lexer.TokenInteger, lexer.TokenReal, lexer.TokenShortreal, lexer.TokenTime, lexer.TokenRealtime,
+		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw, lexer.TokenChandle:
 		return true
 	default:
 		return false
@@ -2756,7 +2865,7 @@ func isProceduralAssignOp(t lexer.TokenType) bool {
 func isPortNetType(t lexer.TokenType) bool {
 	switch t {
 	case lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg, lexer.TokenInteger,
-		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw,
+		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw, lexer.TokenChandle, lexer.TokenShortreal,
 		lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,
 		lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
 		lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime:
@@ -2768,10 +2877,10 @@ func isPortNetType(t lexer.TokenType) bool {
 
 func isStatementBoundary(t lexer.TokenType) bool {
 	switch t {
-	case lexer.TokenSemicolon, lexer.TokenEnd, lexer.TokenJoin, lexer.TokenJoinAny, lexer.TokenJoinNone, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndclass, lexer.TokenEndgroup, lexer.TokenEndclocking, lexer.TokenEndproperty, lexer.TokenEndsequence, lexer.TokenEndgenerate, lexer.TokenEndspecify, lexer.TokenEndmodule, lexer.TokenEndprogram, lexer.TokenEndinterface, lexer.TokenEndpackage, lexer.TokenModule, lexer.TokenMacromodule, lexer.TokenProgram, lexer.TokenInterface, lexer.TokenPackage, lexer.TokenClass, lexer.TokenCovergroup, lexer.TokenClocking, lexer.TokenPrimitive, lexer.TokenModport,
+	case lexer.TokenSemicolon, lexer.TokenEnd, lexer.TokenJoin, lexer.TokenJoinAny, lexer.TokenJoinNone, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndclass, lexer.TokenEndgroup, lexer.TokenEndclocking, lexer.TokenEndproperty, lexer.TokenEndsequence, lexer.TokenEndgenerate, lexer.TokenEndspecify, lexer.TokenEndmodule, lexer.TokenEndprogram, lexer.TokenEndchecker, lexer.TokenEndinterface, lexer.TokenEndpackage, lexer.TokenModule, lexer.TokenMacromodule, lexer.TokenProgram, lexer.TokenChecker, lexer.TokenLet, lexer.TokenInterface, lexer.TokenPackage, lexer.TokenClass, lexer.TokenCovergroup, lexer.TokenClocking, lexer.TokenPrimitive, lexer.TokenModport,
 		lexer.TokenAlways, lexer.TokenAlwaysComb, lexer.TokenAlwaysFF, lexer.TokenAlwaysLatch, lexer.TokenInitial, lexer.TokenFinal,
 		lexer.TokenAssert, lexer.TokenAssume, lexer.TokenCover, lexer.TokenRestrict, lexer.TokenProperty, lexer.TokenSequence, lexer.TokenConstraint,
-		lexer.TokenAssign, lexer.TokenDefparam, lexer.TokenFunction, lexer.TokenTask, lexer.TokenGenerate, lexer.TokenSpecify:
+		lexer.TokenAssign, lexer.TokenDefparam, lexer.TokenBind, lexer.TokenFunction, lexer.TokenTask, lexer.TokenGenerate, lexer.TokenSpecify:
 		return true
 	default:
 		return false
@@ -2966,10 +3075,18 @@ func (p *Parser) parseVarWithModifiers(mod *ast.ModuleDecl) {
 		p.parseConstraintDecl(mod)
 	case lexer.TokenCovergroup:
 		p.parseCovergroupDecl(mod)
+	case lexer.TokenBind:
+		p.parseBindStmt(mod, nil)
+	case lexer.TokenChecker:
+		if chk := p.parseModuleDecl(); chk != nil {
+			mod.Items = append(mod.Items, chk)
+		}
+	case lexer.TokenLet:
+		p.parseLetDecl(mod, nil)
 	case lexer.TokenEnum, lexer.TokenStruct, lexer.TokenUnion:
 		p.parseEnumOrStructVarDecl(mod)
 	case lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg,
-		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw,
+		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw, lexer.TokenChandle, lexer.TokenShortreal,
 		lexer.TokenInteger, lexer.TokenGenvar,
 		lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,
 		lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
@@ -3811,9 +3928,11 @@ func (p *Parser) parseClockingDecl(mod *ast.ModuleDecl, isDefault, isGlobal bool
 		p.cur().Type != lexer.TokenEndclocking &&
 		p.cur().Type != lexer.TokenEndmodule &&
 		p.cur().Type != lexer.TokenEndprogram &&
+		p.cur().Type != lexer.TokenEndchecker &&
 		p.cur().Type != lexer.TokenEndinterface &&
 		p.cur().Type != lexer.TokenModule &&
 		p.cur().Type != lexer.TokenProgram &&
+		p.cur().Type != lexer.TokenChecker &&
 		p.cur().Type != lexer.TokenInterface {
 		if p.cur().Type == lexer.TokenSemicolon {
 			p.advance()
@@ -3924,6 +4043,90 @@ func (p *Parser) skipClockingSkew(refs *[]ast.IdentifierRef, mod *ast.ModuleDecl
 	}
 }
 
+func (p *Parser) parseBindStmt(mod *ast.ModuleDecl, file *ast.SourceFile) {
+	startTok := p.advance() // consume 'bind'
+	stmt := &ast.BindStmt{
+		Range: ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
+	}
+
+	if p.cur().Type != lexer.TokenIdent {
+		p.addError(p.cur().Range, "expected target module or instance name after 'bind'")
+		p.syncToStatementEnd()
+		return
+	}
+	targetTok := p.advance()
+	stmt.TargetName = targetTok.Literal
+	stmt.TargetNameRange = targetTok.Range
+
+	// Optional hierarchical path on target: `bind top.u_sub[0].u_leaf ...`
+	for p.cur().Type == lexer.TokenDot || p.cur().Type == lexer.TokenLBracket {
+		stmt.IsHierarchical = true
+		if p.cur().Type == lexer.TokenDot {
+			p.advance() // '.'
+			if p.cur().Type == lexer.TokenIdent {
+				p.advance()
+			}
+		} else {
+			_ = p.parseBitRange(nil)
+		}
+	}
+
+	// Optional target instance list: `bind dut_mod : u_dut0, u_dut1 checker_mod u_chk (...);`
+	if p.cur().Type == lexer.TokenColon {
+		p.advance() // ':'
+		for !p.isEOF() {
+			if p.cur().Type != lexer.TokenIdent {
+				p.addError(p.cur().Range, "expected target instance name after ':' in bind statement")
+				p.syncToStatementEnd()
+				return
+			}
+			instTok := p.advance()
+			stmt.TargetInstances = append(stmt.TargetInstances, ast.IdentifierRef{
+				Name:  instTok.Literal,
+				Range: instTok.Range,
+			})
+			for p.cur().Type == lexer.TokenDot || p.cur().Type == lexer.TokenLBracket {
+				if p.cur().Type == lexer.TokenDot {
+					p.advance()
+					if p.cur().Type == lexer.TokenIdent {
+						p.advance()
+					}
+				} else {
+					_ = p.parseBitRange(nil)
+				}
+			}
+			if p.cur().Type == lexer.TokenComma {
+				p.advance()
+				continue
+			}
+			break
+		}
+	}
+
+	// Bound instantiation: `checker_mod [#(...)] u_chk (...);`
+	if p.cur().Type != lexer.TokenIdent {
+		p.addError(p.cur().Range, "expected module or interface instantiation in bind statement")
+		p.syncToStatementEnd()
+		return
+	}
+
+	bindMod := &ast.ModuleDecl{}
+	p.parseModuleInstOrUnknown(bindMod)
+	for _, item := range bindMod.Items {
+		if inst, ok := item.(*ast.ModuleInst); ok {
+			stmt.Inst = inst
+			break
+		}
+	}
+	stmt.Range.End = p.prev().Range.End
+
+	if mod != nil {
+		mod.Items = append(mod.Items, stmt)
+	} else if file != nil {
+		file.Binds = append(file.Binds, stmt)
+	}
+}
+
 func (p *Parser) parseCovergroupDecl(mod *ast.ModuleDecl) {
 	startTok := p.advance() // consume 'covergroup'
 	cg := &ast.CovergroupDecl{
@@ -3967,11 +4170,13 @@ func (p *Parser) parseCovergroupDecl(mod *ast.ModuleDecl) {
 		p.cur().Type != lexer.TokenEndgroup &&
 		p.cur().Type != lexer.TokenEndmodule &&
 		p.cur().Type != lexer.TokenEndprogram &&
+		p.cur().Type != lexer.TokenEndchecker &&
 		p.cur().Type != lexer.TokenEndinterface &&
 		p.cur().Type != lexer.TokenEndpackage &&
 		p.cur().Type != lexer.TokenEndclass &&
 		p.cur().Type != lexer.TokenModule &&
 		p.cur().Type != lexer.TokenProgram &&
+		p.cur().Type != lexer.TokenChecker &&
 		p.cur().Type != lexer.TokenInterface &&
 		p.cur().Type != lexer.TokenPackage {
 		if p.cur().Type == lexer.TokenSemicolon {
@@ -4084,6 +4289,7 @@ func (p *Parser) parseCoverBinsBody(cg *ast.CovergroupDecl, tempMod *ast.ModuleD
 		if p.cur().Type == lexer.TokenEndgroup ||
 			p.cur().Type == lexer.TokenEndmodule ||
 			p.cur().Type == lexer.TokenEndprogram ||
+			p.cur().Type == lexer.TokenEndchecker ||
 			p.cur().Type == lexer.TokenEndinterface ||
 			p.cur().Type == lexer.TokenEndclass {
 			break
@@ -4352,6 +4558,12 @@ func (p *Parser) parsePackageDecl() *ast.PackageDecl {
 func (p *Parser) parseImportDecl(mod *ast.ModuleDecl, file *ast.SourceFile) {
 	startTok := p.advance() // consume 'import'
 
+	// DPI-C import: `import "DPI-C" [pure|context] [c_name =] function|task ...;`
+	if p.cur().Type == lexer.TokenString {
+		p.parseDPIImportDecl(mod, file)
+		return
+	}
+
 	for !p.isEOF() {
 		if p.cur().Type != lexer.TokenIdent {
 			p.addError(p.cur().Range, "expected package name after 'import'")
@@ -4404,6 +4616,207 @@ func (p *Parser) parseImportDecl(mod *ast.ModuleDecl, file *ast.SourceFile) {
 	}
 
 	p.expectSemicolon("import declaration")
+}
+
+func (p *Parser) parseDPIImportDecl(mod *ast.ModuleDecl, file *ast.SourceFile) {
+	p.advance() // consume DPI spec string (e.g. "DPI-C" or "DPI")
+
+	// Optional `pure` or `context` property
+	if p.cur().Type == lexer.TokenPure || p.cur().Type == lexer.TokenContext {
+		p.advance()
+	}
+
+	// Optional C identifier alias: `c_name =`
+	if p.cur().Type == lexer.TokenIdent && p.peekN(1).Type == lexer.TokenAssignOp {
+		p.advance() // c_name
+		p.advance() // '='
+	}
+
+	targetMod := mod
+	if targetMod == nil {
+		targetMod = &ast.ModuleDecl{}
+	}
+
+	switch p.cur().Type {
+	case lexer.TokenFunction:
+		p.parseFunctionDeclOpts(targetMod, true)
+	case lexer.TokenTask:
+		p.parseTaskDeclOpts(targetMod, true)
+	default:
+		p.addError(p.cur().Range, "expected 'function' or 'task' in DPI-C import declaration")
+		p.syncToStatementEnd()
+		return
+	}
+
+	if mod == nil && file != nil {
+		for _, item := range targetMod.Items {
+			switch d := item.(type) {
+			case *ast.FunctionDecl:
+				file.Functions = append(file.Functions, d)
+			case *ast.TaskDecl:
+				file.Tasks = append(file.Tasks, d)
+			}
+		}
+		file.Refs = append(file.Refs, targetMod.Refs...)
+	}
+}
+
+func (p *Parser) parseDPIExportDecl(mod *ast.ModuleDecl, file *ast.SourceFile) {
+	p.advance() // consume 'export'
+
+	if p.cur().Type == lexer.TokenString {
+		p.advance() // e.g. "DPI-C"
+	} else {
+		p.addError(p.cur().Range, "expected DPI specification string (e.g. \"DPI-C\") after 'export'")
+		p.syncToStatementEnd()
+		return
+	}
+
+	// Optional C identifier alias: `c_name =`
+	if p.cur().Type == lexer.TokenIdent && p.peekN(1).Type == lexer.TokenAssignOp {
+		p.advance() // c_name
+		p.advance() // '='
+	}
+
+	if p.cur().Type == lexer.TokenFunction || p.cur().Type == lexer.TokenTask {
+		p.advance()
+	} else {
+		p.addError(p.cur().Range, "expected 'function' or 'task' in DPI-C export declaration")
+		p.syncToStatementEnd()
+		return
+	}
+
+	if p.cur().Type == lexer.TokenIdent {
+		fnTok := p.advance()
+		if mod != nil {
+			p.recordRef(nil, mod, fnTok)
+		} else if file != nil {
+			file.Refs = append(file.Refs, ast.IdentifierRef{Name: fnTok.Literal, Range: fnTok.Range})
+		}
+	} else {
+		p.addError(p.cur().Range, "expected function or task name in DPI-C export declaration")
+	}
+
+	p.expectSemicolon("DPI export declaration")
+}
+
+// parseLetDecl parses a SystemVerilog `let` declaration:
+// `let name [( [type|untyped] arg [= default], ... )] = expr;`
+func (p *Parser) parseLetDecl(mod *ast.ModuleDecl, file *ast.SourceFile) {
+	startTok := p.advance() // consume 'let'
+	fn := &ast.FunctionDecl{
+		IsLet: true,
+		Range: ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
+	}
+
+	if p.cur().Type == lexer.TokenIdent {
+		nameTok := p.advance()
+		fn.Name = nameTok.Literal
+		fn.NameRange = nameTok.Range
+	} else {
+		p.addError(p.cur().Range, "expected identifier after 'let'")
+		p.syncToStatementEnd()
+		return
+	}
+
+	tempMod := &ast.ModuleDecl{}
+
+	// Optional formal argument list: `([type|untyped] arg [= default], ...)`
+	if p.cur().Type == lexer.TokenLParen {
+		p.advance() // '('
+		for !p.isEOF() && p.cur().Type != lexer.TokenRParen {
+			p.skipAttributes()
+			if p.cur().Type == lexer.TokenRParen {
+				break
+			}
+			argStart := p.cur().Range.Start
+			argType := ""
+			argSigned := false
+			var argWidth *ast.BitRange
+
+			if p.cur().Type == lexer.TokenUntyped || isPortNetType(p.cur().Type) || p.cur().Type == lexer.TokenEvent {
+				argType = p.advance().Literal
+				if isSVDataType(p.cur().Type) {
+					p.advance()
+				}
+			} else if p.isUserTypeBeforeIdent() {
+				argType, _ = p.parseScopedTypeName(nil, tempMod)
+			}
+			if p.cur().Type == lexer.TokenSigned || p.cur().Type == lexer.TokenUnsigned {
+				argSigned = p.cur().Type == lexer.TokenSigned
+				p.advance()
+			}
+			for p.cur().Type == lexer.TokenLBracket {
+				r := p.parseBitRange(tempMod)
+				if argWidth == nil {
+					argWidth = r
+				}
+			}
+
+			if p.cur().Type != lexer.TokenIdent {
+				p.addError(p.cur().Range, "expected formal argument name in 'let' declaration")
+				p.syncToParamOrPortDelimiter()
+				if p.cur().Type == lexer.TokenComma {
+					p.advance()
+				}
+				continue
+			}
+			argTok := p.advance()
+			argEnd := argTok.Range.End
+
+			for p.cur().Type == lexer.TokenLBracket {
+				_ = p.parseBitRange(tempMod)
+				argEnd = p.prev().Range.End
+			}
+			if p.cur().Type == lexer.TokenAssignOp {
+				p.advance() // '='
+				_, argEnd = p.parseExprUntil(tempMod, lexer.TokenComma, lexer.TokenRParen)
+			}
+
+			fn.Params = append(fn.Params, &ast.PortDecl{
+				Direction: "input",
+				NetType:   argType,
+				Signed:    argSigned,
+				Width:     argWidth,
+				Name:      argTok.Literal,
+				NameRange: argTok.Range,
+				Range:     ast.Range{File: argTok.Range.File, Start: argStart, End: argEnd},
+			})
+
+			if p.cur().Type == lexer.TokenComma {
+				p.advance()
+			} else if p.cur().Type != lexer.TokenRParen {
+				p.addError(p.cur().Range, fmt.Sprintf("expected ',' or ')' in 'let' argument list, got %q", p.cur().Literal))
+				p.syncToParamOrPortDelimiter()
+				if p.cur().Type == lexer.TokenComma {
+					p.advance()
+				}
+			}
+		}
+		if p.cur().Type == lexer.TokenRParen {
+			p.advance()
+		} else {
+			p.addError(p.prev().Range, "expected ')' to close 'let' argument list")
+		}
+	}
+
+	if p.cur().Type == lexer.TokenAssignOp {
+		p.advance() // '='
+		p.parseExprUntil(tempMod, lexer.TokenSemicolon)
+	} else {
+		p.addError(p.cur().Range, "expected '=' in 'let' declaration")
+	}
+
+	p.expectSemicolon("let declaration")
+	fn.Range.End = p.prev().Range.End
+	fn.Refs = tempMod.Refs
+
+	if mod != nil {
+		mod.MemberRefs = append(mod.MemberRefs, tempMod.MemberRefs...)
+		mod.Items = append(mod.Items, fn)
+	} else if file != nil {
+		file.Functions = append(file.Functions, fn)
+	}
 }
 
 func (p *Parser) parseTypedefDecl(mod *ast.ModuleDecl, file *ast.SourceFile) {

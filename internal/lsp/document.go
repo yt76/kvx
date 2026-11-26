@@ -545,6 +545,13 @@ func (s *DocumentStore) ModuleHierarchyPaths(moduleName string, limit int) ([]st
 					parentMod: parentMod,
 					segment:   seg,
 				})
+			case *ast.BindStmt:
+				if !d.IsHierarchical && d.TargetName != "" && d.Inst != nil && d.Inst.ModuleName != "" && d.Inst.InstanceName != "" {
+					reverseEdges[d.Inst.ModuleName] = append(reverseEdges[d.Inst.ModuleName], parentEdge{
+						parentMod: d.TargetName,
+						segment:   d.Inst.InstanceName,
+					})
+				}
 			case *ast.GenerateBlock:
 				nextPrefix := prefix
 				if d.Label != "" {
@@ -563,6 +570,16 @@ func (s *DocumentStore) ModuleHierarchyPaths(moduleName string, limit int) ([]st
 	collectDoc := func(doc *Document) {
 		if doc == nil || doc.Analysis == nil {
 			return
+		}
+		if doc.AST != nil {
+			for _, b := range doc.AST.Binds {
+				if !b.IsHierarchical && b.TargetName != "" && b.Inst != nil && b.Inst.ModuleName != "" && b.Inst.InstanceName != "" {
+					reverseEdges[b.Inst.ModuleName] = append(reverseEdges[b.Inst.ModuleName], parentEdge{
+						parentMod: b.TargetName,
+						segment:   b.Inst.InstanceName,
+					})
+				}
+			}
 		}
 		for _, modScope := range doc.Analysis.ModuleOrder {
 			if modScope.Module == nil || modScope.Module.Name == "" || seenModules[modScope.Module.Name] {

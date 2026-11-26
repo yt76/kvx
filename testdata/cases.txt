@@ -29,3 +29,6 @@ sv_classes.sv           0 0
 sv_lint.sv              0 5
 sv_clocking_program.sv  0 0
 sv_coverage.sv          0 0
+sv_bind.sv              0 0
+sv_dpi.sv               0 0
+sv_checker_let.sv       0 0

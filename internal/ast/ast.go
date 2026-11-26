@@ -39,6 +39,9 @@ type SourceFile struct {
 	Interfaces []*InterfaceDecl
 	Packages   []*PackageDecl
 	Classes    []*ClassDecl
+	Binds      []*BindStmt
+	Functions  []*FunctionDecl
+	Tasks      []*TaskDecl
 	Imports    []*ImportDecl
 	Includes   []*IncludeDecl
 	Macros     []*MacroDecl
@@ -46,6 +49,20 @@ type SourceFile struct {
 	Typedefs   []*TypedefDecl
 	Refs       []IdentifierRef
 }
+
+// BindStmt represents a SystemVerilog bind directive
+// (e.g. `bind dut_mod [: u_dut0, u_dut1] checker_mod #(...) u_chk (...);`).
+type BindStmt struct {
+	TargetName      string
+	TargetNameRange Range
+	IsHierarchical  bool
+	TargetInstances []IdentifierRef
+	Inst            *ModuleInst
+	Range           Range
+}
+
+func (b *BindStmt) ItemRange() Range { return b.Range }
+func (b *BindStmt) moduleItemNode()  {}
 
 // ClassDecl represents a SystemVerilog class declaration ([virtual] class ... endclass).
 type ClassDecl struct {
@@ -180,10 +197,11 @@ type WriteRef struct {
 	Range         Range
 }
 
-// ModuleDecl represents a Verilog module or SystemVerilog program declaration
-// (module ... endmodule or program ... endprogram).
+// ModuleDecl represents a Verilog module, SystemVerilog program, or SystemVerilog checker declaration
+// (module ... endmodule, program ... endprogram, or checker ... endchecker).
 type ModuleDecl struct {
 	IsProgram  bool
+	IsChecker  bool
 	Name       string
 	NameRange  Range
 	Range      Range
@@ -350,6 +368,7 @@ func (m *ModuleInst) moduleItemNode()  {}
 
 // FunctionDecl represents a Verilog function declaration (function ... endfunction).
 type FunctionDecl struct {
+	IsLet      bool
 	Automatic  bool
 	Signed     bool
 	ReturnType string // "integer" or ""

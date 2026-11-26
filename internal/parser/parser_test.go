@@ -1840,3 +1840,107 @@ endmodule
 		t.Fatalf("expected 1 covergroup 'cg_bus' with 3 points, got %+v", cgs)
 	}
 }
+
+func TestParseSystemVerilogBind(t *testing.T) {
+	src := `
+module dut (input logic clk, input logic req);
+    logic busy;
+    assign busy = req;
+endmodule
+
+module chk (input logic clk, input logic req, input logic busy);
+endmodule
+
+bind dut chk u_chk_top (.clk(clk), .req(req), .busy(busy));
+
+module tb (input logic clk, input logic req);
+    dut u0 (.clk(clk), .req(req));
+    dut u1 (.clk(clk), .req(req));
+    bind dut : u0, u1 chk u_chk_sel (.*);
+    bind tb.u0 chk u_chk_hier (.clk(clk), .req(req), .busy(busy));
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Binds) != 1 || file.Binds[0].TargetName != "dut" || file.Binds[0].Inst == nil || file.Binds[0].Inst.ModuleName != "chk" {
+		t.Fatalf("expected 1 top-level bind to 'dut' with 'chk', got %+v", file.Binds)
+	}
+	var modBinds []*ast.BindStmt
+	for _, item := range file.Modules[2].Items {
+		if b, ok := item.(*ast.BindStmt); ok {
+			modBinds = append(modBinds, b)
+		}
+	}
+	if len(modBinds) != 2 || len(modBinds[0].TargetInstances) != 2 || !modBinds[1].IsHierarchical {
+		t.Fatalf("expected 2 module-level binds (instance-list + hierarchical), got %+v", modBinds)
+	}
+}
+
+func TestParseSystemVerilogDPI(t *testing.T) {
+	src := `
+import "DPI-C" pure function real c_sin(real x);
+import "DPI-C" context c_init_ctx = function chandle sv_init(input string name);
+import "DPI-C" context task c_wait(input int cycles, output shortreal val);
+
+module dpi_mod;
+    import "DPI-C" function void c_notify(int id);
+    export "DPI-C" function sv_cb;
+    export "DPI-C" c_cb = task sv_task;
+
+    function int sv_cb(int a);
+        return a;
+    endfunction
+
+    task sv_task(input int n);
+        c_notify(n);
+    endtask
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Functions) != 2 || file.Functions[0].Name != "c_sin" || file.Functions[1].Name != "sv_init" {
+		t.Fatalf("expected 2 top-level DPI functions (c_sin, sv_init), got %+v", file.Functions)
+	}
+	if len(file.Tasks) != 1 || file.Tasks[0].Name != "c_wait" {
+		t.Fatalf("expected 1 top-level DPI task (c_wait), got %+v", file.Tasks)
+	}
+	if len(file.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(file.Modules))
+	}
+}
+
+func TestParseSystemVerilogCheckerAndLet(t *testing.T) {
+	src := `
+let TOP_EN = 1'b1;
+let max_val(a, b) = (a > b) ? a : b;
+
+checker bus_chk (input logic clk, untyped req, ack = 1'b0, output logic err);
+    let active(r) = r && TOP_EN;
+    rand bit flag;
+    always_ff @(posedge clk) begin
+        err <= active(req) & ~ack & flag;
+    end
+endchecker : bus_chk
+
+module top (input logic clk, input logic req, input logic ack, output logic err);
+    bus_chk u_chk (.clk(clk), .req(req), .ack(ack), .err(err));
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Functions) != 2 || !file.Functions[0].IsLet || file.Functions[0].Name != "TOP_EN" || !file.Functions[1].IsLet || file.Functions[1].Name != "max_val" {
+		t.Fatalf("expected 2 top-level let declarations, got %+v", file.Functions)
+	}
+	if len(file.Modules) != 2 || !file.Modules[0].IsChecker || file.Modules[0].Name != "bus_chk" {
+		t.Fatalf("expected checker 'bus_chk' and module 'top', got %+v", file.Modules)
+	}
+	if len(file.Modules[0].Ports) != 4 {
+		t.Fatalf("expected 4 checker ports, got %d", len(file.Modules[0].Ports))
+	}
+}

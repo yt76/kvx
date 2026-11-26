@@ -312,6 +312,22 @@ func AnalyzeWithWorkspace(file *ast.SourceFile, ctx WorkspaceContext) *Analysis 
 		}
 	}
 
+	for _, fn := range file.Functions {
+		fnScope := buildFunctionScope(fn, &res.Diagnostics)
+		if fnScope.Symbol.Name != "" {
+			res.GlobalSymbols[fnScope.Symbol.Name] = fnScope.Symbol
+			res.GlobalOrder = append(res.GlobalOrder, fnScope.Symbol)
+		}
+	}
+
+	for _, tk := range file.Tasks {
+		taskScope := buildTaskScope(tk, &res.Diagnostics)
+		if taskScope.Symbol.Name != "" {
+			res.GlobalSymbols[taskScope.Symbol.Name] = taskScope.Symbol
+			res.GlobalOrder = append(res.GlobalOrder, taskScope.Symbol)
+		}
+	}
+
 	for _, pkg := range file.Packages {
 		pkgScope := analyzePackage(pkg, res.GlobalSymbols, res.AllPackages, res.AllInterfaces, &res.Diagnostics)
 		res.PackageOrder = append(res.PackageOrder, pkgScope)
@@ -375,6 +391,10 @@ func AnalyzeWithWorkspace(file *ast.SourceFile, ctx WorkspaceContext) *Analysis 
 		res.validateModuleInstantiations(scope)
 	}
 
+	for _, b := range file.Binds {
+		res.validateBindStmt(b)
+	}
+
 	return res
 }
 
@@ -389,79 +409,116 @@ func (a *Analysis) validateModuleInstantiations(scope *ModuleScope) {
 			case *ast.GenerateBlock:
 				checkItems(d.Items)
 			case *ast.ModuleInst:
-				if d.Range.File != "" {
-					continue
-				}
-				var targetSyms map[string]*Symbol
-				var targetOrder []*Symbol
-				targetKind := "module"
-				if modScope, ok := a.AllModules[d.ModuleName]; ok {
-					targetSyms = modScope.Symbols
-					targetOrder = modScope.Order
-				} else if ifaceScope, ok := a.AllInterfaces[d.ModuleName]; ok {
-					targetSyms = ifaceScope.Symbols
-					targetOrder = ifaceScope.Order
-					targetKind = "interface"
-				}
-
-				connectedPorts := make(map[string]bool, len(d.PortRefs))
-				for _, pref := range d.PortRefs {
-					if pref.Range.File != "" {
-						continue
-					}
-					if connectedPorts[pref.Name] {
-						a.Diagnostics = append(a.Diagnostics, SemanticDiagnostic{
-							Range:   pref.Range,
-							Message: fmt.Sprintf("duplicate port connection %q in instance %q", pref.Name, d.InstanceName),
-							IsError: false,
-						})
-					}
-					connectedPorts[pref.Name] = true
-
-					if targetSyms != nil {
-						if sym, ok := targetSyms[pref.Name]; !ok || sym.Kind != KindPort {
-							a.Diagnostics = append(a.Diagnostics, SemanticDiagnostic{
-								Range:   pref.Range,
-								Message: fmt.Sprintf("unknown port %q on %s %q", pref.Name, targetKind, d.ModuleName),
-								IsError: false,
-							})
-						}
-					}
-				}
-
-				if targetSyms != nil {
-					for _, paramRef := range d.ParamRefs {
-						if paramRef.Range.File != "" {
-							continue
-						}
-						if sym, ok := targetSyms[paramRef.Name]; !ok || sym.Kind != KindParam {
-							a.Diagnostics = append(a.Diagnostics, SemanticDiagnostic{
-								Range:   paramRef.Range,
-								Message: fmt.Sprintf("unknown parameter %q on %s %q", paramRef.Name, targetKind, d.ModuleName),
-								IsError: false,
-							})
-						}
-					}
-				}
-
-				if d.HasWildcard && targetOrder != nil && d.WildcardRange.File == "" {
-					for _, sym := range targetOrder {
-						if sym.Kind != KindPort || sym.Name == "" || connectedPorts[sym.Name] {
-							continue
-						}
-						if _, resolved := resolveRefInScopes(sym.Name, nil, scope.Symbols, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); !resolved {
-							a.Diagnostics = append(a.Diagnostics, SemanticDiagnostic{
-								Range:   d.WildcardRange,
-								Message: fmt.Sprintf("undeclared signal %q required by '.*' port connection of %s %q", sym.Name, targetKind, d.ModuleName),
-								IsError: false,
-							})
-						}
-					}
-				}
+				a.validateSingleInst(d, scope.Symbols)
+			case *ast.BindStmt:
+				a.validateBindStmt(d)
 			}
 		}
 	}
 	checkItems(scope.Module.Items)
+}
+
+func (a *Analysis) validateBindStmt(b *ast.BindStmt) {
+	if b == nil || b.Inst == nil || b.Range.File != "" {
+		return
+	}
+	var targetScopeSyms map[string]*Symbol
+	if !b.IsHierarchical {
+		if modScope, ok := a.AllModules[b.TargetName]; ok {
+			targetScopeSyms = modScope.Symbols
+		} else if ifaceScope, ok := a.AllInterfaces[b.TargetName]; ok {
+			targetScopeSyms = ifaceScope.Symbols
+		}
+	}
+	a.validateSingleInst(b.Inst, targetScopeSyms)
+
+	// Validate signal expressions in the bound port connections against the target module/interface scope.
+	if targetScopeSyms != nil {
+		for _, ref := range b.Inst.Refs {
+			if ref.Range.File != "" {
+				continue
+			}
+			if _, resolved := resolveRefInScopes(ref.Name, nil, targetScopeSyms, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); !resolved {
+				a.Diagnostics = append(a.Diagnostics, SemanticDiagnostic{
+					Range:   ref.Range,
+					Message: fmt.Sprintf("undeclared identifier %q in bound target %q", ref.Name, b.TargetName),
+					IsError: false,
+				})
+			}
+		}
+	}
+}
+
+func (a *Analysis) validateSingleInst(d *ast.ModuleInst, parentSyms map[string]*Symbol) {
+	if d == nil || d.Range.File != "" {
+		return
+	}
+	var targetSyms map[string]*Symbol
+	var targetOrder []*Symbol
+	targetKind := "module"
+	if modScope, ok := a.AllModules[d.ModuleName]; ok {
+		targetSyms = modScope.Symbols
+		targetOrder = modScope.Order
+	} else if ifaceScope, ok := a.AllInterfaces[d.ModuleName]; ok {
+		targetSyms = ifaceScope.Symbols
+		targetOrder = ifaceScope.Order
+		targetKind = "interface"
+	}
+
+	connectedPorts := make(map[string]bool, len(d.PortRefs))
+	for _, pref := range d.PortRefs {
+		if pref.Range.File != "" {
+			continue
+		}
+		if connectedPorts[pref.Name] {
+			a.Diagnostics = append(a.Diagnostics, SemanticDiagnostic{
+				Range:   pref.Range,
+				Message: fmt.Sprintf("duplicate port connection %q in instance %q", pref.Name, d.InstanceName),
+				IsError: false,
+			})
+		}
+		connectedPorts[pref.Name] = true
+
+		if targetSyms != nil {
+			if sym, ok := targetSyms[pref.Name]; !ok || sym.Kind != KindPort {
+				a.Diagnostics = append(a.Diagnostics, SemanticDiagnostic{
+					Range:   pref.Range,
+					Message: fmt.Sprintf("unknown port %q on %s %q", pref.Name, targetKind, d.ModuleName),
+					IsError: false,
+				})
+			}
+		}
+	}
+
+	if targetSyms != nil {
+		for _, paramRef := range d.ParamRefs {
+			if paramRef.Range.File != "" {
+				continue
+			}
+			if sym, ok := targetSyms[paramRef.Name]; !ok || sym.Kind != KindParam {
+				a.Diagnostics = append(a.Diagnostics, SemanticDiagnostic{
+					Range:   paramRef.Range,
+					Message: fmt.Sprintf("unknown parameter %q on %s %q", paramRef.Name, targetKind, d.ModuleName),
+					IsError: false,
+				})
+			}
+		}
+	}
+
+	if d.HasWildcard && targetOrder != nil && parentSyms != nil && d.WildcardRange.File == "" {
+		for _, sym := range targetOrder {
+			if sym.Kind != KindPort || sym.Name == "" || connectedPorts[sym.Name] {
+				continue
+			}
+			if _, resolved := resolveRefInScopes(sym.Name, nil, parentSyms, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); !resolved {
+				a.Diagnostics = append(a.Diagnostics, SemanticDiagnostic{
+					Range:   d.WildcardRange,
+					Message: fmt.Sprintf("undeclared signal %q required by '.*' port connection of %s %q", sym.Name, targetKind, d.ModuleName),
+					IsError: false,
+				})
+			}
+		}
+	}
 }
 
 func analyzeClass(cls *ast.ClassDecl, globals map[string]*Symbol, allPkgs map[string]*PackageScope, allIfaces map[string]*InterfaceScope, fileHasExtWildcard bool, diags *[]SemanticDiagnostic) *ClassScope {
@@ -663,6 +720,8 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 	modKindLabel := "module"
 	if mod.IsProgram {
 		modKindLabel = "program"
+	} else if mod.IsChecker {
+		modKindLabel = "checker"
 	}
 	modSym := &Symbol{
 		Name:           mod.Name,
@@ -1466,6 +1525,13 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 				return sym
 			}
 		}
+
+		// Check top-level bind statements.
+		for _, b := range a.File.Binds {
+			if sym := a.resolveBindAt(b, pos); sym != nil {
+				return sym
+			}
+		}
 	}
 
 	// Check package declarations and their contents.
@@ -1701,7 +1767,10 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 			}
 		}
 
-		// 2. Check module/interface instantiation type names (e.g. clicking on `sub_alu` in `sub_alu u_alu (...)`).
+		// 2. Check module/interface instantiation type names and bind statements.
+		if sym := a.findBindSymbolAt(mod.Items, pos); sym != nil {
+			return sym
+		}
 		if inst := findModuleInstAt(mod.Items, pos); inst != nil {
 			if targetScope, exists := a.Modules[inst.ModuleName]; exists {
 				return targetScope.Symbol
@@ -2205,10 +2274,106 @@ func (a *Analysis) MemberCompletions(pos ast.Position, baseName string, extModul
 	return nil
 }
 
+func (a *Analysis) resolveBindAt(b *ast.BindStmt, pos ast.Position) *Symbol {
+	if b == nil || !b.Range.Contains(pos) {
+		return nil
+	}
+	if b.TargetNameRange.Contains(pos) && !b.IsHierarchical {
+		if modScope, ok := a.AllModules[b.TargetName]; ok {
+			return modScope.Symbol
+		}
+		if ifaceScope, ok := a.AllInterfaces[b.TargetName]; ok {
+			return ifaceScope.Symbol
+		}
+		return &Symbol{
+			Name:           b.TargetName,
+			Kind:           KindModule,
+			TypeDetail:     "module",
+			Signature:      "module " + b.TargetName,
+			Range:          b.TargetNameRange,
+			SelectionRange: b.TargetNameRange,
+		}
+	}
+	if b.Inst != nil {
+		if b.Inst.ModuleNameRange.Contains(pos) {
+			if modScope, ok := a.AllModules[b.Inst.ModuleName]; ok {
+				return modScope.Symbol
+			}
+			if ifaceScope, ok := a.AllInterfaces[b.Inst.ModuleName]; ok {
+				return ifaceScope.Symbol
+			}
+			return &Symbol{
+				Name:           b.Inst.ModuleName,
+				Kind:           KindModule,
+				TypeDetail:     "module",
+				Signature:      "module " + b.Inst.ModuleName,
+				Range:          b.Inst.ModuleNameRange,
+				SelectionRange: b.Inst.ModuleNameRange,
+			}
+		}
+		if b.Inst.InstanceNameRange.Contains(pos) {
+			return &Symbol{
+				Name:           b.Inst.InstanceName,
+				Kind:           KindInstance,
+				TypeDetail:     "bind instance of " + b.Inst.ModuleName,
+				Signature:      fmt.Sprintf("%s %s", b.Inst.ModuleName, b.Inst.InstanceName),
+				Range:          b.Inst.Range,
+				SelectionRange: b.Inst.InstanceNameRange,
+				TargetModule:   b.Inst.ModuleName,
+			}
+		}
+		if sym, _ := a.ResolveInstPortAt(pos, nil); sym != nil {
+			return sym
+		}
+		// Resolve signal expressions inside the bound port connections against target module/interface scope.
+		if !b.IsHierarchical {
+			var targetSyms map[string]*Symbol
+			if modScope, ok := a.AllModules[b.TargetName]; ok {
+				targetSyms = modScope.Symbols
+			} else if ifaceScope, ok := a.AllInterfaces[b.TargetName]; ok {
+				targetSyms = ifaceScope.Symbols
+			}
+			if targetSyms != nil {
+				for _, ref := range b.Inst.Refs {
+					if ref.Range.Contains(pos) {
+						if sym, ok := resolveRefInScopes(ref.Name, nil, targetSyms, a.GlobalSymbols, a.AllPackages, a.AllInterfaces, false); ok && sym != nil {
+							return sym
+						}
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (a *Analysis) findBindSymbolAt(items []ast.ModuleItem, pos ast.Position) *Symbol {
+	for _, item := range items {
+		switch d := item.(type) {
+		case *ast.BindStmt:
+			if sym := a.resolveBindAt(d, pos); sym != nil {
+				return sym
+			}
+		case *ast.GenerateBlock:
+			if sym := a.findBindSymbolAt(d.Items, pos); sym != nil {
+				return sym
+			}
+		}
+	}
+	return nil
+}
+
 // InstantiationAt returns the ModuleInst enclosing pos, if any.
 func (a *Analysis) InstantiationAt(pos ast.Position) *ast.ModuleInst {
 	if a == nil {
 		return nil
+	}
+	if a.File != nil {
+		for _, b := range a.File.Binds {
+			if b.Inst != nil && b.Inst.Range.Contains(pos) {
+				return b.Inst
+			}
+		}
 	}
 	var findInItems func(items []ast.ModuleItem) *ast.ModuleInst
 	findInItems = func(items []ast.ModuleItem) *ast.ModuleInst {
@@ -2217,6 +2382,10 @@ func (a *Analysis) InstantiationAt(pos ast.Position) *ast.ModuleInst {
 			case *ast.ModuleInst:
 				if d.Range.Contains(pos) {
 					return d
+				}
+			case *ast.BindStmt:
+				if d.Inst != nil && d.Inst.Range.Contains(pos) {
+					return d.Inst
 				}
 			case *ast.GenerateBlock:
 				if found := findInItems(d.Items); found != nil {
@@ -2378,6 +2547,8 @@ func formatModuleSignature(mod *ast.ModuleDecl) string {
 	var b strings.Builder
 	if mod.IsProgram {
 		b.WriteString("program ")
+	} else if mod.IsChecker {
+		b.WriteString("checker ")
 	} else {
 		b.WriteString("module ")
 	}
@@ -2591,6 +2762,9 @@ func buildFunctionScope(fn *ast.FunctionDecl, diags *[]SemanticDiagnostic) *Func
 }
 
 func formatFunctionReturnType(fn *ast.FunctionDecl) string {
+	if fn.IsLet {
+		return "let"
+	}
 	parts := []string{"function"}
 	if fn.Automatic {
 		parts = append(parts, "automatic")
@@ -2608,6 +2782,33 @@ func formatFunctionReturnType(fn *ast.FunctionDecl) string {
 }
 
 func formatFunctionSignature(fn *ast.FunctionDecl) string {
+	if fn.IsLet {
+		var b strings.Builder
+		b.WriteString("let ")
+		b.WriteString(fn.Name)
+		if len(fn.Params) > 0 {
+			b.WriteString("(")
+			for i, p := range fn.Params {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				if p.NetType != "" {
+					b.WriteString(p.NetType)
+					if p.Width != nil {
+						b.WriteString(" ")
+						b.WriteString(p.Width.Raw)
+					}
+					b.WriteString(" ")
+				} else if p.Width != nil {
+					b.WriteString(p.Width.Raw)
+					b.WriteString(" ")
+				}
+				b.WriteString(p.Name)
+			}
+			b.WriteString(")")
+		}
+		return b.String()
+	}
 	var b strings.Builder
 	b.WriteString(formatFunctionReturnType(fn))
 	b.WriteString(" ")
@@ -3074,12 +3275,19 @@ func findModuleInstAt(items []ast.ModuleItem, pos ast.Position) *ast.ModuleInst 
 	return nil
 }
 
-// FindModuleInstantiations returns the ModuleNameRange of every instantiation (or interface port usage) of moduleName in this file.
+// FindModuleInstantiations returns the ModuleNameRange of every instantiation (or interface port / bind usage) of moduleName in this file.
 func (a *Analysis) FindModuleInstantiations(moduleName string) []ast.Range {
 	if a == nil || moduleName == "" {
 		return nil
 	}
 	var ranges []ast.Range
+	if a.File != nil {
+		for _, b := range a.File.Binds {
+			if b.Inst != nil && b.Inst.ModuleName == moduleName {
+				ranges = append(ranges, b.Inst.ModuleNameRange)
+			}
+		}
+	}
 	for _, scope := range a.ModuleOrder {
 		if scope.Module == nil {
 			continue
@@ -3106,6 +3314,10 @@ func collectModuleInstantiations(items []ast.ModuleItem, moduleName string, out 
 		case *ast.ModuleInst:
 			if d.ModuleName == moduleName {
 				*out = append(*out, d.ModuleNameRange)
+			}
+		case *ast.BindStmt:
+			if d.Inst != nil && d.Inst.ModuleName == moduleName {
+				*out = append(*out, d.Inst.ModuleNameRange)
 			}
 		case *ast.GenerateBlock:
 			collectModuleInstantiations(d.Items, moduleName, out)

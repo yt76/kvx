@@ -833,3 +833,127 @@ func TestAnalyzeSystemVerilogCovergroup(t *testing.T) {
 		t.Errorf("MemberCompletions(u_cg.) = %v, want sample, get_coverage, cp_addr, cr_both", names)
 	}
 }
+
+func TestAnalyzeSystemVerilogBind(t *testing.T) {
+	src := "module dut (input logic clk, input logic req);\n" +
+		"  logic internal_sig;\n" +
+		"  assign internal_sig = req;\n" +
+		"endmodule\n" +
+		"module chk (input logic clk, input logic req, input logic sig);\n" +
+		"endmodule\n" +
+		"bind dut chk u_chk (.*, .sig(internal_sig));\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for bind, got %+v", an.Diagnostics)
+	}
+
+	// `dut` in `bind dut chk u_chk` (line 6, col 6) resolves to module `dut` at line 0.
+	symDut := an.SymbolAt(ast.Position{Line: 6, Column: 6})
+	if symDut == nil || symDut.Kind != KindModule || symDut.Name != "dut" || symDut.SelectionRange.Start.Line != 0 {
+		t.Errorf("SymbolAt(bind target dut) = %+v, want KindModule dut at line 0", symDut)
+	}
+
+	// `chk` in `bind dut chk u_chk` (line 6, col 10) resolves to module `chk` at line 4.
+	symChk := an.SymbolAt(ast.Position{Line: 6, Column: 10})
+	if symChk == nil || symChk.Kind != KindModule || symChk.Name != "chk" || symChk.SelectionRange.Start.Line != 4 {
+		t.Errorf("SymbolAt(bound module chk) = %+v, want KindModule chk at line 4", symChk)
+	}
+
+	// `internal_sig` in `.sig(internal_sig)` (line 6, col 32) resolves to `internal_sig` in `dut` (line 1).
+	symSig := an.SymbolAt(ast.Position{Line: 6, Column: 32})
+	if symSig == nil || symSig.Name != "internal_sig" || symSig.SelectionRange.Start.Line != 1 {
+		t.Errorf("SymbolAt(internal_sig in bind) = %+v, want internal_sig in dut at line 1", symSig)
+	}
+
+	// Invalid signal inside bind port connection must be diagnosed in target scope.
+	badSrc := "module dut (input logic clk); endmodule\n" +
+		"module chk (input logic clk, input logic x); endmodule\n" +
+		"bind dut chk u_chk (.clk(clk), .x(missing_in_dut));\n"
+	badFile, _ := parser.Parse(badSrc)
+	badAn := Analyze(badFile)
+	if len(badAn.Diagnostics) != 1 || !strings.Contains(badAn.Diagnostics[0].Message, `"missing_in_dut"`) {
+		t.Errorf("expected 1 diagnostic for missing_in_dut in bind, got %+v", badAn.Diagnostics)
+	}
+}
+
+func TestAnalyzeSystemVerilogDPI(t *testing.T) {
+	src := "import \"DPI-C\" pure function real c_sin(real x);\n" +
+		"import \"DPI-C\" context c_init = function chandle sv_init(input string name);\n" +
+		"import \"DPI-C\" context task c_wait(input int n, output shortreal v);\n" +
+		"module tb;\n" +
+		"  export \"DPI-C\" function sv_cb;\n" +
+		"  function int sv_cb(int a);\n" +
+		"    return a;\n" +
+		"  endfunction\n" +
+		"  chandle h;\n" +
+		"  real r;\n" +
+		"  shortreal sr;\n" +
+		"  initial begin\n" +
+		"    h = sv_init(\"ok\");\n" +
+		"    r = c_sin(1.0);\n" +
+		"    c_wait(5, sr);\n" +
+		"  end\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for DPI-C, got %+v", an.Diagnostics)
+	}
+
+	// `sv_init` call (line 12, col 10) resolves to top-level DPI function `sv_init` at line 1.
+	symInit := an.SymbolAt(ast.Position{Line: 12, Column: 10})
+	if symInit == nil || symInit.Kind != KindFunction || symInit.Name != "sv_init" || symInit.SelectionRange.Start.Line != 1 {
+		t.Errorf("SymbolAt(sv_init call) = %+v, want KindFunction sv_init at line 1", symInit)
+	}
+
+	// `sv_cb` in `export "DPI-C" function sv_cb;` (line 4, col 28) resolves to `sv_cb` at line 5.
+	symExport := an.SymbolAt(ast.Position{Line: 4, Column: 28})
+	if symExport == nil || symExport.Kind != KindFunction || symExport.Name != "sv_cb" || symExport.SelectionRange.Start.Line != 5 {
+		t.Errorf("SymbolAt(sv_cb in export) = %+v, want KindFunction sv_cb at line 5", symExport)
+	}
+}
+
+func TestAnalyzeSystemVerilogCheckerAndLet(t *testing.T) {
+	src := "let TOP_EN = 1'b1;\n" +
+		"checker my_chk (input logic clk, untyped req, ack = 1'b0);\n" +
+		"  let active(r) = r && TOP_EN;\n" +
+		"  property p_ok; @(posedge clk) active(req) |-> ack; endproperty\n" +
+		"  assert property (p_ok);\n" +
+		"endchecker\n" +
+		"module top (input logic clk, input logic req, input logic ack);\n" +
+		"  my_chk u_chk (.clk(clk), .req(req), .ack(ack));\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for checker/let, got %+v", an.Diagnostics)
+	}
+
+	// `my_chk` in instantiation (line 7, col 4) resolves to checker `my_chk` at line 1.
+	symChk := an.SymbolAt(ast.Position{Line: 7, Column: 4})
+	if symChk == nil || symChk.Kind != KindModule || symChk.Name != "my_chk" || symChk.SelectionRange.Start.Line != 1 {
+		t.Errorf("SymbolAt(my_chk inst) = %+v, want KindModule my_chk at line 1", symChk)
+	}
+
+	// `active` in property (line 3, col 34) resolves to `let active(r)` at line 2.
+	symLet := an.SymbolAt(ast.Position{Line: 3, Column: 34})
+	if symLet == nil || symLet.Kind != KindFunction || symLet.Name != "active" || symLet.SelectionRange.Start.Line != 2 {
+		t.Errorf("SymbolAt(active let call) = %+v, want KindFunction active at line 2", symLet)
+	}
+	if symLet != nil && symLet.Signature != "let active(r)" {
+		t.Errorf("let Signature = %q, want %q", symLet.Signature, "let active(r)")
+	}
+}
