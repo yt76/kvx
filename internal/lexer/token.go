@@ -52,6 +52,8 @@ const (
 	TokenRef          TokenType = "ref"
 	TokenWire         TokenType = "wire"
 	TokenUwire        TokenType = "uwire"
+	TokenInterconnect TokenType = "interconnect"
+	TokenNettype      TokenType = "nettype"
 	TokenReg          TokenType = "reg"
 	TokenLogic        TokenType = "logic"
 	TokenBit          TokenType = "bit"
@@ -294,6 +296,8 @@ var keywords = map[string]TokenType{
 	"ref":          TokenRef,
 	"wire":         TokenWire,
 	"uwire":        TokenUwire,
+	"interconnect": TokenInterconnect,
+	"nettype":      TokenNettype,
 	"reg":          TokenReg,
 	"logic":        TokenLogic,
 	"bit":          TokenBit,

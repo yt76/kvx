@@ -138,17 +138,20 @@ type PackageDecl struct {
 	Name       string
 	NameRange  Range
 	Range      Range
+	Imports    []*ImportDecl
 	Params     []*ParamDecl
 	Items      []ModuleItem
 	Refs       []IdentifierRef
 	MemberRefs []MemberRef
 }
 
-// ImportDecl represents a SystemVerilog package import (e.g. import pkg::*; or import pkg::SYM;).
+// ImportDecl represents a SystemVerilog package import or re-export
+// (e.g. `import pkg::*;`, `import pkg::SYM;`, `export pkg::*;`, `export *::*;`).
 type ImportDecl struct {
-	PackageName      string
+	IsExport         bool
+	PackageName      string // package name or "*" for `export *::*;`
 	PackageNameRange Range
-	SymbolName       string // "*" for wildcard import, or specific symbol name
+	SymbolName       string // "*" for wildcard import/export, or specific symbol name
 	SymbolNameRange  Range
 	Range            Range
 }
@@ -285,6 +288,7 @@ type StructField struct {
 
 // TypedefDecl represents a SystemVerilog typedef declaration (including enum/struct/union).
 type TypedefDecl struct {
+	IsNettype    bool
 	Name         string
 	NameRange    Range
 	BaseType     string

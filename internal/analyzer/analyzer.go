@@ -276,11 +276,15 @@ func AnalyzeWithWorkspace(file *ast.SourceFile, ctx WorkspaceContext) *Analysis 
 
 	for _, td := range file.Typedefs {
 		if td.Name != "" {
-			detail := "typedef"
-			sig := "typedef " + td.Name
+			kw := "typedef"
+			if td.IsNettype {
+				kw = "nettype"
+			}
+			detail := kw
+			sig := kw + " " + td.Name
 			if td.BaseType != "" {
-				detail = "typedef " + td.BaseType
-				sig = "typedef " + td.BaseType + " " + td.Name
+				detail = kw + " " + td.BaseType
+				sig = kw + " " + td.BaseType + " " + td.Name
 			}
 			sym := &Symbol{
 				Name:           td.Name,
@@ -698,6 +702,7 @@ func analyzePackage(pkg *ast.PackageDecl, globals map[string]*Symbol, allPkgs ma
 		Name:       pkg.Name,
 		NameRange:  pkg.NameRange,
 		Range:      pkg.Range,
+		Imports:    pkg.Imports,
 		Params:     pkg.Params,
 		Items:      pkg.Items,
 		Refs:       pkg.Refs,
@@ -705,20 +710,73 @@ func analyzePackage(pkg *ast.PackageDecl, globals map[string]*Symbol, allPkgs ma
 	}
 	modScope := analyzeModule(dummyMod, globals, allPkgs, allIfaces, false, diags)
 
-	// Tag all package symbols (and their struct fields) with PackageName for cross-file resolution.
+	// Tag all symbols declared directly in this package with PackageName for cross-file resolution,
+	// and build the exported symbol table (declared symbols + explicitly re-exported symbols).
+	exportedSymbols := make(map[string]*Symbol, len(modScope.Order))
+	exportedOrder := make([]*Symbol, 0, len(modScope.Order))
+	addExported := func(sym *Symbol) {
+		if sym == nil || sym.Name == "" {
+			return
+		}
+		if _, exists := exportedSymbols[sym.Name]; !exists {
+			exportedSymbols[sym.Name] = sym
+			exportedOrder = append(exportedOrder, sym)
+		}
+	}
+
 	for _, sym := range modScope.Order {
 		sym.PackageName = pkg.Name
 		for _, f := range sym.Fields {
 			f.PackageName = pkg.Name
 		}
+		addExported(sym)
 	}
+
+	// Process SystemVerilog package re-export declarations (`export *::*;`, `export src_pkg::*;`, `export src_pkg::sym;`).
+	for _, exp := range pkg.Imports {
+		if !exp.IsExport {
+			continue
+		}
+		if exp.PackageName == "*" && exp.SymbolName == "*" {
+			// `export *::*;` re-exports all symbols imported into this package.
+			for _, imp := range pkg.Imports {
+				if imp.IsExport {
+					continue
+				}
+				srcPkg, ok := allPkgs[imp.PackageName]
+				if !ok {
+					continue
+				}
+				if imp.SymbolName == "*" {
+					for _, sym := range srcPkg.Order {
+						addExported(sym)
+					}
+				} else if sym, ok := srcPkg.Symbols[imp.SymbolName]; ok {
+					addExported(sym)
+				}
+			}
+			continue
+		}
+		srcPkg, ok := allPkgs[exp.PackageName]
+		if !ok {
+			continue
+		}
+		if exp.SymbolName == "*" {
+			for _, sym := range srcPkg.Order {
+				addExported(sym)
+			}
+		} else if sym, ok := srcPkg.Symbols[exp.SymbolName]; ok {
+			addExported(sym)
+		}
+	}
+
 	pkgSym.Children = modScope.Symbol.Children
 
 	return &PackageScope{
 		Package:    pkg,
 		Symbol:     pkgSym,
-		Symbols:    modScope.Symbols,
-		Order:      modScope.Order,
+		Symbols:    exportedSymbols,
+		Order:      exportedOrder,
 		Functions:  modScope.Functions,
 		Tasks:      modScope.Tasks,
 		Properties: modScope.Properties,
@@ -878,11 +936,15 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 				addSymbol(subScope.Symbol, inGenerate)
 
 			case *ast.TypedefDecl:
-				detail := "typedef"
-				sig := "typedef " + d.Name
+				kw := "typedef"
+				if d.IsNettype {
+					kw = "nettype"
+				}
+				detail := kw
+				sig := kw + " " + d.Name
 				if d.BaseType != "" {
-					detail = "typedef " + d.BaseType
-					sig = "typedef " + d.BaseType + " " + d.Name
+					detail = kw + " " + d.BaseType
+					sig = kw + " " + d.BaseType + " " + d.Name
 				}
 				addSymbol(&Symbol{
 					Name:           d.Name,
@@ -1051,6 +1113,9 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 
 	hasExtWildcard := fileHasExtWildcard
 	importPackage := func(imp *ast.ImportDecl) {
+		if imp.IsExport {
+			return
+		}
 		if pkgScope, ok := allPkgs[imp.PackageName]; ok {
 			if imp.SymbolName == "*" {
 				for _, sym := range pkgScope.Order {
@@ -1568,6 +1633,11 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 		}
 		if !pkg.Range.Contains(pos) {
 			continue
+		}
+		for _, imp := range pkg.Imports {
+			if sym := a.resolveImportAt(imp, pos); sym != nil {
+				return sym
+			}
 		}
 		for _, sym := range pkgScope.Order {
 			if sym.SelectionRange.Contains(pos) {

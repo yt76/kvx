@@ -1197,3 +1197,93 @@ func TestAnalyzeSystemVerilogExpect(t *testing.T) {
 		t.Errorf("expected 1 diagnostic for missing_sig in expect, got %+v", badAn.Diagnostics)
 	}
 }
+
+func TestAnalyzeSystemVerilogNettypeAndInterconnect(t *testing.T) {
+	src := "package np;\n" +
+		"  typedef struct { real v; real i; } vi_s;\n" +
+		"  function automatic real res_fn(input real d[]); return 0.0; endfunction\n" +
+		"  nettype real wreal_t with res_fn;\n" +
+		"  nettype vi_s vi_net_t;\n" +
+		"endpackage\n" +
+		"module top (interconnect a, interconnect [3:0] bus);\n" +
+		"  import np::*;\n" +
+		"  wreal_t n1;\n" +
+		"  vi_net_t n2;\n" +
+		"  interconnect w;\n" +
+		"  assign n1 = 1.0;\n" +
+		"  assign n2.v = n1;\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for nettype/interconnect, got %+v", an.Diagnostics)
+	}
+
+	// `res_fn` in `nettype real wreal_t with res_fn;` (line 3, col 29) resolves to `res_fn` at line 2.
+	symRes := an.SymbolAt(ast.Position{Line: 3, Column: 29})
+	if symRes == nil || symRes.Kind != KindFunction || symRes.Name != "res_fn" || symRes.SelectionRange.Start.Line != 2 {
+		t.Errorf("SymbolAt(res_fn in nettype with) = %+v, want KindFunction res_fn at line 2", symRes)
+	}
+
+	// `v` in `assign n2.v = n1;` (line 12, col 12) resolves through `nettype vi_s vi_net_t` to `vi_s.v`.
+	symField := an.SymbolAt(ast.Position{Line: 12, Column: 12})
+	if symField == nil || symField.Name != "v" {
+		t.Errorf("SymbolAt(n2.v) = %+v, want field v of vi_s", symField)
+	}
+}
+
+func TestAnalyzeSystemVerilogPackageExport(t *testing.T) {
+	src := "package base_pkg;\n" +
+		"  typedef logic [7:0] byte_t;\n" +
+		"  localparam int BASE_W = 8;\n" +
+		"  localparam int SECRET_W = 4;\n" +
+		"endpackage\n" +
+		"package mid_pkg;\n" +
+		"  import base_pkg::*;\n" +
+		"  export base_pkg::byte_t;\n" +
+		"  localparam int MID_W = BASE_W + 1;\n" +
+		"endpackage\n" +
+		"package all_pkg;\n" +
+		"  import base_pkg::*;\n" +
+		"  export *::*;\n" +
+		"endpackage\n" +
+		"module tb;\n" +
+		"  import mid_pkg::*;\n" +
+		"  import all_pkg::BASE_W;\n" +
+		"  byte_t b;\n" +
+		"  int v;\n" +
+		"  initial begin\n" +
+		"    b = 8'h55;\n" +
+		"    v = BASE_W + MID_W;\n" +
+		"  end\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for package export, got %+v", an.Diagnostics)
+	}
+
+	// `byte_t` in `export base_pkg::byte_t;` (line 7, col 20) resolves to `base_pkg::byte_t` at line 1.
+	symExp := an.SymbolAt(ast.Position{Line: 7, Column: 20})
+	if symExp == nil || symExp.Kind != KindType || symExp.Name != "byte_t" || symExp.SelectionRange.Start.Line != 1 {
+		t.Errorf("SymbolAt(byte_t in export) = %+v, want byte_t at line 1", symExp)
+	}
+
+	// `SECRET_W` was NOT re-exported by `mid_pkg`, so importing only `mid_pkg::*` must NOT expose `SECRET_W`.
+	badSrc := "package base_pkg; localparam int SECRET_W = 4; endpackage\n" +
+		"package mid_pkg; import base_pkg::*; endpackage\n" +
+		"module tb; import mid_pkg::*; int v; initial v = SECRET_W; endmodule\n"
+	badFile, _ := parser.Parse(badSrc)
+	badAn := Analyze(badFile)
+	if len(badAn.Diagnostics) != 1 || !strings.Contains(badAn.Diagnostics[0].Message, `"SECRET_W"`) {
+		t.Errorf("expected 1 diagnostic for non-re-exported SECRET_W, got %+v", badAn.Diagnostics)
+	}
+}

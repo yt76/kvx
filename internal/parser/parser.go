@@ -149,7 +149,7 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 			p.parseConfigDecl()
 			continue
 		}
-		if tok.Type == lexer.TokenTypedef {
+		if tok.Type == lexer.TokenTypedef || tok.Type == lexer.TokenNettype {
 			p.parseTypedefDecl(nil, file)
 			continue
 		}
@@ -176,6 +176,7 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 			p.cur().Type != lexer.TokenPrimitive &&
 			p.cur().Type != lexer.TokenConfig &&
 			p.cur().Type != lexer.TokenTypedef &&
+			p.cur().Type != lexer.TokenNettype &&
 			p.cur().Type != lexer.TokenParameter &&
 			p.cur().Type != lexer.TokenLocalparam {
 			if p.cur().Type == lexer.TokenIllegal {
@@ -700,7 +701,7 @@ func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 		if prog := p.parseModuleDecl(); prog != nil {
 			mod.Items = append(mod.Items, prog)
 		}
-	case lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg,
+	case lexer.TokenWire, lexer.TokenUwire, lexer.TokenInterconnect, lexer.TokenReg,
 		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw, lexer.TokenChandle, lexer.TokenShortreal,
 		lexer.TokenInteger, lexer.TokenGenvar,
 		lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,
@@ -731,7 +732,7 @@ func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 		p.parseImportDecl(mod, nil)
 	case lexer.TokenExport:
 		p.parseDPIExportDecl(mod, nil)
-	case lexer.TokenTypedef:
+	case lexer.TokenTypedef, lexer.TokenNettype:
 		p.parseTypedefDecl(mod, nil)
 	case lexer.TokenEnum, lexer.TokenStruct, lexer.TokenUnion:
 		p.parseEnumOrStructVarDecl(mod)
@@ -1722,7 +1723,7 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 		p.parseImportDecl(mod, nil)
 	case lexer.TokenExport:
 		p.parseDPIExportDecl(mod, nil)
-	case lexer.TokenTypedef:
+	case lexer.TokenTypedef, lexer.TokenNettype:
 		p.parseTypedefDecl(mod, nil)
 
 	case lexer.TokenEnum, lexer.TokenStruct, lexer.TokenUnion:
@@ -2840,14 +2841,14 @@ func (p *Parser) syncToStatementEnd() {
 			return
 		case lexer.TokenEnd, lexer.TokenJoin, lexer.TokenJoinAny, lexer.TokenJoinNone, lexer.TokenEndcase, lexer.TokenEndfunction, lexer.TokenEndtask, lexer.TokenEndclass, lexer.TokenEndgroup, lexer.TokenEndclocking, lexer.TokenEndgenerate, lexer.TokenEndspecify, lexer.TokenEndmodule, lexer.TokenEndprogram, lexer.TokenEndchecker, lexer.TokenEndinterface, lexer.TokenEndpackage, lexer.TokenModule, lexer.TokenMacromodule, lexer.TokenProgram, lexer.TokenChecker, lexer.TokenLet, lexer.TokenInterface, lexer.TokenPackage, lexer.TokenClass, lexer.TokenCovergroup, lexer.TokenClocking, lexer.TokenPrimitive,
 			lexer.TokenInput, lexer.TokenOutput, lexer.TokenInout, lexer.TokenRef, lexer.TokenModport,
-			lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg,
+			lexer.TokenWire, lexer.TokenUwire, lexer.TokenInterconnect, lexer.TokenReg,
 			lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw, lexer.TokenChandle, lexer.TokenShortreal,
 			lexer.TokenConst, lexer.TokenVar, lexer.TokenStatic, lexer.TokenLocal, lexer.TokenProtected, lexer.TokenRand, lexer.TokenRandc, lexer.TokenVirtual, lexer.TokenPure, lexer.TokenExtern, lexer.TokenConstraint,
 			lexer.TokenInteger, lexer.TokenGenvar,
 			lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,
 			lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
 			lexer.TokenReal, lexer.TokenTime, lexer.TokenRealtime, lexer.TokenEvent,
-			lexer.TokenParameter, lexer.TokenLocalparam, lexer.TokenDefparam, lexer.TokenTypedef, lexer.TokenImport, lexer.TokenExport,
+			lexer.TokenParameter, lexer.TokenLocalparam, lexer.TokenDefparam, lexer.TokenTypedef, lexer.TokenNettype, lexer.TokenImport, lexer.TokenExport,
 			lexer.TokenEnum, lexer.TokenStruct, lexer.TokenUnion,
 			lexer.TokenAssign, lexer.TokenDeassign, lexer.TokenForce, lexer.TokenRelease, lexer.TokenBind,
 			lexer.TokenAlways, lexer.TokenAlwaysComb, lexer.TokenAlwaysFF, lexer.TokenAlwaysLatch, lexer.TokenInitial, lexer.TokenFinal,
@@ -2931,7 +2932,7 @@ func isProceduralAssignOp(t lexer.TokenType) bool {
 
 func isPortNetType(t lexer.TokenType) bool {
 	switch t {
-	case lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg, lexer.TokenInteger,
+	case lexer.TokenWire, lexer.TokenUwire, lexer.TokenInterconnect, lexer.TokenReg, lexer.TokenInteger,
 		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw, lexer.TokenChandle, lexer.TokenShortreal,
 		lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,
 		lexer.TokenSupply0, lexer.TokenSupply1, lexer.TokenWand, lexer.TokenWor,
@@ -3186,7 +3187,7 @@ func (p *Parser) parseVarWithModifiers(mod *ast.ModuleDecl) {
 		p.parseLetDecl(mod, nil)
 	case lexer.TokenEnum, lexer.TokenStruct, lexer.TokenUnion:
 		p.parseEnumOrStructVarDecl(mod)
-	case lexer.TokenWire, lexer.TokenUwire, lexer.TokenReg,
+	case lexer.TokenWire, lexer.TokenUwire, lexer.TokenInterconnect, lexer.TokenReg,
 		lexer.TokenLogic, lexer.TokenBit, lexer.TokenByte, lexer.TokenShortint, lexer.TokenInt, lexer.TokenLongint, lexer.TokenStringKw, lexer.TokenChandle, lexer.TokenShortreal,
 		lexer.TokenInteger, lexer.TokenGenvar,
 		lexer.TokenTri, lexer.TokenTri0, lexer.TokenTri1, lexer.TokenTriand, lexer.TokenTrior, lexer.TokenTrireg,
@@ -4769,6 +4770,7 @@ func (p *Parser) parsePackageDecl() *ast.PackageDecl {
 		pkg.Range.End = p.prev().Range.End
 	}
 
+	pkg.Imports = dummyMod.Imports
 	pkg.Params = dummyMod.Params
 	pkg.Items = dummyMod.Items
 	pkg.Refs = dummyMod.Refs
@@ -4883,7 +4885,13 @@ func (p *Parser) parseDPIImportDecl(mod *ast.ModuleDecl, file *ast.SourceFile) {
 }
 
 func (p *Parser) parseDPIExportDecl(mod *ast.ModuleDecl, file *ast.SourceFile) {
-	p.advance() // consume 'export'
+	startTok := p.advance() // consume 'export'
+
+	// SystemVerilog package re-export: `export *::*;`, `export pkg::*;`, `export pkg::sym, ...;`
+	if p.cur().Type == lexer.TokenStar || (p.cur().Type == lexer.TokenIdent && p.peekN(1).Type == lexer.TokenColonColon) {
+		p.parsePackageExportDecl(startTok, mod, file)
+		return
+	}
 
 	if p.cur().Type == lexer.TokenString {
 		p.advance() // e.g. "DPI-C"
@@ -4919,6 +4927,69 @@ func (p *Parser) parseDPIExportDecl(mod *ast.ModuleDecl, file *ast.SourceFile) {
 	}
 
 	p.expectSemicolon("DPI export declaration")
+}
+
+// parsePackageExportDecl parses SystemVerilog package re-export declarations:
+// `export *::*;`, `export pkg::*;`, `export pkg::sym, ...;`
+func (p *Parser) parsePackageExportDecl(startTok lexer.Token, mod *ast.ModuleDecl, file *ast.SourceFile) {
+	for !p.isEOF() {
+		var pkgTok lexer.Token
+		if p.cur().Type == lexer.TokenStar {
+			pkgTok = p.advance()
+		} else if p.cur().Type == lexer.TokenIdent {
+			pkgTok = p.advance()
+		} else {
+			p.addError(p.cur().Range, "expected package name or '*' after 'export'")
+			p.syncToStatementEnd()
+			return
+		}
+
+		symName := ""
+		var symRange ast.Range
+		endPos := pkgTok.Range.End
+
+		if p.cur().Type == lexer.TokenColonColon {
+			p.advance() // '::'
+			if p.cur().Type == lexer.TokenStar {
+				starTok := p.advance()
+				symName = "*"
+				symRange = starTok.Range
+				endPos = starTok.Range.End
+			} else if p.cur().Type == lexer.TokenIdent {
+				symTok := p.advance()
+				symName = symTok.Literal
+				symRange = symTok.Range
+				endPos = symTok.Range.End
+			} else {
+				p.addError(p.cur().Range, "expected '*' or symbol name after '::' in export")
+			}
+		} else {
+			p.addError(p.cur().Range, "expected '::' after package name in export")
+		}
+
+		exp := &ast.ImportDecl{
+			IsExport:         true,
+			PackageName:      pkgTok.Literal,
+			PackageNameRange: pkgTok.Range,
+			SymbolName:       symName,
+			SymbolNameRange:  symRange,
+			Range:            ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: endPos},
+		}
+		if mod != nil {
+			mod.Imports = append(mod.Imports, exp)
+			mod.Items = append(mod.Items, exp)
+		} else if file != nil {
+			file.Imports = append(file.Imports, exp)
+		}
+
+		if p.cur().Type == lexer.TokenComma {
+			p.advance()
+			continue
+		}
+		break
+	}
+
+	p.expectSemicolon("export declaration")
 }
 
 // parseLetDecl parses a SystemVerilog `let` declaration:
@@ -5282,9 +5353,11 @@ func (p *Parser) parseRandsequenceItem(block *ast.ProceduralBlock, mod *ast.Modu
 }
 
 func (p *Parser) parseTypedefDecl(mod *ast.ModuleDecl, file *ast.SourceFile) {
-	startTok := p.advance() // consume 'typedef'
+	startTok := p.advance() // consume 'typedef' or 'nettype'
+	isNettype := startTok.Type == lexer.TokenNettype
 	td := &ast.TypedefDecl{
-		Range: ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
+		IsNettype: isNettype,
+		Range:     ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
 	}
 
 	var baseParts []string
@@ -5399,7 +5472,21 @@ func (p *Parser) parseTypedefDecl(mod *ast.ModuleDecl, file *ast.SourceFile) {
 		}
 	}
 
-	p.expectSemicolon("typedef declaration")
+	// Optional resolution function for nettype: `nettype real wreal_t with [pkg::]resolve_fn;`
+	if isNettype && p.cur().Type == lexer.TokenWith {
+		p.advance() // 'with'
+		if p.cur().Type == lexer.TokenIdent {
+			_, _ = p.parseScopedTypeName(&td.Refs, mod)
+		} else {
+			p.addError(p.cur().Range, "expected resolution function name after 'with' in nettype declaration")
+		}
+	}
+
+	if isNettype {
+		p.expectSemicolon("nettype declaration")
+	} else {
+		p.expectSemicolon("typedef declaration")
+	}
 	td.BaseType = strings.Join(baseParts, " ")
 	td.Range.End = p.prev().Range.End
 	p.registerTypedef(td, mod, file)
@@ -5413,6 +5500,7 @@ func (p *Parser) registerTypedef(td *ast.TypedefDecl, mod *ast.ModuleDecl, file 
 		mod.Items = append(mod.Items, td)
 	} else if file != nil {
 		file.Typedefs = append(file.Typedefs, td)
+		file.Refs = append(file.Refs, td.Refs...)
 	}
 }
 
