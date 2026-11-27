@@ -597,8 +597,12 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 		endPos := nameTok.Range.End
 
 		// Optional unpacked array dimensions in port list
+		var unpackedDims []*ast.BitRange
 		for p.cur().Type == lexer.TokenLBracket {
-			_ = p.parseBitRange(mod)
+			r := p.parseBitRange(mod)
+			if r != nil {
+				unpackedDims = append(unpackedDims, r)
+			}
 			endPos = p.prev().Range.End
 		}
 
@@ -627,6 +631,7 @@ func (p *Parser) parseModulePortList(mod *ast.ModuleDecl) {
 				ModportNameRange:   curModportRange,
 				Signed:             curSigned,
 				Width:              curWidth,
+				UnpackedDims:       unpackedDims,
 				Name:               nameTok.Literal,
 				NameRange:          nameTok.Range,
 				Range:              ast.Range{File: nameTok.Range.File, Start: startPos, End: endPos},
@@ -908,9 +913,13 @@ func (p *Parser) parseNetDeclItem(mod *ast.ModuleDecl) {
 		nameTok := p.advance()
 		endPos := nameTok.Range.End
 
-		// Optional unpacked array dimensions: e.g. reg [7:0] mem [0:255];
+		// Optional unpacked array dimensions: e.g. reg [7:0] mem [0:255]; int q[$]; int map[string];
+		var unpackedDims []*ast.BitRange
 		for p.cur().Type == lexer.TokenLBracket {
-			_ = p.parseBitRange(mod)
+			r := p.parseBitRange(mod)
+			if r != nil {
+				unpackedDims = append(unpackedDims, r)
+			}
 			endPos = p.prev().Range.End
 		}
 
@@ -921,9 +930,10 @@ func (p *Parser) parseNetDeclItem(mod *ast.ModuleDecl) {
 		}
 
 		decl := &ast.NetDecl{
-			Kind:      kind,
-			Signed:    signed,
-			Width:     width,
+			Kind:         kind,
+			Signed:       signed,
+			Width:        width,
+			UnpackedDims: unpackedDims,
 			Name:      nameTok.Literal,
 			NameRange: nameTok.Range,
 			Range:     ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: endPos},
@@ -2318,12 +2328,18 @@ func (p *Parser) parseBitRange(mod *ast.ModuleDecl) *ast.BitRange {
 	prevWasDot := false
 	scopedPrefix := ""
 
-	for !p.isEOF() && p.cur().Type != lexer.TokenRBracket {
+	nestedBracketDepth := 0
+	for !p.isEOF() && (p.cur().Type != lexer.TokenRBracket || nestedBracketDepth > 0) {
 		if p.cur().Type == lexer.TokenSemicolon || p.cur().Type == lexer.TokenEndmodule {
 			break
 		}
 		tok := p.advance()
-		if tok.Type == lexer.TokenColon {
+		if tok.Type == lexer.TokenLBracket {
+			nestedBracketDepth++
+		} else if tok.Type == lexer.TokenRBracket && nestedBracketDepth > 0 {
+			nestedBracketDepth--
+		}
+		if tok.Type == lexer.TokenColon && nestedBracketDepth == 0 {
 			inLSB = true
 			prevWasDot = false
 			scopedPrefix = ""
@@ -3551,8 +3567,12 @@ func (p *Parser) parseUserTypeVarDecl(mod *ast.ModuleDecl) {
 		nameTok := p.advance()
 		endPos := nameTok.Range.End
 
+		var unpackedDims []*ast.BitRange
 		for p.cur().Type == lexer.TokenLBracket {
-			_ = p.parseBitRange(mod)
+			r := p.parseBitRange(mod)
+			if r != nil {
+				unpackedDims = append(unpackedDims, r)
+			}
 			endPos = p.prev().Range.End
 		}
 		if p.cur().Type == lexer.TokenAssignOp {
@@ -3562,9 +3582,10 @@ func (p *Parser) parseUserTypeVarDecl(mod *ast.ModuleDecl) {
 
 		if mod != nil {
 			mod.Items = append(mod.Items, &ast.NetDecl{
-				Kind:      typeName,
-				TypeArgs:  typeArgs,
-				Width:     width,
+				Kind:         typeName,
+				TypeArgs:     typeArgs,
+				Width:        width,
+				UnpackedDims: unpackedDims,
 				Name:      nameTok.Literal,
 				NameRange: nameTok.Range,
 				Range:     ast.Range{File: typeTok.Range.File, Start: typeTok.Range.Start, End: endPos},
@@ -5099,9 +5120,11 @@ func (p *Parser) parseTypedefDecl(mod *ast.ModuleDecl, file *ast.SourceFile) {
 		return
 	}
 
-	// Optional unpacked array dimensions after type name: `typedef logic [7:0] mem_t [0:3];`
+	// Optional unpacked array dimensions after type name: `typedef logic [7:0] mem_t [0:3];`, `typedef int int_q_t[$];`
 	for p.cur().Type == lexer.TokenLBracket {
-		_ = p.parseBitRange(mod)
+		if r := p.parseBitRange(mod); r != nil {
+			td.UnpackedDims = append(td.UnpackedDims, r)
+		}
 	}
 
 	p.expectSemicolon("typedef declaration")

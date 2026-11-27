@@ -258,6 +258,7 @@ type PortDecl struct {
 	ModportNameRange   Range
 	Signed             bool
 	Width              *BitRange
+	UnpackedDims       []*BitRange
 	Name               string
 	NameRange          Range
 	Range              Range
@@ -288,6 +289,7 @@ type TypedefDecl struct {
 	NameRange    Range
 	BaseType     string
 	TypeArgs     []TypeParamArg
+	UnpackedDims []*BitRange
 	EnumMembers  []EnumMember
 	StructFields []StructField
 	Range        Range
@@ -303,6 +305,7 @@ type NetDecl struct {
 	TypeArgs     []TypeParamArg
 	Signed       bool
 	Width        *BitRange
+	UnpackedDims []*BitRange
 	Name         string
 	NameRange    Range
 	EnumMembers  []EnumMember

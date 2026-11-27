@@ -1034,3 +1034,84 @@ func TestAnalyzeSystemVerilogParameterizedClass(t *testing.T) {
 		t.Errorf("expected 1 diagnostic for unknown field on parameterized class member, got %+v", badAn.Diagnostics)
 	}
 }
+
+func TestAnalyzeSystemVerilogContainers(t *testing.T) {
+	src := "typedef int int_q_t[$];\n" +
+		"class pkt; logic [31:0] addr; endclass\n" +
+		"module tb;\n" +
+		"  int dyn[];\n" +
+		"  int q[$];\n" +
+		"  int map[string];\n" +
+		"  string s;\n" +
+		"  int_q_t tq;\n" +
+		"  pkt pkts[$];\n" +
+		"  int n;\n" +
+		"  logic [31:0] a;\n" +
+		"  initial begin\n" +
+		"    n = dyn.size();\n" +
+		"    q.push_back(1);\n" +
+		"    n = map.exists(\"k\");\n" +
+		"    n = s.len();\n" +
+		"    tq.push_front(2);\n" +
+		"    pkts.push_back(null);\n" +
+		"    a = pkts[0].addr;\n" +
+		"  end\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for containers, got %+v", an.Diagnostics)
+	}
+
+	// SymbolAt on `push_back` in `q.push_back(1);` (line 13, col 8) resolves to built-in method.
+	symPush := an.SymbolAt(ast.Position{Line: 13, Column: 8})
+	if symPush == nil || symPush.Kind != KindFunction || symPush.Name != "push_back" {
+		t.Errorf("SymbolAt(q.push_back) = %+v, want built-in method push_back", symPush)
+	}
+
+	// SymbolAt on `len` in `s.len()` (line 15, col 11) resolves to string built-in method `len`.
+	symLen := an.SymbolAt(ast.Position{Line: 15, Column: 11})
+	if symLen == nil || symLen.Kind != KindFunction || symLen.Name != "len" {
+		t.Errorf("SymbolAt(s.len) = %+v, want built-in method len", symLen)
+	}
+
+	// MemberCompletions check for each container kind.
+	checkMembers := func(base string, want ...string) {
+		members := an.MemberCompletions(ast.Position{Line: 13, Column: 6}, base, nil)
+		got := make(map[string]bool, len(members))
+		for _, m := range members {
+			got[m.Name] = true
+		}
+		for _, w := range want {
+			if !got[w] {
+				t.Errorf("MemberCompletions(%q) missing %q (got %v)", base, w, got)
+			}
+		}
+	}
+	checkMembers("dyn", "size", "delete", "sort", "find")
+	checkMembers("q", "push_back", "pop_front", "insert", "size", "find")
+	checkMembers("tq", "push_back", "pop_front", "size")
+	checkMembers("map", "num", "exists", "first", "next", "delete")
+	checkMembers("s", "len", "substr", "toupper", "compare", "atoi")
+	checkMembers("pkts", "push_back", "size", "addr")
+
+	// Unknown method on queue/string must be diagnosed.
+	badSrc := "module tb;\n" +
+		"  int q[$];\n" +
+		"  string s;\n" +
+		"  int n;\n" +
+		"  initial begin\n" +
+		"    n = q.nonexistent();\n" +
+		"    n = s.nonexistent();\n" +
+		"  end\n" +
+		"endmodule\n"
+	badFile, _ := parser.Parse(badSrc)
+	badAn := Analyze(badFile)
+	if len(badAn.Diagnostics) != 2 {
+		t.Errorf("expected 2 diagnostics for nonexistent methods on queue and string, got %+v", badAn.Diagnostics)
+	}
+}

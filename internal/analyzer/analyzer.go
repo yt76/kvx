@@ -38,6 +38,7 @@ type Symbol struct {
 	TypeName       string
 	TypeArgs       []ast.TypeParamArg
 	TypeParams     []*ast.ParamDecl
+	UnpackedDims   []*ast.BitRange
 	Signature      string
 	Range          ast.Range
 	SelectionRange ast.Range
@@ -287,6 +288,7 @@ func AnalyzeWithWorkspace(file *ast.SourceFile, ctx WorkspaceContext) *Analysis 
 				TypeDetail:     detail,
 				TypeName:       td.BaseType,
 				TypeArgs:       td.TypeArgs,
+				UnpackedDims:   td.UnpackedDims,
 				Signature:      sig,
 				Range:          td.Range,
 				SelectionRange: td.NameRange,
@@ -819,6 +821,7 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 					TypeDetail:     detail,
 					TypeName:       d.NetType,
 					TypeArgs:       d.TypeArgs,
+					UnpackedDims:   d.UnpackedDims,
 					Signature:      detail + " " + d.Name,
 					Range:          d.Range,
 					SelectionRange: d.NameRange,
@@ -887,6 +890,7 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 					TypeDetail:     detail,
 					TypeName:       d.BaseType,
 					TypeArgs:       d.TypeArgs,
+					UnpackedDims:   d.UnpackedDims,
 					Signature:      sig,
 					Range:          d.Range,
 					SelectionRange: d.NameRange,
@@ -915,6 +919,7 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 					TypeDetail:     detail,
 					TypeName:       d.Kind,
 					TypeArgs:       d.TypeArgs,
+					UnpackedDims:   d.UnpackedDims,
 					Signature:      detail + " " + d.Name,
 					Range:          d.Range,
 					SelectionRange: d.NameRange,
@@ -1227,13 +1232,16 @@ func analyzeModuleWithClassSelf(mod *ast.ModuleDecl, selfClassSym, superClassSym
 			}
 			continue
 		}
-		// Check typed struct/union/class/parameterized-class variable
-		if baseSym.TypeName != "" {
+		// Check typed struct/union/class/parameterized-class/container variable
+		if baseSym.TypeName != "" || len(baseSym.UnpackedDims) > 0 {
 			fields, ownerKind, ownerName := resolveFieldsWithOwner(baseSym, localSyms, scope.Symbols, globals, allPkgs, allIfaces, nil, 0)
 			if len(fields) > 0 && findFieldByName(fields, mref.MemberName) == nil {
 				kindLabel := "struct"
-				if ownerKind == KindClass {
+				switch ownerKind {
+				case KindClass:
 					kindLabel = "class"
+				case KindFunction:
+					kindLabel = "built-in type"
 				}
 				if ownerName == "" {
 					ownerName = baseSym.TypeName
@@ -2380,18 +2388,44 @@ func resolveFieldsWithOwner(
 			}
 		}
 	}
-	if sym.TypeName == "" {
+	if sym.TypeName == "" && len(sym.UnpackedDims) == 0 {
 		return nil, "", ""
 	}
-	if ifaceScope, found := allIfaces[sym.TypeName]; found {
-		return ifaceScope.Order, KindInterface, ifaceScope.Interface.Name
+	if sym.TypeName != "" {
+		if ifaceScope, found := allIfaces[sym.TypeName]; found {
+			return ifaceScope.Order, KindInterface, ifaceScope.Interface.Name
+		}
 	}
+
+	// Check SystemVerilog container types (dynamic array `[]`, queue `[$]`, associative array `[key]`, `string`).
+	containerKind := classifyContainer(sym.TypeName, sym.UnpackedDims, localSyms, modSyms, globals, allPkgs, allIfaces)
+	if containerKind != "" {
+		methods := builtinContainerMethods(containerKind)
+		// If the element type itself is a class/struct/typedef (e.g. `packet pkts[$]; pkts[0].addr`),
+		// also include element fields so both `pkts.push_back(p)` and `pkts[0].addr` resolve cleanly.
+		if containerKind != "string" && sym.TypeName != "" {
+			elemSym := &Symbol{
+				Name:     sym.Name,
+				TypeName: sym.TypeName,
+				TypeArgs: sym.TypeArgs,
+			}
+			elemFields, _, _ := resolveFieldsWithOwner(elemSym, localSyms, modSyms, globals, allPkgs, allIfaces, extModuleLookup, depth+1)
+			if len(elemFields) > 0 {
+				combined := make([]*Symbol, 0, len(methods)+len(elemFields))
+				combined = append(combined, methods...)
+				combined = append(combined, elemFields...)
+				return combined, KindFunction, containerKind
+			}
+		}
+		return methods, KindFunction, containerKind
+	}
+
 	typeSym, found := resolveRefInScopes(sym.TypeName, localSyms, modSyms, globals, allPkgs, allIfaces, false)
 	if !found || typeSym == nil {
 		return nil, "", ""
 	}
-	// Follow typedef aliases (including parameterized class typedefs like `typedef box #(packet) pkt_box_t;`)
-	if typeSym.Kind == KindType && len(typeSym.Fields) == 0 && typeSym.TypeName != "" {
+	// Follow typedef aliases (including parameterized class typedefs and container typedefs like `typedef int int_q_t[$];`)
+	if typeSym.Kind == KindType && len(typeSym.Fields) == 0 && (typeSym.TypeName != "" || len(typeSym.UnpackedDims) > 0) {
 		return resolveFieldsWithOwner(typeSym, localSyms, modSyms, globals, allPkgs, allIfaces, extModuleLookup, depth+1)
 	}
 	if len(typeSym.Fields) > 0 {
@@ -2401,6 +2435,152 @@ func resolveFieldsWithOwner(
 		return typeSym.Fields, typeSym.Kind, typeSym.Name
 	}
 	return nil, "", ""
+}
+
+// classifyContainer reports whether a symbol's type and unpacked dimensions represent
+// a SystemVerilog dynamic array ("dynamic"), queue ("queue"), associative array ("assoc"),
+// or string ("string"). Returns "" for plain scalars and fixed-size arrays.
+func classifyContainer(
+	typeName string,
+	unpackedDims []*ast.BitRange,
+	localSyms, modSyms, globals map[string]*Symbol,
+	allPkgs map[string]*PackageScope,
+	allIfaces map[string]*InterfaceScope,
+) string {
+	if len(unpackedDims) > 0 {
+		d := unpackedDims[0]
+		if d.MSB == "" && d.LSB == "" {
+			return "dynamic array"
+		}
+		if d.MSB == "$" {
+			return "queue"
+		}
+		if d.MSB == "*" {
+			return "associative array"
+		}
+		if d.LSB == "" && d.MSB != "" {
+			if isAssocKeyTypeName(d.MSB) {
+				return "associative array"
+			}
+			if keySym, ok := resolveRefInScopes(d.MSB, localSyms, modSyms, globals, allPkgs, allIfaces, false); ok && keySym != nil {
+				if keySym.Kind == KindType || keySym.Kind == KindClass {
+					return "associative array"
+				}
+			}
+		}
+		return ""
+	}
+	if typeName == "string" {
+		return "string"
+	}
+	return ""
+}
+
+func isAssocKeyTypeName(s string) bool {
+	base := s
+	if idx := strings.IndexByte(base, '['); idx >= 0 {
+		base = base[:idx]
+	}
+	switch base {
+	case "string", "int", "integer", "byte", "shortint", "longint",
+		"logic", "bit", "reg", "chandle", "real", "shortreal", "time", "realtime":
+		return true
+	default:
+		return false
+	}
+}
+
+func makeBuiltinMethod(name, sig string) *Symbol {
+	return &Symbol{
+		Name:       name,
+		Kind:       KindFunction,
+		TypeDetail: "built-in method",
+		Signature:  sig,
+	}
+}
+
+var (
+	arrayLocatorMethods = []*Symbol{
+		makeBuiltinMethod("find", "function array find(x) with (expr)"),
+		makeBuiltinMethod("find_index", "function int find_index(x) with (expr)"),
+		makeBuiltinMethod("find_first", "function array find_first(x) with (expr)"),
+		makeBuiltinMethod("find_first_index", "function int find_first_index(x) with (expr)"),
+		makeBuiltinMethod("find_last", "function array find_last(x) with (expr)"),
+		makeBuiltinMethod("find_last_index", "function int find_last_index(x) with (expr)"),
+		makeBuiltinMethod("min", "function array min()"),
+		makeBuiltinMethod("max", "function array max()"),
+		makeBuiltinMethod("unique", "function array unique()"),
+		makeBuiltinMethod("unique_index", "function int unique_index()"),
+		makeBuiltinMethod("sum", "function T sum()"),
+		makeBuiltinMethod("product", "function T product()"),
+		makeBuiltinMethod("and", "function T and()"),
+		makeBuiltinMethod("or", "function T or()"),
+		makeBuiltinMethod("xor", "function T xor()"),
+	}
+	arrayOrderingMethods = []*Symbol{
+		makeBuiltinMethod("reverse", "function void reverse()"),
+		makeBuiltinMethod("sort", "function void sort()"),
+		makeBuiltinMethod("rsort", "function void rsort()"),
+		makeBuiltinMethod("shuffle", "function void shuffle()"),
+	}
+	dynamicArrayMethods = append(append([]*Symbol{
+		makeBuiltinMethod("size", "function int size()"),
+		makeBuiltinMethod("delete", "function void delete()"),
+	}, arrayOrderingMethods...), arrayLocatorMethods...)
+	queueMethods = append(append([]*Symbol{
+		makeBuiltinMethod("size", "function int size()"),
+		makeBuiltinMethod("insert", "function void insert(int index, T item)"),
+		makeBuiltinMethod("delete", "function void delete([int index])"),
+		makeBuiltinMethod("pop_front", "function T pop_front()"),
+		makeBuiltinMethod("pop_back", "function T pop_back()"),
+		makeBuiltinMethod("push_front", "function void push_front(T item)"),
+		makeBuiltinMethod("push_back", "function void push_back(T item)"),
+	}, arrayOrderingMethods...), arrayLocatorMethods...)
+	assocArrayMethods = append([]*Symbol{
+		makeBuiltinMethod("num", "function int num()"),
+		makeBuiltinMethod("size", "function int size()"),
+		makeBuiltinMethod("delete", "function void delete([key index])"),
+		makeBuiltinMethod("exists", "function int exists(key index)"),
+		makeBuiltinMethod("first", "function int first(ref key index)"),
+		makeBuiltinMethod("last", "function int last(ref key index)"),
+		makeBuiltinMethod("next", "function int next(ref key index)"),
+		makeBuiltinMethod("prev", "function int prev(ref key index)"),
+	}, arrayLocatorMethods...)
+	stringMethods = []*Symbol{
+		makeBuiltinMethod("len", "function int len()"),
+		makeBuiltinMethod("putc", "function void putc(int i, byte c)"),
+		makeBuiltinMethod("getc", "function byte getc(int i)"),
+		makeBuiltinMethod("toupper", "function string toupper()"),
+		makeBuiltinMethod("tolower", "function string tolower()"),
+		makeBuiltinMethod("compare", "function int compare(string s)"),
+		makeBuiltinMethod("icompare", "function int icompare(string s)"),
+		makeBuiltinMethod("substr", "function string substr(int i, int j)"),
+		makeBuiltinMethod("atoi", "function integer atoi()"),
+		makeBuiltinMethod("atohex", "function integer atohex()"),
+		makeBuiltinMethod("atooct", "function integer atooct()"),
+		makeBuiltinMethod("atobin", "function integer atobin()"),
+		makeBuiltinMethod("atoreal", "function real atoreal()"),
+		makeBuiltinMethod("itoa", "function void itoa(integer i)"),
+		makeBuiltinMethod("hextoa", "function void hextoa(integer i)"),
+		makeBuiltinMethod("octtoa", "function void octtoa(integer i)"),
+		makeBuiltinMethod("bintoa", "function void bintoa(integer i)"),
+		makeBuiltinMethod("realtoa", "function void realtoa(real r)"),
+	}
+)
+
+func builtinContainerMethods(containerKind string) []*Symbol {
+	switch containerKind {
+	case "dynamic array":
+		return dynamicArrayMethods
+	case "queue":
+		return queueMethods
+	case "associative array":
+		return assocArrayMethods
+	case "string":
+		return stringMethods
+	default:
+		return nil
+	}
 }
 
 // resolveMemberChain resolves a single identifier (`b1`) or dotted member chain (`b1.item`)
@@ -2894,9 +3074,13 @@ func buildFunctionScope(fn *ast.FunctionDecl, diags *[]SemanticDiagnostic) *Func
 				Name:           d.Name,
 				Kind:           KindNet,
 				TypeDetail:     detail,
+				TypeName:       d.Kind,
+				TypeArgs:       d.TypeArgs,
+				UnpackedDims:   d.UnpackedDims,
 				Signature:      detail + " " + d.Name,
 				Range:          d.Range,
 				SelectionRange: d.NameRange,
+				Fields:         buildStructFieldSymbols(d.StructFields),
 			})
 			for _, em := range d.EnumMembers {
 				emSig := "enum " + em.Name
@@ -3090,9 +3274,13 @@ func buildTaskScope(task *ast.TaskDecl, diags *[]SemanticDiagnostic) *TaskScope 
 				Name:           d.Name,
 				Kind:           KindNet,
 				TypeDetail:     nDetail,
+				TypeName:       d.Kind,
+				TypeArgs:       d.TypeArgs,
+				UnpackedDims:   d.UnpackedDims,
 				Signature:      nDetail + " " + d.Name,
 				Range:          d.Range,
 				SelectionRange: d.NameRange,
+				Fields:         buildStructFieldSymbols(d.StructFields),
 			})
 			for _, em := range d.EnumMembers {
 				emSig := "enum " + em.Name
@@ -3392,9 +3580,13 @@ func buildBlockScope(block *ast.ProceduralBlock, diags *[]SemanticDiagnostic) *B
 				Name:           d.Name,
 				Kind:           KindNet,
 				TypeDetail:     nDetail,
+				TypeName:       d.Kind,
+				TypeArgs:       d.TypeArgs,
+				UnpackedDims:   d.UnpackedDims,
 				Signature:      nDetail + " " + d.Name,
 				Range:          d.Range,
 				SelectionRange: d.NameRange,
+				Fields:         buildStructFieldSymbols(d.StructFields),
 			})
 			for _, em := range d.EnumMembers {
 				emSig := "enum " + em.Name
