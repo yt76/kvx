@@ -1287,3 +1287,54 @@ func TestAnalyzeSystemVerilogPackageExport(t *testing.T) {
 		t.Errorf("expected 1 diagnostic for non-re-exported SECRET_W, got %+v", badAn.Diagnostics)
 	}
 }
+
+func TestAnalyzeConfigAndSpecify(t *testing.T) {
+	src := "module leaf (input wire clk, input wire d, output wire q);\n" +
+		"  reg notifier;\n" +
+		"  assign q = d;\n" +
+		"  specify\n" +
+		"    specparam tSU = 0.5, tHD = 0.2;\n" +
+		"    (posedge clk => (q +: d)) = (1.0, 1.2);\n" +
+		"    $setuphold(posedge clk, posedge d, tSU, tHD, notifier);\n" +
+		"  endspecify\n" +
+		"endmodule\n" +
+		"config my_cfg;\n" +
+		"  design work.leaf;\n" +
+		"  default liblist rtl_lib;\n" +
+		"  cell leaf use gate_lib.leaf;\n" +
+		"endconfig : my_cfg\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for config/specify, got %+v", an.Diagnostics)
+	}
+
+	// `tSU` in `$setuphold(..., tSU, ...)` (line 6, col 40) resolves to `specparam tSU` at line 4.
+	symSpec := an.SymbolAt(ast.Position{Line: 6, Column: 40})
+	if symSpec == nil || symSpec.Kind != KindParam || symSpec.Name != "tSU" || symSpec.SelectionRange.Start.Line != 4 {
+		t.Errorf("SymbolAt(tSU in specify) = %+v, want KindParam tSU at line 4", symSpec)
+	}
+
+	// `leaf` in `design work.leaf;` (line 10, col 15) resolves to `module leaf` at line 0.
+	symDesign := an.SymbolAt(ast.Position{Line: 10, Column: 15})
+	if symDesign == nil || symDesign.Kind != KindModule || symDesign.Name != "leaf" || symDesign.SelectionRange.Start.Line != 0 {
+		t.Errorf("SymbolAt(leaf in config design) = %+v, want KindModule leaf at line 0", symDesign)
+	}
+
+	// Undeclared signal in specify block must be diagnosed.
+	badSrc := "module m (input wire clk, output wire q);\n" +
+		"  assign q = clk;\n" +
+		"  specify\n" +
+		"    (clk => missing_out) = 1.0;\n" +
+		"  endspecify\n" +
+		"endmodule\n"
+	badFile, _ := parser.Parse(badSrc)
+	badAn := Analyze(badFile)
+	if len(badAn.Diagnostics) != 1 || !strings.Contains(badAn.Diagnostics[0].Message, `"missing_out"`) {
+		t.Errorf("expected 1 diagnostic for missing_out in specify, got %+v", badAn.Diagnostics)
+	}
+}

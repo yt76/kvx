@@ -44,6 +44,7 @@ const (
 	TokenEndtable     TokenType = "endtable"
 	TokenSpecify      TokenType = "specify"
 	TokenEndspecify   TokenType = "endspecify"
+	TokenSpecparam    TokenType = "specparam"
 	TokenConfig       TokenType = "config"
 	TokenEndconfig    TokenType = "endconfig"
 	TokenInput        TokenType = "input"
@@ -288,6 +289,7 @@ var keywords = map[string]TokenType{
 	"endtable":     TokenEndtable,
 	"specify":      TokenSpecify,
 	"endspecify":   TokenEndspecify,
+	"specparam":    TokenSpecparam,
 	"config":       TokenConfig,
 	"endconfig":    TokenEndconfig,
 	"input":        TokenInput,

@@ -39,6 +39,7 @@ type SourceFile struct {
 	Interfaces []*InterfaceDecl
 	Packages   []*PackageDecl
 	Classes    []*ClassDecl
+	Configs    []*ConfigDecl
 	Binds      []*BindStmt
 	Functions  []*FunctionDecl
 	Tasks      []*TaskDecl
@@ -48,6 +49,15 @@ type SourceFile struct {
 	Params     []*ParamDecl
 	Typedefs   []*TypedefDecl
 	Refs       []IdentifierRef
+}
+
+// ConfigDecl represents a Verilog/SystemVerilog configuration declaration (config ... endconfig).
+type ConfigDecl struct {
+	Name      string
+	NameRange Range
+	Design    []string
+	Range     Range
+	Refs      []IdentifierRef
 }
 
 // BindStmt represents a SystemVerilog bind directive

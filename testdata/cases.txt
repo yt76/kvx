@@ -39,3 +39,4 @@ sv_rand_ctrl.sv         0 0
 sv_expect.sv            0 0
 sv_nettype_interconnect.sv 0 0
 sv_pkg_export.sv        0 0
+sv_config_specify.sv    0 0

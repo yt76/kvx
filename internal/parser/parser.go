@@ -146,7 +146,9 @@ func (p *Parser) parseSourceFile() *ast.SourceFile {
 			continue
 		}
 		if tok.Type == lexer.TokenConfig {
-			p.parseConfigDecl()
+			if cfg := p.parseConfigDecl(); cfg != nil {
+				file.Configs = append(file.Configs, cfg)
+			}
 			continue
 		}
 		if tok.Type == lexer.TokenTypedef || tok.Type == lexer.TokenNettype {
@@ -736,7 +738,7 @@ func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 		p.parseTypedefDecl(mod, nil)
 	case lexer.TokenEnum, lexer.TokenStruct, lexer.TokenUnion:
 		p.parseEnumOrStructVarDecl(mod)
-	case lexer.TokenParameter, lexer.TokenLocalparam:
+	case lexer.TokenParameter, lexer.TokenLocalparam, lexer.TokenSpecparam:
 		p.parseParamDeclItem(mod)
 	case lexer.TokenDefparam:
 		p.parseDefparamStmt(mod)
@@ -755,7 +757,7 @@ func (p *Parser) parseModuleItem(mod *ast.ModuleDecl) {
 	case lexer.TokenGenerate:
 		p.parseGenerateRegion(mod)
 	case lexer.TokenSpecify:
-		p.parseSpecifyBlock()
+		p.parseSpecifyBlock(mod)
 	case lexer.TokenFor, lexer.TokenIf, lexer.TokenCase, lexer.TokenCasex, lexer.TokenCasez, lexer.TokenBegin:
 		p.parseGenerateConstruct(mod)
 	case lexer.TokenIdent, lexer.TokenOr:
@@ -1440,23 +1442,120 @@ func (p *Parser) parseGenerateRegion(mod *ast.ModuleDecl) {
 	mod.Items = append(mod.Items, gen)
 }
 
-func (p *Parser) parseSpecifyBlock() {
+func (p *Parser) parseSpecifyBlock(mod *ast.ModuleDecl) {
 	startTok := p.advance() // consume 'specify'
 	for !p.isEOF() &&
 		p.cur().Type != lexer.TokenEndspecify &&
 		p.cur().Type != lexer.TokenEndmodule &&
 		p.cur().Type != lexer.TokenModule &&
 		p.cur().Type != lexer.TokenPrimitive {
-		if p.cur().Type == lexer.TokenIllegal {
-			p.addError(p.cur().Range, p.cur().Literal)
+		tok := p.cur()
+		switch tok.Type {
+		case lexer.TokenIllegal:
+			p.addError(tok.Range, tok.Literal)
+			p.advance()
+		case lexer.TokenSemicolon:
+			p.advance()
+		case lexer.TokenSpecparam:
+			p.parseParamDeclItem(mod)
+		case lexer.TokenSystemIdent:
+			// System timing check: `$setuphold(posedge clk, posedge d, tSU, tHD, notifier);`
+			p.advance()
+			if p.cur().Type == lexer.TokenLParen {
+				p.parseSpecifyParens(mod)
+			}
+			p.expectSemicolon("specify timing check")
+		case lexer.TokenIf:
+			// State-dependent path: `if (cond) (a => y) = (t1, t2);`
+			p.advance()
+			if p.cur().Type == lexer.TokenLParen {
+				p.parseBalancedParens(nil, mod)
+			}
+			p.parseSpecifyPathDecl(mod)
+		case lexer.TokenLParen:
+			// Module path declaration: `(posedge clk => (q +: d)) = (1.0, 1.2);`
+			p.parseSpecifyPathDecl(mod)
+		case lexer.TokenIdent:
+			switch tok.Literal {
+			case "pulsestyle_onevent", "pulsestyle_ondetect", "showcancelled", "noshowcancelled":
+				p.advance()
+				for !p.isEOF() && p.cur().Type != lexer.TokenSemicolon && p.cur().Type != lexer.TokenEndspecify {
+					if p.cur().Type == lexer.TokenIdent {
+						p.recordRef(nil, mod, p.advance())
+					} else {
+						p.advance()
+					}
+				}
+				p.expectSemicolon(tok.Literal + " declaration")
+			case "ifnone":
+				p.advance()
+				p.parseSpecifyPathDecl(mod)
+			default:
+				p.parseSpecifyPathDecl(mod)
+			}
+		default:
+			p.advance()
 		}
-		p.advance()
 	}
 
 	if p.cur().Type == lexer.TokenEndspecify {
 		p.advance()
 	} else {
 		p.addError(startTok.Range, "expected 'endspecify' to close 'specify' block")
+	}
+}
+
+// parseSpecifyPathDecl parses a path declaration inside `specify ... endspecify` up to ';',
+// recording signal and specparam identifier references in mod.Refs.
+func (p *Parser) parseSpecifyPathDecl(mod *ast.ModuleDecl) {
+	for !p.isEOF() &&
+		p.cur().Type != lexer.TokenSemicolon &&
+		p.cur().Type != lexer.TokenEndspecify &&
+		p.cur().Type != lexer.TokenEndmodule {
+		if p.cur().Type == lexer.TokenLParen {
+			p.parseSpecifyParens(mod)
+			continue
+		}
+		tok := p.advance()
+		if tok.Type == lexer.TokenIdent && tok.Literal != "edge" {
+			p.recordRef(nil, mod, tok)
+		}
+	}
+	if p.cur().Type == lexer.TokenSemicolon {
+		p.advance()
+	}
+}
+
+// parseSpecifyParens parses balanced `(...)` inside a specify block (path or timing check),
+// recording signal/specparam/notifier identifier references while skipping `edge [01, 10]` descriptors.
+func (p *Parser) parseSpecifyParens(mod *ast.ModuleDecl) {
+	p.advance() // '('
+	depth := 1
+	inEdgeBracket := false
+	for !p.isEOF() && depth > 0 {
+		tok := p.cur()
+		if tok.Type == lexer.TokenSemicolon || tok.Type == lexer.TokenEndspecify || tok.Type == lexer.TokenEndmodule {
+			break
+		}
+		p.advance()
+		switch tok.Type {
+		case lexer.TokenLParen:
+			depth++
+		case lexer.TokenRParen:
+			depth--
+		case lexer.TokenLBracket:
+			if inEdgeBracket {
+				// stay in edge bracket
+			}
+		case lexer.TokenRBracket:
+			inEdgeBracket = false
+		case lexer.TokenIdent:
+			if tok.Literal == "edge" && p.cur().Type == lexer.TokenLBracket {
+				inEdgeBracket = true
+			} else if !inEdgeBracket {
+				p.recordRef(nil, mod, tok)
+			}
+		}
 	}
 }
 
@@ -1514,15 +1613,42 @@ func (p *Parser) parsePrimitiveDecl() {
 	}
 }
 
-func (p *Parser) parseConfigDecl() {
+func (p *Parser) parseConfigDecl() *ast.ConfigDecl {
 	startTok := p.advance() // consume 'config'
-	cfgName := ""
+	cfg := &ast.ConfigDecl{
+		Range: ast.Range{File: startTok.Range.File, Start: startTok.Range.Start, End: startTok.Range.End},
+	}
 	if p.cur().Type == lexer.TokenIdent {
-		cfgName = p.advance().Literal
+		nameTok := p.advance()
+		cfg.Name = nameTok.Literal
+		cfg.NameRange = nameTok.Range
 	} else {
 		p.addError(p.cur().Range, "expected config name after 'config'")
 	}
 	p.expectSemicolon("config header")
+
+	parseLibCell := func() (string, lexer.Token) {
+		first := p.advance()
+		if p.cur().Type == lexer.TokenDot && p.peekN(1).Type == lexer.TokenIdent {
+			p.advance() // '.'
+			cellTok := p.advance()
+			return first.Literal + "." + cellTok.Literal, cellTok
+		}
+		return first.Literal, first
+	}
+
+	skipToConfigSemi := func() {
+		for !p.isEOF() && p.cur().Type != lexer.TokenSemicolon && p.cur().Type != lexer.TokenEndconfig {
+			if p.cur().Type == lexer.TokenLParen {
+				p.parseBalancedParens(nil, nil)
+				continue
+			}
+			p.advance()
+		}
+		if p.cur().Type == lexer.TokenSemicolon {
+			p.advance()
+		}
+	}
 
 	for !p.isEOF() &&
 		p.cur().Type != lexer.TokenEndconfig &&
@@ -1530,8 +1656,83 @@ func (p *Parser) parseConfigDecl() {
 		p.cur().Type != lexer.TokenMacromodule &&
 		p.cur().Type != lexer.TokenPrimitive &&
 		p.cur().Type != lexer.TokenConfig {
-		if p.cur().Type == lexer.TokenIllegal {
-			p.addError(p.cur().Range, p.cur().Literal)
+		tok := p.cur()
+		if tok.Type == lexer.TokenIllegal {
+			p.addError(tok.Range, tok.Literal)
+			p.advance()
+			continue
+		}
+		if tok.Type == lexer.TokenSemicolon {
+			p.advance()
+			continue
+		}
+		if tok.Type == lexer.TokenLocalparam {
+			skipToConfigSemi()
+			continue
+		}
+		if tok.Type == lexer.TokenDefault {
+			// `default liblist { lib_id };`
+			p.advance()
+			skipToConfigSemi()
+			continue
+		}
+		if tok.Type == lexer.TokenIdent {
+			switch tok.Literal {
+			case "design":
+				// `design [lib.]cell { [lib.]cell };`
+				p.advance()
+				for !p.isEOF() && p.cur().Type != lexer.TokenSemicolon && p.cur().Type != lexer.TokenEndconfig {
+					if p.cur().Type == lexer.TokenIdent {
+						fullName, cellTok := parseLibCell()
+						cfg.Design = append(cfg.Design, fullName)
+						cfg.Refs = append(cfg.Refs, ast.IdentifierRef{Name: cellTok.Literal, Range: cellTok.Range})
+					} else {
+						p.advance()
+					}
+				}
+				if p.cur().Type == lexer.TokenSemicolon {
+					p.advance()
+				}
+				continue
+
+			case "instance":
+				// `instance top.u1.u2 ( liblist ... | use [lib.]cell[:config] [#(...)] );`
+				p.advance()
+				if p.cur().Type == lexer.TokenIdent {
+					rootTok := p.advance()
+					cfg.Refs = append(cfg.Refs, ast.IdentifierRef{Name: rootTok.Literal, Range: rootTok.Range})
+					for p.cur().Type == lexer.TokenDot && p.peekN(1).Type == lexer.TokenIdent {
+						p.advance() // '.'
+						p.advance() // inst name
+					}
+				}
+				if p.cur().Type == lexer.TokenIdent && p.cur().Literal == "use" {
+					p.advance()
+					if p.cur().Type == lexer.TokenIdent {
+						_, cellTok := parseLibCell()
+						cfg.Refs = append(cfg.Refs, ast.IdentifierRef{Name: cellTok.Literal, Range: cellTok.Range})
+					}
+				}
+				skipToConfigSemi()
+				continue
+
+			case "cell":
+				// `cell [lib.]cell ( liblist ... | use [lib.]cell[:config] [#(...)] );`
+				p.advance()
+				if p.cur().Type == lexer.TokenIdent {
+					_, cellTok := parseLibCell()
+					cfg.Refs = append(cfg.Refs, ast.IdentifierRef{Name: cellTok.Literal, Range: cellTok.Range})
+				}
+				if p.cur().Type == lexer.TokenIdent && p.cur().Literal == "use" {
+					p.advance()
+					if p.cur().Type == lexer.TokenIdent {
+						_, targetTok := parseLibCell()
+						cfg.Refs = append(cfg.Refs, ast.IdentifierRef{Name: targetTok.Literal, Range: targetTok.Range})
+					}
+				}
+				skipToConfigSemi()
+				continue
+			}
 		}
 		p.advance()
 	}
@@ -1539,9 +1740,12 @@ func (p *Parser) parseConfigDecl() {
 	if p.cur().Type == lexer.TokenEndconfig {
 		p.advance()
 		p.consumeOptionalEndLabel()
+		cfg.Range.End = p.prev().Range.End
 	} else {
-		p.addError(startTok.Range, fmt.Sprintf("expected 'endconfig' to close config %q", cfgName))
+		p.addError(startTok.Range, fmt.Sprintf("expected 'endconfig' to close config %q", cfg.Name))
+		cfg.Range.End = p.prev().Range.End
 	}
+	return cfg
 }
 
 func (p *Parser) parseGenerateConstruct(mod *ast.ModuleDecl) {

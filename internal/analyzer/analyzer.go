@@ -338,6 +338,26 @@ func AnalyzeWithWorkspace(file *ast.SourceFile, ctx WorkspaceContext) *Analysis 
 		}
 	}
 
+	for _, cfg := range file.Configs {
+		if cfg.Name == "" {
+			continue
+		}
+		sig := "config " + cfg.Name
+		if len(cfg.Design) > 0 {
+			sig += " (design " + strings.Join(cfg.Design, ", ") + ")"
+		}
+		sym := &Symbol{
+			Name:           cfg.Name,
+			Kind:           KindModule,
+			TypeDetail:     "config",
+			Signature:      sig,
+			Range:          cfg.Range,
+			SelectionRange: cfg.NameRange,
+		}
+		res.GlobalSymbols[cfg.Name] = sym
+		res.GlobalOrder = append(res.GlobalOrder, sym)
+	}
+
 	for _, pkg := range file.Packages {
 		pkgScope := analyzePackage(pkg, res.GlobalSymbols, res.AllPackages, res.AllInterfaces, &res.Diagnostics)
 		res.PackageOrder = append(res.PackageOrder, pkgScope)
@@ -1621,6 +1641,31 @@ func (a *Analysis) SymbolAt(pos ast.Position) *Symbol {
 		for _, b := range a.File.Binds {
 			if sym := a.resolveBindAt(b, pos); sym != nil {
 				return sym
+			}
+		}
+
+		// Check top-level config declarations and their module/cell references.
+		for _, cfg := range a.File.Configs {
+			if !cfg.Range.Contains(pos) {
+				continue
+			}
+			if cfg.NameRange.Contains(pos) {
+				if sym, ok := a.GlobalSymbols[cfg.Name]; ok {
+					return sym
+				}
+			}
+			for _, ref := range cfg.Refs {
+				if ref.Range.Contains(pos) {
+					if modScope, ok := a.AllModules[ref.Name]; ok {
+						return modScope.Symbol
+					}
+					if ifaceScope, ok := a.AllInterfaces[ref.Name]; ok {
+						return ifaceScope.Symbol
+					}
+					if sym, ok := a.GlobalSymbols[ref.Name]; ok {
+						return sym
+					}
+				}
 			}
 		}
 	}
