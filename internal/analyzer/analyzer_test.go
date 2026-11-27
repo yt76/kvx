@@ -1115,3 +1115,85 @@ func TestAnalyzeSystemVerilogContainers(t *testing.T) {
 		t.Errorf("expected 2 diagnostics for nonexistent methods on queue and string, got %+v", badAn.Diagnostics)
 	}
 }
+
+func TestAnalyzeSystemVerilogRandcaseAndRandsequence(t *testing.T) {
+	src := "module tb;\n" +
+		"  int x;\n" +
+		"  int w;\n" +
+		"  initial begin\n" +
+		"    randcase\n" +
+		"      w : x = 1;\n" +
+		"      2 : x = 2;\n" +
+		"    endcase\n" +
+		"    randsequence (main)\n" +
+		"      main : step(x) ;\n" +
+		"      int step(int v) : { x = v + 1; } ;\n" +
+		"    endsequence\n" +
+		"  end\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for randcase/randsequence, got %+v", an.Diagnostics)
+	}
+
+	// Undeclared signal inside randcase weight or randsequence code block must be diagnosed.
+	badSrc := "module tb;\n" +
+		"  int x;\n" +
+		"  initial begin\n" +
+		"    randcase\n" +
+		"      missing_w : x = 1;\n" +
+		"    endcase\n" +
+		"    randsequence (main)\n" +
+		"      main : { x = missing_v; } ;\n" +
+		"    endsequence\n" +
+		"  end\n" +
+		"endmodule\n"
+	badFile, _ := parser.Parse(badSrc)
+	badAn := Analyze(badFile)
+	if len(badAn.Diagnostics) != 2 {
+		t.Errorf("expected 2 diagnostics for missing_w and missing_v, got %+v", badAn.Diagnostics)
+	}
+}
+
+func TestAnalyzeSystemVerilogExpect(t *testing.T) {
+	src := "module tb (input logic clk, input logic req, input logic ack);\n" +
+		"  int cnt;\n" +
+		"  property p_hs; @(posedge clk) req |-> ##1 ack; endproperty\n" +
+		"  initial begin\n" +
+		"    expect (p_hs) cnt = cnt + 1; else $error(\"fail\");\n" +
+		"    expect (@(posedge clk) req ##[1:3] ack);\n" +
+		"  end\n" +
+		"endmodule\n"
+
+	file, errs := parser.Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected parse errors: %v", errs)
+	}
+	an := Analyze(file)
+	if len(an.Diagnostics) != 0 {
+		t.Fatalf("expected 0 semantic diagnostics for expect, got %+v", an.Diagnostics)
+	}
+
+	// `p_hs` inside `expect (p_hs)` (line 4, col 13) resolves to property `p_hs` at line 2.
+	symProp := an.SymbolAt(ast.Position{Line: 4, Column: 13})
+	if symProp == nil || symProp.Kind != KindProperty || symProp.Name != "p_hs" || symProp.SelectionRange.Start.Line != 2 {
+		t.Errorf("SymbolAt(p_hs in expect) = %+v, want KindProperty p_hs at line 2", symProp)
+	}
+
+	// Undeclared signal inside expect property expression must be diagnosed.
+	badSrc := "module tb (input logic clk);\n" +
+		"  initial begin\n" +
+		"    expect (@(posedge clk) missing_sig);\n" +
+		"  end\n" +
+		"endmodule\n"
+	badFile, _ := parser.Parse(badSrc)
+	badAn := Analyze(badFile)
+	if len(badAn.Diagnostics) != 1 || !strings.Contains(badAn.Diagnostics[0].Message, `"missing_sig"`) {
+		t.Errorf("expected 1 diagnostic for missing_sig in expect, got %+v", badAn.Diagnostics)
+	}
+}

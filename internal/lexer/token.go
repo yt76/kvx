@@ -87,6 +87,8 @@ const (
 	TokenNull         TokenType = "null"
 	TokenRand         TokenType = "rand"
 	TokenRandc        TokenType = "randc"
+	TokenRandcase     TokenType = "randcase"
+	TokenRandsequence TokenType = "randsequence"
 	TokenConstraint   TokenType = "constraint"
 	TokenSolve        TokenType = "solve"
 	TokenBefore       TokenType = "before"
@@ -128,6 +130,7 @@ const (
 	TokenAssume       TokenType = "assume"
 	TokenCover        TokenType = "cover"
 	TokenRestrict     TokenType = "restrict"
+	TokenExpect       TokenType = "expect"
 	TokenProperty     TokenType = "property"
 	TokenEndproperty  TokenType = "endproperty"
 	TokenSequence     TokenType = "sequence"
@@ -326,6 +329,8 @@ var keywords = map[string]TokenType{
 	"null":         TokenNull,
 	"rand":         TokenRand,
 	"randc":        TokenRandc,
+	"randcase":     TokenRandcase,
+	"randsequence": TokenRandsequence,
 	"constraint":   TokenConstraint,
 	"solve":        TokenSolve,
 	"before":       TokenBefore,
@@ -367,6 +372,7 @@ var keywords = map[string]TokenType{
 	"assume":       TokenAssume,
 	"cover":        TokenCover,
 	"restrict":     TokenRestrict,
+	"expect":       TokenExpect,
 	"property":     TokenProperty,
 	"endproperty":  TokenEndproperty,
 	"sequence":     TokenSequence,

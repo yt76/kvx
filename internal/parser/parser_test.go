@@ -2073,3 +2073,34 @@ endmodule
 		t.Fatalf("expected typedef pkt_box_t with TypeArgs [packet, 16], got %+v", file.Typedefs)
 	}
 }
+
+func TestParseSystemVerilogRandcaseAndRandsequence(t *testing.T) {
+	src := `
+module tb;
+    int x, y, w;
+    bit flag;
+    initial begin
+        randcase
+            3 : x = 1;
+            w : begin
+                x = 2;
+                y = 3;
+            end
+        endcase
+
+        randsequence (main)
+            main : a := 2 | b := 1 ;
+            a : { x = x + 1; } ;
+            b : if (flag) { y = 1; } else { y = 2; } ;
+        endsequence
+    end
+endmodule
+`
+	file, errs := Parse(src)
+	if len(errs) != 0 {
+		t.Fatalf("expected 0 parse errors, got %d: %v", len(errs), errs)
+	}
+	if len(file.Modules) != 1 || file.Modules[0].Name != "tb" {
+		t.Fatalf("expected module tb, got %+v", file.Modules)
+	}
+}

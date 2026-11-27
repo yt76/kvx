@@ -1770,7 +1770,7 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 		p.advance()
 		p.parseStatement(block, mod)
 
-	case lexer.TokenAssert, lexer.TokenAssume, lexer.TokenCover, lexer.TokenRestrict:
+	case lexer.TokenAssert, lexer.TokenAssume, lexer.TokenCover, lexer.TokenRestrict, lexer.TokenExpect:
 		p.parseAssertStmt(block, mod, nil)
 
 	case lexer.TokenIf:
@@ -1831,6 +1831,36 @@ func (p *Parser) parseStatement(block *ast.ProceduralBlock, mod *ast.ModuleDecl)
 		} else {
 			p.addError(caseTok.Range, fmt.Sprintf("expected 'endcase' to close %q", caseTok.Literal))
 		}
+
+	case lexer.TokenRandcase:
+		rcTok := p.advance()
+		for !p.isEOF() &&
+			p.cur().Type != lexer.TokenEndcase &&
+			p.cur().Type != lexer.TokenEnd &&
+			!isForkJoinEnd(p.cur().Type) &&
+			p.cur().Type != lexer.TokenEndfunction &&
+			p.cur().Type != lexer.TokenEndtask &&
+			p.cur().Type != lexer.TokenEndmodule &&
+			p.cur().Type != lexer.TokenModule {
+			tokensBeforeColon := p.collectTokensUntil(&block.Refs, mod, lexer.TokenColon, lexer.TokenEndcase)
+			if p.cur().Type == lexer.TokenColon {
+				p.advance() // ':'
+				p.parseStatement(block, mod)
+			} else if len(tokensBeforeColon) == 0 {
+				break
+			} else {
+				p.addError(p.cur().Range, "expected ':' after randcase weight expression")
+				p.syncToStatementEnd()
+			}
+		}
+		if p.cur().Type == lexer.TokenEndcase {
+			p.advance()
+		} else {
+			p.addError(rcTok.Range, "expected 'endcase' to close 'randcase'")
+		}
+
+	case lexer.TokenRandsequence:
+		p.parseRandsequenceStmt(block, mod)
 
 	case lexer.TokenFor, lexer.TokenWhile, lexer.TokenRepeat, lexer.TokenWait:
 		loopTok := p.advance()
@@ -2925,7 +2955,7 @@ func isStatementBoundary(t lexer.TokenType) bool {
 }
 
 func isAssertionKeyword(t lexer.TokenType) bool {
-	return t == lexer.TokenAssert || t == lexer.TokenAssume || t == lexer.TokenCover || t == lexer.TokenRestrict
+	return t == lexer.TokenAssert || t == lexer.TokenAssume || t == lexer.TokenCover || t == lexer.TokenRestrict || t == lexer.TokenExpect
 }
 
 func (p *Parser) cur() lexer.Token {
@@ -3921,7 +3951,8 @@ func (p *Parser) parseAssertStmt(block *ast.ProceduralBlock, mod *ast.ModuleDecl
 	kwTok := p.advance() // assert / assume / cover / restrict
 	startPos := kwTok.Range.Start
 	stmt := &ast.AssertStmt{
-		Kind: kwTok.Literal,
+		Kind:       kwTok.Literal,
+		Concurrent: kwTok.Type == lexer.TokenExpect,
 	}
 	if labelTok != nil {
 		startPos = labelTok.Range.Start
@@ -5006,6 +5037,247 @@ func (p *Parser) parseLetDecl(mod *ast.ModuleDecl, file *ast.SourceFile) {
 		mod.Items = append(mod.Items, fn)
 	} else if file != nil {
 		file.Functions = append(file.Functions, fn)
+	}
+}
+
+// parseRandsequenceStmt parses a SystemVerilog `randsequence ([prod_name]) ... endsequence` statement.
+func (p *Parser) parseRandsequenceStmt(block *ast.ProceduralBlock, mod *ast.ModuleDecl) {
+	startTok := p.advance() // consume 'randsequence'
+
+	if p.cur().Type == lexer.TokenLParen {
+		p.advance() // '('
+		if p.cur().Type == lexer.TokenIdent {
+			p.advance() // optional start production name (local to randsequence)
+		}
+		if p.cur().Type == lexer.TokenRParen {
+			p.advance()
+		} else {
+			p.addError(p.cur().Range, "expected ')' after randsequence header")
+		}
+	} else {
+		p.addError(startTok.Range, "expected '(' after 'randsequence'")
+	}
+
+	for !p.isEOF() &&
+		p.cur().Type != lexer.TokenEndsequence &&
+		p.cur().Type != lexer.TokenEnd &&
+		!isForkJoinEnd(p.cur().Type) &&
+		p.cur().Type != lexer.TokenEndfunction &&
+		p.cur().Type != lexer.TokenEndtask &&
+		p.cur().Type != lexer.TokenEndmodule &&
+		p.cur().Type != lexer.TokenModule {
+		if p.cur().Type == lexer.TokenSemicolon {
+			p.advance()
+			continue
+		}
+
+		// Optional production return type (`void`, `int`, `logic [7:0]`, user type, etc.)
+		if p.cur().Type == lexer.TokenVoid || isPortNetType(p.cur().Type) || isSVDataType(p.cur().Type) {
+			p.advance()
+			if p.cur().Type == lexer.TokenSigned || p.cur().Type == lexer.TokenUnsigned {
+				p.advance()
+			}
+			for p.cur().Type == lexer.TokenLBracket {
+				_ = p.parseBitRange(mod)
+			}
+		} else if p.isUserTypeBeforeIdent() {
+			_, _ = p.parseScopedTypeName(&block.Refs, mod)
+			for p.cur().Type == lexer.TokenLBracket {
+				_ = p.parseBitRange(mod)
+			}
+		}
+
+		// Production name
+		if p.cur().Type == lexer.TokenIdent {
+			p.advance()
+		} else {
+			p.addError(p.cur().Range, "expected production name in 'randsequence'")
+			p.syncToStatementEnd()
+			continue
+		}
+
+		// Optional formal parameter list: `(int a, ...)`
+		localParams := make(map[string]bool)
+		if p.cur().Type == lexer.TokenLParen {
+			paramMod := &ast.ModuleDecl{}
+			p.parseModulePortList(paramMod)
+			for _, port := range paramMod.Ports {
+				if port.Name != "" {
+					localParams[port.Name] = true
+				}
+			}
+		}
+
+		if p.cur().Type == lexer.TokenColon {
+			p.advance() // ':'
+		} else {
+			p.addError(p.cur().Range, "expected ':' after randsequence production header")
+			p.syncToStatementEnd()
+			continue
+		}
+
+		// Parse `rs_rule { | rs_rule } ;`
+		prodBlock := &ast.ProceduralBlock{Kind: block.Kind, Range: block.Range}
+		prodMod := &ast.ModuleDecl{}
+		for !p.isEOF() &&
+			p.cur().Type != lexer.TokenSemicolon &&
+			p.cur().Type != lexer.TokenEndsequence &&
+			p.cur().Type != lexer.TokenEndmodule {
+			// Optional `rand join [ (expr) ]`
+			if p.cur().Type == lexer.TokenRand && p.peekN(1).Type == lexer.TokenJoin {
+				p.advance() // 'rand'
+				p.advance() // 'join'
+				if p.cur().Type == lexer.TokenLParen {
+					p.parseBalancedParens(&prodBlock.Refs, prodMod)
+				}
+			}
+
+			// Production items up to `:=`, `|`, `;`, `endsequence`
+			for !p.isEOF() &&
+				p.cur().Type != lexer.TokenColonEq &&
+				p.cur().Type != lexer.TokenPipe &&
+				p.cur().Type != lexer.TokenSemicolon &&
+				p.cur().Type != lexer.TokenEndsequence &&
+				p.cur().Type != lexer.TokenEndmodule {
+				if !p.parseRandsequenceItem(prodBlock, prodMod) {
+					p.advance()
+				}
+			}
+
+			// Optional weight specification `:= weight_expr [ { code_block } ]`
+			if p.cur().Type == lexer.TokenColonEq {
+				p.advance() // ':='
+				p.collectTokensUntil(&prodBlock.Refs, prodMod, lexer.TokenLBrace, lexer.TokenPipe, lexer.TokenSemicolon, lexer.TokenEndsequence)
+				if p.cur().Type == lexer.TokenLBrace {
+					p.parseRandsequenceCodeBlock(prodBlock, prodMod)
+				}
+			}
+
+			if p.cur().Type == lexer.TokenPipe {
+				p.advance() // '|'
+				continue
+			}
+			break
+		}
+
+		// Forward refs and writes from production body, filtering out production-local formal params.
+		for _, r := range prodBlock.Refs {
+			if !localParams[r.Name] {
+				block.Refs = append(block.Refs, r)
+			}
+		}
+		for _, r := range prodMod.Refs {
+			if !localParams[r.Name] && mod != nil {
+				mod.Refs = append(mod.Refs, r)
+			}
+		}
+		block.Writes = append(block.Writes, prodBlock.Writes...)
+		if mod != nil {
+			mod.MemberRefs = append(mod.MemberRefs, prodMod.MemberRefs...)
+		}
+
+		if p.cur().Type == lexer.TokenSemicolon {
+			p.advance()
+		}
+	}
+
+	if p.cur().Type == lexer.TokenEndsequence {
+		p.advance()
+		p.consumeOptionalEndLabel()
+	} else {
+		p.addError(startTok.Range, "expected 'endsequence' to close 'randsequence'")
+	}
+}
+
+func (p *Parser) parseRandsequenceCodeBlock(block *ast.ProceduralBlock, mod *ast.ModuleDecl) {
+	startTok := p.advance() // '{'
+	for !p.isEOF() &&
+		p.cur().Type != lexer.TokenRBrace &&
+		p.cur().Type != lexer.TokenEndsequence &&
+		p.cur().Type != lexer.TokenEndmodule {
+		p.parseStatement(block, mod)
+	}
+	if p.cur().Type == lexer.TokenRBrace {
+		p.advance()
+	} else {
+		p.addError(startTok.Range, "expected '}' to close randsequence code block")
+	}
+}
+
+func (p *Parser) parseRandsequenceItem(block *ast.ProceduralBlock, mod *ast.ModuleDecl) bool {
+	switch p.cur().Type {
+	case lexer.TokenLBrace:
+		p.parseRandsequenceCodeBlock(block, mod)
+		return true
+
+	case lexer.TokenIf:
+		p.advance() // 'if'
+		if p.cur().Type == lexer.TokenLParen {
+			p.parseBalancedParens(&block.Refs, mod)
+		}
+		p.parseRandsequenceItem(block, mod)
+		if p.cur().Type == lexer.TokenElse {
+			p.advance()
+			p.parseRandsequenceItem(block, mod)
+		}
+		return true
+
+	case lexer.TokenRepeat:
+		p.advance() // 'repeat'
+		if p.cur().Type == lexer.TokenLParen {
+			p.parseBalancedParens(&block.Refs, mod)
+		}
+		p.parseRandsequenceItem(block, mod)
+		return true
+
+	case lexer.TokenCase:
+		caseTok := p.advance() // 'case'
+		if p.cur().Type == lexer.TokenLParen {
+			p.parseBalancedParens(&block.Refs, mod)
+		}
+		for !p.isEOF() &&
+			p.cur().Type != lexer.TokenEndcase &&
+			p.cur().Type != lexer.TokenEndsequence &&
+			p.cur().Type != lexer.TokenEndmodule {
+			if p.cur().Type == lexer.TokenDefault {
+				p.advance()
+				if p.cur().Type == lexer.TokenColon {
+					p.advance()
+				}
+				p.parseRandsequenceItem(block, mod)
+				if p.cur().Type == lexer.TokenSemicolon {
+					p.advance()
+				}
+				continue
+			}
+			toks := p.collectTokensUntil(&block.Refs, mod, lexer.TokenColon, lexer.TokenEndcase, lexer.TokenEndsequence)
+			if p.cur().Type == lexer.TokenColon {
+				p.advance() // ':'
+				p.parseRandsequenceItem(block, mod)
+				if p.cur().Type == lexer.TokenSemicolon {
+					p.advance()
+				}
+			} else if len(toks) == 0 {
+				break
+			}
+		}
+		if p.cur().Type == lexer.TokenEndcase {
+			p.advance()
+		} else {
+			p.addError(caseTok.Range, "expected 'endcase' to close randsequence 'case'")
+		}
+		return true
+
+	case lexer.TokenIdent:
+		// Production call: `prod_name [ ( args ) ]` (do not record prod_name as a signal ref)
+		p.advance()
+		if p.cur().Type == lexer.TokenLParen {
+			p.parseBalancedParens(&block.Refs, mod)
+		}
+		return true
+
+	default:
+		return false
 	}
 }
 
