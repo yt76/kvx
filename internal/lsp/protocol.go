@@ -60,6 +60,7 @@ type ServerCapabilities struct {
 	ReferencesProvider     bool                   `json:"referencesProvider,omitempty"`
 	DocumentSymbolProvider bool                   `json:"documentSymbolProvider,omitempty"`
 	FoldingRangeProvider   bool                   `json:"foldingRangeProvider,omitempty"`
+	CallHierarchyProvider  bool                   `json:"callHierarchyProvider,omitempty"`
 	CompletionProvider     *CompletionOptions     `json:"completionProvider,omitempty"`
 	SignatureHelpProvider  *SignatureHelpOptions  `json:"signatureHelpProvider,omitempty"`
 	SemanticTokensProvider *SemanticTokensOptions `json:"semanticTokensProvider,omitempty"`
@@ -360,6 +361,44 @@ type Registration struct {
 // RegistrationParams is sent with "client/registerCapability".
 type RegistrationParams struct {
 	Registrations []Registration `json:"registrations"`
+}
+
+// CallHierarchyPrepareParams is sent with "textDocument/prepareCallHierarchy".
+type CallHierarchyPrepareParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+}
+
+// CallHierarchyItem represents a module, checker, program, or interface in the instance hierarchy tree.
+type CallHierarchyItem struct {
+	Name           string        `json:"name"`
+	Kind           LSPSymbolKind `json:"kind"`
+	Detail         string        `json:"detail,omitempty"`
+	URI            string        `json:"uri"`
+	Range          Range         `json:"range"`
+	SelectionRange Range         `json:"selectionRange"`
+}
+
+// CallHierarchyIncomingCallsParams is sent with "callHierarchy/incomingCalls".
+type CallHierarchyIncomingCallsParams struct {
+	Item CallHierarchyItem `json:"item"`
+}
+
+// CallHierarchyIncomingCall represents a parent module instantiating the target module.
+type CallHierarchyIncomingCall struct {
+	From       CallHierarchyItem `json:"from"`
+	FromRanges []Range           `json:"fromRanges"`
+}
+
+// CallHierarchyOutgoingCallsParams is sent with "callHierarchy/outgoingCalls".
+type CallHierarchyOutgoingCallsParams struct {
+	Item CallHierarchyItem `json:"item"`
+}
+
+// CallHierarchyOutgoingCall represents a child module instantiated by the source module.
+type CallHierarchyOutgoingCall struct {
+	To         CallHierarchyItem `json:"to"`
+	FromRanges []Range           `json:"fromRanges"`
 }
 
 

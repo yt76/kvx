@@ -150,6 +150,12 @@ func (s *Server) handlePayload(payload []byte) (bool, error) {
 		return false, s.handleFoldingRange(msg)
 	case "textDocument/signatureHelp":
 		return false, s.handleSignatureHelp(msg)
+	case "textDocument/prepareCallHierarchy":
+		return false, s.handlePrepareCallHierarchy(msg)
+	case "callHierarchy/incomingCalls":
+		return false, s.handleCallHierarchyIncoming(msg)
+	case "callHierarchy/outgoingCalls":
+		return false, s.handleCallHierarchyOutgoing(msg)
 	default:
 		if msg.IsRequest() {
 			return false, s.sendError(msg.ID, CodeMethodNotFound, fmt.Sprintf("method not found: %s", msg.Method))
@@ -599,6 +605,38 @@ func (s *Server) handleSignatureHelp(msg IncomingMessage) error {
 	return s.sendResult(msg.ID, computeSignatureHelp(&doc, s.docs, params.Position))
 }
 
+func (s *Server) handlePrepareCallHierarchy(msg IncomingMessage) error {
+	var params CallHierarchyPrepareParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return s.sendError(msg.ID, CodeInvalidParams, fmt.Sprintf("invalid prepareCallHierarchy params: %v", err))
+	}
+
+	doc, ok := s.docs.Get(params.TextDocument.URI)
+	if !ok {
+		return s.sendResult(msg.ID, nil)
+	}
+
+	return s.sendResult(msg.ID, prepareCallHierarchy(&doc, s.docs, params.Position))
+}
+
+func (s *Server) handleCallHierarchyIncoming(msg IncomingMessage) error {
+	var params CallHierarchyIncomingCallsParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return s.sendError(msg.ID, CodeInvalidParams, fmt.Sprintf("invalid incomingCalls params: %v", err))
+	}
+
+	return s.sendResult(msg.ID, incomingHierarchyCalls(s.docs, params.Item))
+}
+
+func (s *Server) handleCallHierarchyOutgoing(msg IncomingMessage) error {
+	var params CallHierarchyOutgoingCallsParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return s.sendError(msg.ID, CodeInvalidParams, fmt.Sprintf("invalid outgoingCalls params: %v", err))
+	}
+
+	return s.sendResult(msg.ID, outgoingHierarchyCalls(s.docs, params.Item))
+}
+
 func toDocumentSymbol(sym *analyzer.Symbol) (DocumentSymbol, bool) {
 	if sym == nil || sym.Name == "" {
 		return DocumentSymbol{}, false
@@ -715,6 +753,7 @@ func (s *Server) handleInitialize(msg IncomingMessage) error {
 			ReferencesProvider:     true,
 			DocumentSymbolProvider: true,
 			FoldingRangeProvider:   true,
+			CallHierarchyProvider:  true,
 			CompletionProvider: &CompletionOptions{
 				TriggerCharacters: []string{".", ":"},
 			},
