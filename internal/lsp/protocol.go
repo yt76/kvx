@@ -43,6 +43,7 @@ type ServerCapabilities struct {
 	DefinitionProvider     bool                   `json:"definitionProvider,omitempty"`
 	ReferencesProvider     bool                   `json:"referencesProvider,omitempty"`
 	DocumentSymbolProvider bool                   `json:"documentSymbolProvider,omitempty"`
+	FoldingRangeProvider   bool                   `json:"foldingRangeProvider,omitempty"`
 	CompletionProvider     *CompletionOptions     `json:"completionProvider,omitempty"`
 	SemanticTokensProvider *SemanticTokensOptions `json:"semanticTokensProvider,omitempty"`
 }
@@ -250,6 +251,25 @@ type SemanticTokensParams struct {
 // SemanticTokens holds the relative delta-encoded semantic token array.
 type SemanticTokens struct {
 	Data []uint32 `json:"data"`
+}
+
+// FoldingRangeParams is sent with "textDocument/foldingRange".
+type FoldingRangeParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+}
+
+// Standard LSP folding range kinds.
+const (
+	FoldingKindComment = "comment"
+	FoldingKindImports = "imports"
+	FoldingKindRegion  = "region"
+)
+
+// FoldingRange represents a foldable line range in a text document.
+type FoldingRange struct {
+	StartLine int    `json:"startLine"`
+	EndLine   int    `json:"endLine"`
+	Kind      string `json:"kind,omitempty"`
 }
 
 

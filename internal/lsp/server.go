@@ -133,6 +133,8 @@ func (s *Server) handlePayload(payload []byte) (bool, error) {
 		return false, s.handleCompletion(msg)
 	case "textDocument/semanticTokens/full":
 		return false, s.handleSemanticTokensFull(msg)
+	case "textDocument/foldingRange":
+		return false, s.handleFoldingRange(msg)
 	default:
 		if msg.IsRequest() {
 			return false, s.sendError(msg.ID, CodeMethodNotFound, fmt.Sprintf("method not found: %s", msg.Method))
@@ -516,6 +518,20 @@ func (s *Server) handleSemanticTokensFull(msg IncomingMessage) error {
 	return s.sendResult(msg.ID, computeSemanticTokens(&doc))
 }
 
+func (s *Server) handleFoldingRange(msg IncomingMessage) error {
+	var params FoldingRangeParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		return s.sendError(msg.ID, CodeInvalidParams, fmt.Sprintf("invalid foldingRange params: %v", err))
+	}
+
+	doc, ok := s.docs.Get(params.TextDocument.URI)
+	if !ok {
+		return s.sendResult(msg.ID, []FoldingRange{})
+	}
+
+	return s.sendResult(msg.ID, computeFoldingRanges(doc.Text))
+}
+
 func toDocumentSymbol(sym *analyzer.Symbol) (DocumentSymbol, bool) {
 	if sym == nil || sym.Name == "" {
 		return DocumentSymbol{}, false
@@ -630,6 +646,7 @@ func (s *Server) handleInitialize(msg IncomingMessage) error {
 			DefinitionProvider:     true,
 			ReferencesProvider:     true,
 			DocumentSymbolProvider: true,
+			FoldingRangeProvider:   true,
 			CompletionProvider: &CompletionOptions{
 				TriggerCharacters: []string{".", ":"},
 			},
