@@ -45,11 +45,17 @@ type ServerCapabilities struct {
 	DocumentSymbolProvider bool                   `json:"documentSymbolProvider,omitempty"`
 	FoldingRangeProvider   bool                   `json:"foldingRangeProvider,omitempty"`
 	CompletionProvider     *CompletionOptions     `json:"completionProvider,omitempty"`
+	SignatureHelpProvider  *SignatureHelpOptions  `json:"signatureHelpProvider,omitempty"`
 	SemanticTokensProvider *SemanticTokensOptions `json:"semanticTokensProvider,omitempty"`
 }
 
 // CompletionOptions configures completion behavior.
 type CompletionOptions struct {
+	TriggerCharacters []string `json:"triggerCharacters,omitempty"`
+}
+
+// SignatureHelpOptions configures signature help behavior.
+type SignatureHelpOptions struct {
 	TriggerCharacters []string `json:"triggerCharacters,omitempty"`
 }
 
@@ -270,6 +276,31 @@ type FoldingRange struct {
 	StartLine int    `json:"startLine"`
 	EndLine   int    `json:"endLine"`
 	Kind      string `json:"kind,omitempty"`
+}
+
+// SignatureHelpParams is sent with "textDocument/signatureHelp".
+type SignatureHelpParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+	Position     Position               `json:"position"`
+}
+
+// ParameterInformation represents a single parameter of a callable signature.
+type ParameterInformation struct {
+	Label string `json:"label"`
+}
+
+// SignatureInformation represents the signature of a callable (function, task, let, or module port/param list).
+type SignatureInformation struct {
+	Label         string                 `json:"label"`
+	Documentation string                 `json:"documentation,omitempty"`
+	Parameters    []ParameterInformation `json:"parameters,omitempty"`
+}
+
+// SignatureHelp is the result of a "textDocument/signatureHelp" request.
+type SignatureHelp struct {
+	Signatures      []SignatureInformation `json:"signatures"`
+	ActiveSignature int                    `json:"activeSignature"`
+	ActiveParameter int                    `json:"activeParameter"`
 }
 
 
