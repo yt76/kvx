@@ -35,6 +35,15 @@ func (m *IncomingMessage) IsRequest() bool {
 	return len(m.ID) > 0 && string(m.ID) != "null"
 }
 
+// ServerRequestMessage represents an outgoing JSON-RPC 2.0 request from server to client
+// (e.g. "client/registerCapability").
+type ServerRequestMessage struct {
+	JSONRPC string `json:"jsonrpc"`
+	ID      string `json:"id"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
+}
+
 // ResponseMessage represents an outgoing JSON-RPC 2.0 response.
 type ResponseMessage struct {
 	JSONRPC string          `json:"jsonrpc"`

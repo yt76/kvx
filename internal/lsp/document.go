@@ -88,6 +88,120 @@ func (s *DocumentStore) IndexedStats() (int, int) {
 	return len(s.workspaceDocs), modCount
 }
 
+// HandleWatchedFileChanges updates the workspace index in response to external file
+// create/change/delete events and re-analyzes all open documents, returning them so
+// the server can republish fresh diagnostics.
+func (s *DocumentStore) HandleWatchedFileChanges(changes []FileEvent) []*Document {
+	if len(changes) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	needsFullRescan := false
+	needsReparseAll := false
+	workspaceChanged := false
+
+	for _, ev := range changes {
+		path := uriToFilePath(ev.URI)
+		if path == "" {
+			continue
+		}
+		base := strings.ToLower(filepath.Base(path))
+		ext := strings.ToLower(filepath.Ext(path))
+
+		if base == strings.ToLower(config.ConfigFileName) || ext == ".f" || ext == ".flist" {
+			needsFullRescan = true
+			continue
+		}
+		if ext == ".vh" || ext == ".svh" {
+			needsReparseAll = true
+			if ev.Type != FileChangeDeleted {
+				s.addIncludeDirLocked(filepath.Dir(path))
+			}
+			continue
+		}
+		if ext != ".v" && ext != ".sv" {
+			continue
+		}
+
+		uri := filePathToURI(path)
+		if ev.Type == FileChangeDeleted {
+			if _, exists := s.workspaceDocs[uri]; exists {
+				delete(s.workspaceDocs, uri)
+				workspaceChanged = true
+			}
+			continue
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			// File may have been deleted before we read it.
+			if _, exists := s.workspaceDocs[uri]; exists {
+				delete(s.workspaceDocs, uri)
+				workspaceChanged = true
+			}
+			continue
+		}
+		s.addIncludeDirLocked(filepath.Dir(path))
+		text := string(data)
+		fileAST, parseErrs := parser.ParseWithOptions(text, s.parseOptionsLocked(uri))
+		langID := "verilog"
+		if ext == ".sv" {
+			langID = "systemverilog"
+		}
+		s.workspaceDocs[uri] = &Document{
+			URI:        uri,
+			LanguageID: langID,
+			Text:       text,
+			AST:        fileAST,
+			ParseErrs:  parseErrs,
+			Analysis:   analyzer.Analyze(fileAST),
+		}
+		workspaceChanged = true
+	}
+
+	if needsFullRescan && s.rootDir != "" {
+		_, _ = s.scanWorkspaceLocked(s.rootDir)
+		needsReparseAll = true
+		workspaceChanged = true
+	} else if needsReparseAll {
+		// Re-parse all indexed workspace files so updated `include headers take effect.
+		for uri, wdoc := range s.workspaceDocs {
+			fileAST, parseErrs := parser.ParseWithOptions(wdoc.Text, s.parseOptionsLocked(uri))
+			wdoc.AST = fileAST
+			wdoc.ParseErrs = parseErrs
+			wdoc.Analysis = analyzer.Analyze(fileAST)
+		}
+		workspaceChanged = true
+	}
+
+	if !workspaceChanged {
+		return nil
+	}
+
+	// Second pass: refresh cross-file analysis across workspace documents.
+	ctx := s.workspaceContextLocked()
+	for _, wdoc := range s.workspaceDocs {
+		wdoc.Analysis = analyzer.AnalyzeWithWorkspace(wdoc.AST, ctx)
+	}
+
+	// Refresh all open documents (re-parsing if config/headers changed) and return snapshots.
+	updated := make([]*Document, 0, len(s.docs))
+	for uri, doc := range s.docs {
+		if needsReparseAll {
+			fileAST, parseErrs := parser.ParseWithOptions(doc.Text, s.parseOptionsLocked(uri))
+			doc.AST = fileAST
+			doc.ParseErrs = parseErrs
+		}
+		doc.Analysis = analyzer.AnalyzeWithWorkspace(doc.AST, ctx)
+		copied := *doc
+		updated = append(updated, &copied)
+	}
+	return updated
+}
+
 func (s *DocumentStore) indexWorkspaceFilesLocked(cfg *config.Config) {
 	s.workspaceDocs = make(map[string]*Document, len(cfg.Files))
 	for _, path := range cfg.Files {

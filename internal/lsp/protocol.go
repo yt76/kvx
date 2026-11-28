@@ -11,11 +11,27 @@ const (
 
 // InitializeParams represents the parameters sent in an "initialize" request.
 type InitializeParams struct {
-	ProcessID        *int              `json:"processId,omitempty"`
-	RootPath         string            `json:"rootPath,omitempty"`
-	RootURI          string            `json:"rootUri,omitempty"`
-	WorkspaceFolders []WorkspaceFolder `json:"workspaceFolders,omitempty"`
-	ClientInfo       *ClientInfo       `json:"clientInfo,omitempty"`
+	ProcessID        *int               `json:"processId,omitempty"`
+	RootPath         string             `json:"rootPath,omitempty"`
+	RootURI          string             `json:"rootUri,omitempty"`
+	WorkspaceFolders []WorkspaceFolder  `json:"workspaceFolders,omitempty"`
+	ClientInfo       *ClientInfo        `json:"clientInfo,omitempty"`
+	Capabilities     ClientCapabilities `json:"capabilities,omitempty"`
+}
+
+// ClientCapabilities represents the subset of LSP client capabilities inspected by kvx.
+type ClientCapabilities struct {
+	Workspace WorkspaceClientCapabilities `json:"workspace,omitempty"`
+}
+
+// WorkspaceClientCapabilities holds workspace-related client capabilities.
+type WorkspaceClientCapabilities struct {
+	DidChangeWatchedFiles DidChangeWatchedFilesClientCapabilities `json:"didChangeWatchedFiles,omitempty"`
+}
+
+// DidChangeWatchedFilesClientCapabilities reports whether the client supports dynamic file watcher registration.
+type DidChangeWatchedFilesClientCapabilities struct {
+	DynamicRegistration bool `json:"dynamicRegistration,omitempty"`
 }
 
 // WorkspaceFolder represents a workspace folder sent by the client during initialize.
@@ -301,6 +317,49 @@ type SignatureHelp struct {
 	Signatures      []SignatureInformation `json:"signatures"`
 	ActiveSignature int                    `json:"activeSignature"`
 	ActiveParameter int                    `json:"activeParameter"`
+}
+
+// FileChangeType defines the type of a file event in "workspace/didChangeWatchedFiles".
+type FileChangeType int
+
+const (
+	FileChangeCreated FileChangeType = 1
+	FileChangeChanged FileChangeType = 2
+	FileChangeDeleted FileChangeType = 3
+)
+
+// FileEvent describes a single file create/change/delete event.
+type FileEvent struct {
+	URI  string         `json:"uri"`
+	Type FileChangeType `json:"type"`
+}
+
+// DidChangeWatchedFilesParams is sent with "workspace/didChangeWatchedFiles".
+type DidChangeWatchedFilesParams struct {
+	Changes []FileEvent `json:"changes"`
+}
+
+// FileSystemWatcher configures a glob pattern watched by the client.
+type FileSystemWatcher struct {
+	GlobPattern string `json:"globPattern"`
+	Kind        int    `json:"kind,omitempty"` // 1=Create | 2=Change | 4=Delete (7=all)
+}
+
+// DidChangeWatchedFilesRegistrationOptions is passed in client/registerCapability for file watching.
+type DidChangeWatchedFilesRegistrationOptions struct {
+	Watchers []FileSystemWatcher `json:"watchers"`
+}
+
+// Registration describes a single dynamic capability registration.
+type Registration struct {
+	ID              string `json:"id"`
+	Method          string `json:"method"`
+	RegisterOptions any    `json:"registerOptions,omitempty"`
+}
+
+// RegistrationParams is sent with "client/registerCapability".
+type RegistrationParams struct {
+	Registrations []Registration `json:"registrations"`
 }
 
 

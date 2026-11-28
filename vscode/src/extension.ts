@@ -54,12 +54,19 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const serverOptions: ServerOptions = { command, args };
 
+	const verilogWatcher = vscode.workspace.createFileSystemWatcher('**/*.{v,sv,vh,svh,f}');
+	const configWatcher = vscode.workspace.createFileSystemWatcher('**/kvx.json');
+	context.subscriptions.push(verilogWatcher, configWatcher);
+
 	const clientOptions: LanguageClientOptions = {
-        documentSelector: [
-        { scheme: "file", language: "verilog" },
-        { scheme: "file", language: "systemverilog" }
-        ]
-    };
+		documentSelector: [
+			{ scheme: "file", language: "verilog" },
+			{ scheme: "file", language: "systemverilog" }
+		],
+		synchronize: {
+			fileEvents: [verilogWatcher, configWatcher]
+		}
+	};
 	client = new LanguageClient(
         "kvx",
         "KVX Language Server",

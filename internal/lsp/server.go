@@ -29,6 +29,7 @@ type Server struct {
 	docs             *DocumentStore
 	initialized      bool
 	shutdownReceived bool
+	watchDynamicReg  bool
 }
 
 // NewServer creates a new LSP Server reading from in, writing JSON-RPC responses to out,
@@ -84,6 +85,11 @@ func (s *Server) handlePayload(payload []byte) (bool, error) {
 		return false, nil
 	}
 
+	// Ignore JSON-RPC responses from the client to server-initiated requests (e.g. client/registerCapability).
+	if msg.Method == "" {
+		return false, nil
+	}
+
 	s.logger.Printf("received method=%q isRequest=%v", msg.Method, msg.IsRequest())
 
 	if msg.Method == "exit" {
@@ -110,11 +116,18 @@ func (s *Server) handlePayload(payload []byte) (bool, error) {
 		return false, s.handleInitialize(msg)
 	case "initialized":
 		s.logger.Println("client initialized handshake completed")
+		if s.watchDynamicReg {
+			if err := s.registerWatchedFiles(); err != nil {
+				return false, err
+			}
+		}
 		return false, nil
 	case "shutdown":
 		s.shutdownReceived = true
 		s.logger.Println("shutdown request received")
 		return false, s.sendResult(msg.ID, nil)
+	case "workspace/didChangeWatchedFiles":
+		return false, s.handleDidChangeWatchedFiles(msg)
 	case "textDocument/didOpen":
 		return false, s.handleDidOpen(msg)
 	case "textDocument/didChange":
@@ -187,6 +200,44 @@ func (s *Server) handleDidClose(msg IncomingMessage) error {
 		URI:         params.TextDocument.URI,
 		Diagnostics: []Diagnostic{},
 	})
+}
+
+func (s *Server) handleDidChangeWatchedFiles(msg IncomingMessage) error {
+	var params DidChangeWatchedFilesParams
+	if err := json.Unmarshal(msg.Params, &params); err != nil {
+		s.logger.Printf("invalid didChangeWatchedFiles params: %v", err)
+		return nil
+	}
+
+	updatedDocs := s.docs.HandleWatchedFileChanges(params.Changes)
+	s.logger.Printf("processed %d watched file change(s), refreshing %d open document(s)", len(params.Changes), len(updatedDocs))
+	for _, doc := range updatedDocs {
+		if err := s.publishDiagnostics(doc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) registerWatchedFiles() error {
+	req := ServerRequestMessage{
+		JSONRPC: jsonRPCVersion,
+		ID:      "kvx-watch-files",
+		Method:  "client/registerCapability",
+		Params: RegistrationParams{
+			Registrations: []Registration{{
+				ID:     "kvx-watch-verilog",
+				Method: "workspace/didChangeWatchedFiles",
+				RegisterOptions: DidChangeWatchedFilesRegistrationOptions{
+					Watchers: []FileSystemWatcher{
+						{GlobPattern: "**/*.{v,sv,vh,svh,f}", Kind: 7},
+						{GlobPattern: "**/kvx.json", Kind: 7},
+					},
+				},
+			}},
+		},
+	}
+	return WriteMessage(s.writer, req)
 }
 
 func (s *Server) publishDiagnostics(doc *Document) error {
@@ -654,6 +705,7 @@ func (s *Server) handleInitialize(msg IncomingMessage) error {
 	}
 
 	s.initialized = true
+	s.watchDynamicReg = params.Capabilities.Workspace.DidChangeWatchedFiles.DynamicRegistration
 
 	result := InitializeResult{
 		Capabilities: ServerCapabilities{
